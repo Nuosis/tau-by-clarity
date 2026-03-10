@@ -356,7 +356,10 @@ class CombinedAutocompleteProvider:
 
     def _expand_home(self, path: str) -> str:
         if path.startswith("~/"):
-            return str(Path.home() / path[2:])
+            expanded = os.path.join(str(Path.home()), path[2:])
+            if path.endswith("/"):
+                expanded = expanded.rstrip(os.sep) + os.sep
+            return expanded
         if path == "~":
             return str(Path.home())
         return path

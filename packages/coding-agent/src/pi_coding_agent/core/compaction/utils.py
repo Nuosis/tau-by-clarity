@@ -82,6 +82,17 @@ def format_file_operations(read_files: list[str], modified_files: list[str]) -> 
     return "\n\n" + "\n\n".join(sections)
 
 
+_TOOL_RESULT_MAX_CHARS = 2000
+
+
+def _truncate_for_summary(text: str, max_chars: int) -> str:
+    """Truncate text to max_chars for summarization to prevent context overflow."""
+    if len(text) <= max_chars:
+        return text
+    truncated = len(text) - max_chars
+    return f"{text[:max_chars]}\n\n[... {truncated} more characters truncated]"
+
+
 def serialize_conversation(messages: list[Any]) -> str:
     """Serialize LLM messages to text for summarization.
 
@@ -143,7 +154,7 @@ def serialize_conversation(messages: list[Any]) -> str:
                 if isinstance(b, dict) and b.get("type") == "text"
             )
             if text:
-                parts.append(f"[Tool result]: {text}")
+                parts.append(f"[Tool result]: {_truncate_for_summary(text, _TOOL_RESULT_MAX_CHARS)}")
 
     return "\n\n".join(parts)
 

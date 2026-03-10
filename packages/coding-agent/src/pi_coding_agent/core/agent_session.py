@@ -124,9 +124,14 @@ class AgentSession:
         # ── Auto-compaction abort ─────────────────────────────────────────────
         self._compaction_abort: asyncio.Event = asyncio.Event()
         self._compaction_running: bool = False
+        self._overflow_recovery_attempted: bool = False  # one-shot guard against infinite overflow loops
 
         # ── Last assistant message tracker (for auto-compaction/retry check) ──
         self._last_assistant_msg: AssistantMessage | None = None
+
+        # ── Bash execution state ──────────────────────────────────────────────
+        self._pending_bash_messages: list[AgentMessage] = []
+        self._pending_next_turn_messages: list[AgentMessage] = []
 
     # ── Tool construction ─────────────────────────────────────────────────────
 
@@ -214,6 +219,9 @@ class AgentSession:
 
     async def _post_turn_checks(self, msg: AssistantMessage) -> None:
         """Check retry and compaction after a turn completes (mirrors TS _handleAgentEvent)."""
+        # Reset overflow recovery on successful turns
+        if getattr(msg, "stop_reason", "") not in ("error", "aborted"):
+            self._overflow_recovery_attempted = False
         # Retry takes priority over compaction
         if self._is_retryable_error(msg):
             did_retry = await self._handle_retryable_error(msg)
@@ -243,16 +251,261 @@ class AgentSession:
         message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
         source: str | None = None,
+        expand_prompt_templates: bool = True,
+        streaming_behavior: str | None = None,
     ) -> None:
-        """Send a prompt to the agent and wait for completion (including retries)."""
-        # Reset retry state for new prompt
+        """
+        Send a prompt to the agent and wait for completion (including retries).
+        Mirrors prompt() in TypeScript with:
+        - Model/API key validation
+        - Pre-prompt compaction check
+        - Bash flush
+        - pendingNextTurnMessages injection
+        """
+        current_text: str | None = None
+        current_images = images
+
+        # Normalize input
+        if isinstance(message, str):
+            current_text = message
+        elif isinstance(message, list):
+            pass  # already message list
+        else:
+            pass  # single message
+
+        # If streaming, queue via steer/followUp
+        if self._agent.state.is_streaming:
+            if not streaming_behavior:
+                raise RuntimeError(
+                    "Agent is already processing. Specify streaming_behavior ('steer' or 'followUp') to queue."
+                )
+            if current_text is not None:
+                user_msg = UserMessage(
+                    role="user",
+                    content=[TextContent(type="text", text=current_text)],
+                    timestamp=int(time.time() * 1000),
+                )
+                if streaming_behavior == "followUp":
+                    self._agent.follow_up(user_msg)
+                else:
+                    self._agent.steer(user_msg)
+            return
+
+        # Reset overflow recovery flag for each new user-initiated turn
+        self._overflow_recovery_attempted = False
+
+        # Flush pending bash messages
+        self._flush_pending_bash_messages()
+
+        # Validate model
+        if not self._agent.state.model:
+            raise RuntimeError("No model selected. Use /login or set an API key environment variable.")
+
+        # Validate API key
+        model = self._agent.state.model
+        api_key = await self._resolve_api_key(model.provider)
+        if not api_key:
+            raise RuntimeError(
+                f"No API key found for {model.provider}. "
+                "Use /login or set an API key environment variable."
+            )
+
+        # Pre-compaction check on last assistant message
+        last_assistant = self._find_last_assistant_message()
+        if last_assistant:
+            await self._check_compaction(last_assistant, skip_aborted=False)
+
+        # Build messages array
+        msgs: list[AgentMessage]
+        if isinstance(message, list):
+            msgs = message
+        elif current_text is not None:
+            content_parts: list[TextContent | ImageContent] = [TextContent(type="text", text=current_text)]
+            if current_images:
+                content_parts.extend(current_images)
+            msgs = [UserMessage(
+                role="user",
+                content=content_parts,
+                timestamp=int(time.time() * 1000),
+            )]
+        else:
+            msgs = [message]
+
+        # Inject pending next-turn messages
+        if self._pending_next_turn_messages:
+            msgs.extend(self._pending_next_turn_messages)
+            self._pending_next_turn_messages = []
+
+        # Reset system prompt to base
+        self._agent.set_system_prompt(self._base_system_prompt)
+
+        # Reset retry state
         self._retry_event = asyncio.Event()
         self._retry_success = False
         self._retry_attempt = 0
 
-        await self._agent.prompt(message, images)
-        # Wait for any pending retries to complete
+        await self._agent.prompt(msgs)
         await self._wait_for_retry()
+
+    def _flush_pending_bash_messages(self) -> None:
+        """Flush pending bash messages into agent state and session."""
+        if not self._pending_bash_messages:
+            return
+        for bash_msg in self._pending_bash_messages:
+            self._agent.append_message(bash_msg)
+            self._session_manager.append_message(_message_to_dict(bash_msg))
+        self._pending_bash_messages = []
+
+    def _find_last_assistant_message(self) -> AssistantMessage | None:
+        """Find the last assistant message in the current context."""
+        for m in reversed(self._agent.state.messages):
+            if getattr(m, "role", "") == "assistant":
+                return m
+        return None
+
+    def record_bash_result(
+        self,
+        tool_call_id: str,
+        output: str,
+        exit_code: int,
+    ) -> None:
+        """
+        Record a bash execution result.
+        If streaming, queues for later flush; otherwise adds immediately.
+        """
+        from pi_ai.types import ToolResultMessage
+        bash_msg = ToolResultMessage(
+            role="toolResult",
+            tool_call_id=tool_call_id,
+            tool_name="bash",
+            content=[TextContent(type="text", text=output)],
+            is_error=exit_code != 0,
+            timestamp=int(time.time() * 1000),
+        )
+        if self._agent.state.is_streaming:
+            self._pending_bash_messages.append(bash_msg)
+        else:
+            self._agent.append_message(bash_msg)
+            self._session_manager.append_message(_message_to_dict(bash_msg))
+
+    # ── Session switching / tree navigation ────────────────────────────────────
+
+    async def switch_session(self, session_path: str) -> bool:
+        """
+        Switch to a different session file.
+        Mirrors switchSession() in TypeScript.
+        Returns True if switch succeeded.
+        """
+        self._agent.abort()
+        await self._agent.wait_for_idle()
+
+        self._agent.clear_all_queues()
+        self._pending_bash_messages = []
+        self._pending_next_turn_messages = []
+
+        new_sm = SessionManager.open(session_path)
+        self._session_manager = new_sm
+        self.session_id = new_sm.get_session_id()
+
+        # Restore context from session
+        context = new_sm.build_context()
+        self._agent.replace_messages(context.messages)
+
+        # Restore model/thinking from session
+        if context.model:
+            try:
+                model = get_model(context.model["provider"], context.model["model_id"])
+                self._agent.set_model(model)
+            except Exception:
+                pass
+        if context.thinking_level:
+            self._agent.set_thinking_level(context.thinking_level)
+
+        return True
+
+    async def navigate_tree(
+        self,
+        target_id: str,
+        summarize: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Navigate to a different point in the session tree.
+        Mirrors navigateTree() in TypeScript.
+        """
+        old_leaf_id = self._session_manager.get_leaf_id()
+        if target_id == old_leaf_id:
+            return {"cancelled": False}
+
+        self._agent.abort()
+        await self._agent.wait_for_idle()
+
+        # Optionally summarize the branch being left
+        if summarize and old_leaf_id:
+            from .compaction.branch_summarization import summarize_branch
+            try:
+                summary_result = await summarize_branch(
+                    self._session_manager,
+                    old_leaf_id,
+                    target_id,
+                    self._agent.state.model,
+                )
+                if summary_result and summary_result.summary:
+                    self._session_manager.append_branch_summary(
+                        summary_result.summary,
+                        from_id=old_leaf_id,
+                    )
+            except Exception:
+                pass
+
+        self._session_manager.set_leaf_id(target_id)
+
+        # Rebuild context from new position
+        context = self._session_manager.build_context(target_id)
+        self._agent.replace_messages(context.messages)
+
+        if context.model:
+            try:
+                model = get_model(context.model["provider"], context.model["model_id"])
+                self._agent.set_model(model)
+            except Exception:
+                pass
+        if context.thinking_level:
+            self._agent.set_thinking_level(context.thinking_level)
+
+        # Check if target is a user message (return its text for editor)
+        target_entry = self._session_manager.get_entry(target_id)
+        editor_text: str | None = None
+        if target_entry and target_entry.type == "message":
+            msg_data = target_entry.data.get("message", {})
+            if isinstance(msg_data, dict) and msg_data.get("role") == "user":
+                content = msg_data.get("content", [])
+                if isinstance(content, str):
+                    editor_text = content
+                elif isinstance(content, list):
+                    editor_text = "".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+
+        return {"cancelled": False, "editorText": editor_text}
+
+    async def create_branched_session(self, branch_point_id: str) -> "AgentSession":
+        """
+        Create a new session branching from a specific entry.
+        Mirrors createBranchedSession() via SessionManager.branch().
+        """
+        new_sm = self._session_manager.branch(branch_point_id, self.cwd)
+        branched = AgentSession(
+            cwd=self.cwd,
+            model=self._agent.state.model,
+            settings=self._settings,
+            session_manager=new_sm,
+            auth_storage=self._auth_storage,
+            model_registry=self._model_registry,
+        )
+        context = new_sm.build_context()
+        branched._agent.replace_messages(context.messages)
+        return branched
 
     async def steer(self, message: AgentMessage) -> None:
         """Queue a steering message."""
@@ -367,7 +620,7 @@ class AgentSession:
         if not api_key:
             raise RuntimeError(f"No API key for {model.provider}/{model.id}")
         self._agent.set_model(model)
-        self._session_manager.append_model_change(model.id, model.provider)
+        self._session_manager.append_model_change(model.provider, model.id)
         # Re-clamp thinking level for new model
         self.set_thinking_level(self.thinking_level)
 
@@ -516,8 +769,22 @@ class AgentSession:
 
     # ── Session management ────────────────────────────────────────────────────
 
-    def fork(self) -> "AgentSession":
-        """Create a fork of the current session."""
+    async def fork(self, entry_id: str | None = None) -> "AgentSession":
+        """
+        Fork the session from a specific entry (or current leaf).
+        Mirrors fork() in TypeScript.
+        """
+        branch_point = entry_id
+        if not branch_point:
+            leaf = self._session_manager.get_leaf_entry()
+            branch_point = leaf.id if leaf else None
+
+        if branch_point:
+            # Check if entry has a parent; if not, create new session
+            entry = self._session_manager.get_entry(branch_point)
+            if entry and entry.parent_id:
+                return await self.create_branched_session(entry.parent_id)
+
         sessions_dir = self._session_manager.get_session_dir()
         src_path = self._session_manager.get_session_file()
         forked_sm = SessionManager.fork_from(src_path, self.cwd, sessions_dir)
@@ -589,6 +856,20 @@ class AgentSession:
             getattr(msg, "model", None) == model.id
         )
         if same_model and is_context_overflow(msg, context_window):
+            if self._overflow_recovery_attempted:
+                # Already tried once — don't loop infinitely
+                self._emit({
+                    "type": "auto_compaction_end",
+                    "result": None,
+                    "aborted": False,
+                    "willRetry": False,
+                    "errorMessage": (
+                        "Context overflow recovery failed after one compact-and-retry attempt. "
+                        "Try reducing context or switching to a larger-context model."
+                    ),
+                })
+                return
+            self._overflow_recovery_attempted = True
             # Remove the error message from agent state (keep in session history)
             messages = self._agent.state.messages
             if messages and getattr(messages[-1], "role", "") == "assistant":

@@ -36,11 +36,17 @@ GoogleThinkingLevel = str  # "THINKING_LEVEL_UNSPECIFIED" | "MINIMAL" | "LOW" | 
 
 _DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com"
 _ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+_ANTIGRAVITY_AUTOPUSH_ENDPOINT = "https://autopush-cloudcode-pa.sandbox.googleapis.com"
+_ANTIGRAVITY_ENDPOINT_FALLBACKS = [
+    _ANTIGRAVITY_DAILY_ENDPOINT,
+    _ANTIGRAVITY_AUTOPUSH_ENDPOINT,
+    _DEFAULT_ENDPOINT,
+]
 _MAX_RETRIES = 3
 _BASE_DELAY_MS = 1000
 _MAX_EMPTY_STREAM_RETRIES = 2
 _EMPTY_STREAM_BASE_DELAY_MS = 500
-_DEFAULT_ANTIGRAVITY_VERSION = "1.15.8"
+_DEFAULT_ANTIGRAVITY_VERSION = "1.18.4"
 
 _GEMINI_CLI_HEADERS = {
     "User-Agent": "google-cloud-sdk vscode_cloudshelleditor/0.1",
@@ -52,22 +58,17 @@ _GEMINI_CLI_HEADERS = {
     }),
 }
 
+_ANTIGRAVITY_SYSTEM_INSTRUCTION = (
+    "You are a helpful AI coding assistant. You can help with code generation, "
+    "debugging, refactoring, explanation, and other software engineering tasks."
+)
+
 _tool_call_counter = 0
 
 
 def _get_antigravity_headers() -> dict[str, str]:
     version = os.environ.get("PI_AI_ANTIGRAVITY_VERSION", _DEFAULT_ANTIGRAVITY_VERSION)
-    import platform
-    sys_info = f"{platform.system().lower()}/{platform.machine()}"
-    return {
-        "User-Agent": f"antigravity/{version} {sys_info}",
-        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-        "Client-Metadata": json.dumps({
-            "ideType": "IDE_UNSPECIFIED",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        }),
-    }
+    return {"User-Agent": f"antigravity/{version} darwin/arm64"}
 
 
 def extract_retry_delay(error_text: str) -> int | None:
@@ -131,9 +132,14 @@ def stream_google_gemini_cli(
             api_key = opts.get("api_key") or get_env_api_key(model.provider) or ""
             is_antigravity = "antigravity" in model.provider.lower()
 
-            base_url = getattr(model, "base_url", None) or _DEFAULT_ENDPOINT
-            if is_antigravity and not getattr(model, "base_url", None):
-                base_url = _ANTIGRAVITY_DAILY_ENDPOINT
+            # Endpoint selection
+            model_base_url = getattr(model, "base_url", None)
+            if model_base_url:
+                endpoints = [model_base_url]
+            elif is_antigravity:
+                endpoints = list(_ANTIGRAVITY_ENDPOINT_FALLBACKS)
+            else:
+                endpoints = [_DEFAULT_ENDPOINT]
 
             provider_headers = _get_antigravity_headers() if is_antigravity else _GEMINI_CLI_HEADERS
             headers: dict[str, str] = {
@@ -152,12 +158,14 @@ def stream_google_gemini_cli(
                 opts["on_payload"](request_body)
 
             model_id_for_url = model.id.replace(".", "-")
-            endpoint_url = f"{base_url.rstrip('/')}/v1/projects/{project_id}/locations/us-central1/publishers/google/models/{model_id_for_url}:streamGenerateContent?alt=sse"
 
             ev_stream.push({"type": "start", "partial": output})
 
             retry_count = 0
+            endpoint_index = 0
             while retry_count <= _MAX_RETRIES:
+                base_url = endpoints[min(endpoint_index, len(endpoints) - 1)]
+                endpoint_url = f"{base_url.rstrip('/')}/v1/projects/{project_id}/locations/us-central1/publishers/google/models/{model_id_for_url}:streamGenerateContent?alt=sse"
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     async with client.stream(
                         "POST",
@@ -168,6 +176,10 @@ def stream_google_gemini_cli(
                         if response.status_code not in (200, 201):
                             error_text_bytes = await response.aread()
                             error_text = error_text_bytes.decode()
+                            # Immediate endpoint cascade for auth/not-found errors
+                            if response.status_code in (403, 404) and endpoint_index < len(endpoints) - 1:
+                                endpoint_index += 1
+                                continue
                             if retry_count < _MAX_RETRIES and _is_retryable_error(response.status_code, error_text):
                                 delay = extract_retry_delay(error_text) or (_BASE_DELAY_MS * (2 ** retry_count))
                                 await asyncio.sleep(delay / 1000)
@@ -346,28 +358,45 @@ def _build_request_body(
     contents: list[dict[str, Any]],
     project_id: str,
 ) -> dict[str, Any]:
-    body: dict[str, Any] = {"contents": contents}
+    """Build CloudCodeAssistRequest body matching TS format."""
+    is_antigravity = "antigravity" in model.provider.lower()
 
+    # Inner request (generateContent params)
+    request: dict[str, Any] = {"contents": contents}
+
+    # System instruction
+    system_parts: list[dict[str, Any]] = []
+    if is_antigravity:
+        system_parts.append({"text": _ANTIGRAVITY_SYSTEM_INSTRUCTION})
     if context.system_prompt:
-        body["systemInstruction"] = sanitize_surrogates(context.system_prompt)
+        system_parts.append({"text": sanitize_surrogates(context.system_prompt)})
+    if system_parts:
+        request["systemInstruction"] = {"parts": system_parts}
 
+    # Session ID
+    if opts.get("session_id"):
+        request["sessionId"] = opts["session_id"]
+
+    # Generation config
     config: dict[str, Any] = {}
     if opts.get("max_tokens") is not None:
         config["maxOutputTokens"] = opts["max_tokens"]
     if opts.get("temperature") is not None:
         config["temperature"] = opts["temperature"]
 
+    # Tools
     tools_list = getattr(context, "tools", None) or []
     if tools_list:
         use_parameters = any(m in model.id.lower() for m in ("claude-", "gpt-oss-"))
         converted = convert_tools(tools_list, use_parameters=use_parameters)
         if converted:
-            body["tools"] = converted
+            request["tools"] = converted
         if opts.get("tool_choice"):
-            body["toolConfig"] = {
+            request["toolConfig"] = {
                 "functionCallingConfig": {"mode": map_tool_choice(opts["tool_choice"])}
             }
 
+    # Thinking config
     thinking_opts = opts.get("thinking")
     if thinking_opts and thinking_opts.get("enabled") and getattr(model, "reasoning", False):
         thinking_config: dict[str, Any] = {"includeThoughts": True}
@@ -378,17 +407,32 @@ def _build_request_body(
         config["thinkingConfig"] = thinking_config
 
     if config:
-        body["generationConfig"] = config
+        request["generationConfig"] = config
+
+    # Wrap in CloudCodeAssistRequest
+    import random
+    request_id = f"agent-{int(time.time() * 1000)}-{random.randint(100000, 999999)}"
+    body: dict[str, Any] = {
+        "project": project_id,
+        "model": model.id,
+        "request": request,
+        "userAgent": "antigravity" if is_antigravity else "pi-coding-agent",
+        "requestId": request_id,
+    }
+    if is_antigravity:
+        body["requestType"] = "agent"
 
     return body
 
 
 def _is_gemini3_pro(model: "Model") -> bool:
-    return "3-pro" in model.id
+    """Matches gemini-3-pro-* and gemini-3.1-pro-* patterns."""
+    return bool(re.search(r"gemini-3(?:\.1)?-pro", model.id.lower()))
 
 
 def _is_gemini3_flash(model: "Model") -> bool:
-    return "3-flash" in model.id
+    """Matches gemini-3-flash-* and gemini-3.1-flash-* patterns."""
+    return bool(re.search(r"gemini-3(?:\.1)?-flash", model.id.lower()))
 
 
 def _get_gemini3_thinking_level(effort: str, model: "Model") -> str:

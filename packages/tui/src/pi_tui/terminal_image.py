@@ -401,17 +401,6 @@ def render_image(
     return None
 
 
-_KITTY_PREFIX = "\x1b_G"
-_ITERM2_PREFIX = "\x1b]1337;File="
-
-
-def is_image_line(line: str) -> bool:
-    """Return True if the line contains an inline image sequence."""
-    if line.startswith(_KITTY_PREFIX) or line.startswith(_ITERM2_PREFIX):
-        return True
-    return _KITTY_PREFIX in line or _ITERM2_PREFIX in line
-
-
 def image_fallback(
     mime_type: str,
     dimensions: ImageDimensions | None = None,

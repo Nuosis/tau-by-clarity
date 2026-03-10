@@ -110,6 +110,7 @@ class ProcessTerminal(Terminal):
         self._input_handler: Callable[[str], None] | None = None
         self._resize_handler: Callable[[], None] | None = None
         self._kitty_protocol_active = False
+        self._modify_other_keys_active = False
         self._stdin_buffer: StdinBuffer | None = None
         self._write_log_path = os.environ.get("PI_TUI_WRITE_LOG", "")
         self._old_termios: object | None = None
@@ -144,6 +145,27 @@ class ProcessTerminal(Terminal):
         self._setup_stdin_buffer()
         sys.stdout.write("\x1b[?u")
         sys.stdout.flush()
+
+        # Schedule modifyOtherKeys fallback for tmux (150ms timeout)
+        # tmux may not reply to the Kitty capability query but forwards modified keys
+        self._modify_other_keys_active = False
+
+        def _fallback_modify_other_keys() -> None:
+            if not self._kitty_protocol_active and not self._modify_other_keys_active:
+                sys.stdout.write("\x1b[>4;2m")
+                sys.stdout.flush()
+                self._modify_other_keys_active = True
+
+        import threading
+        threading.Timer(0.15, _fallback_modify_other_keys).start()
+
+        # Self-signal SIGWINCH to trigger an initial resize callback
+        try:
+            import signal as _signal
+            if hasattr(_signal, "SIGWINCH"):
+                os.kill(os.getpid(), _signal.SIGWINCH)
+        except Exception:
+            pass
 
     def _enable_raw_mode(self) -> None:
         """Put stdin in raw mode (no echo, no line buffering)."""
@@ -216,7 +238,7 @@ class ProcessTerminal(Terminal):
         self._read_thread = t
 
     async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
-        """Drain stdin before exiting."""
+        """Drain stdin before exiting to prevent Kitty key-release leaks."""
         if self._kitty_protocol_active:
             sys.stdout.write("\x1b[<u")
             sys.stdout.flush()
@@ -224,14 +246,14 @@ class ProcessTerminal(Terminal):
             set_kitty_protocol_active(False)
 
         prev_handler = self._input_handler
-        self._input_handler = None
-
         last_data_time = time.monotonic()
         end_time = last_data_time + max_ms / 1000.0
 
-        async def _noop(_: str) -> None:
+        def _noop(data: str) -> None:
             nonlocal last_data_time
             last_data_time = time.monotonic()
+
+        self._input_handler = _noop
 
         try:
             while True:
@@ -253,9 +275,18 @@ class ProcessTerminal(Terminal):
             self._kitty_protocol_active = False
             set_kitty_protocol_active(False)
 
+        if getattr(self, "_modify_other_keys_active", False):
+            sys.stdout.write("\x1b[>4;0m")
+            self._modify_other_keys_active = False
+
+        # Pause stdin by destroying the buffer first (stops read loop)
         if self._stdin_buffer:
             self._stdin_buffer.destroy()
             self._stdin_buffer = None
+
+        # Pause stdin - signal read thread to stop
+        if hasattr(self, "_read_thread") and self._read_thread is not None:
+            self._read_thread = None
 
         self._input_handler = None
         self._resize_handler = None

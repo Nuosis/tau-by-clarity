@@ -81,20 +81,25 @@ def test_validate_tool_arguments_extra_fields_ok():
 # ── Transform messages tests ──────────────────────────────────────────────────
 
 def test_transform_messages_passthrough():
+    from pi_ai.types import Model, ModelCost
     ts = int(time.time() * 1000)
-    context = Context(
-        system_prompt="You are helpful",
-        messages=[
-            UserMessage(role="user", content="Hello", timestamp=ts),
-        ],
+    model = Model(
+        id="claude-3-5-sonnet-20241022",
+        name="Claude Sonnet",
+        api="anthropic-messages",
+        provider="anthropic",
+        base_url="https://api.anthropic.com",
+        cost=ModelCost(),
+        context_window=200000,
+        max_tokens=8192,
     )
-    result = transform_messages(context, "anthropic-messages")
-    assert len(result.messages) == 1
-    assert result.system_prompt == "You are helpful"
+    messages = [UserMessage(role="user", content="Hello", timestamp=ts)]
+    result = transform_messages(messages, model)
+    assert len(result) == 1
 
 
 def test_transform_messages_thinking_to_text():
-    from pi_ai.types import ThinkingContent
+    from pi_ai.types import ThinkingContent, Model, ModelCost
     ts = int(time.time() * 1000)
     assistant_msg = AssistantMessage(
         role="assistant",
@@ -109,18 +114,23 @@ def test_transform_messages_thinking_to_text():
         stop_reason="stop",
         timestamp=ts,
     )
-    context = Context(
-        messages=[
-            UserMessage(role="user", content="Hello", timestamp=ts),
-            assistant_msg,
-        ],
+    target_model = Model(
+        id="gpt-4o",
+        name="GPT-4o",
+        api="openai-completions",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        cost=ModelCost(),
+        context_window=128000,
+        max_tokens=4096,
     )
-    result = transform_messages(context, "openai-completions")
-    # Thinking blocks should be converted to text
-    for msg in result.messages:
+    messages = [
+        UserMessage(role="user", content="Hello", timestamp=ts),
+        assistant_msg,
+    ]
+    result = transform_messages(messages, target_model)
+    # Thinking blocks should be converted to text for cross-model
+    for msg in result:
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 assert not isinstance(block, ThinkingContent), "Thinking block should be converted"
-                if isinstance(block, TextContent):
-                    # Either it's a <thinking> delimited text or the answer text
-                    pass

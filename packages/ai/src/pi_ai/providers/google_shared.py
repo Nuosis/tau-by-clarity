@@ -23,6 +23,10 @@ _REQUIRES_TOOL_CALL_ID_PREFIXES = ("claude-", "gpt-oss-")
 # Base64 validation pattern for thought signatures
 _BASE64_PATTERN = re.compile(r"^[A-Za-z0-9+/]+=*$")
 
+# Sentinel that tells the Gemini API to skip thought signature validation.
+# Used for unsigned function call parts replayed from other providers.
+_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
 
 # ---------------------------------------------------------------------------
 # Thought signature helpers
@@ -140,26 +144,19 @@ def convert_messages(model: "Model", context: "Context") -> list[dict[str, Any]]
                 elif block_type == "toolCall":
                     sig = _resolve_thought_signature(is_same, getattr(block, "thought_signature", None))
                     is_gemini3 = "gemini-3" in model.id.lower()
-                    if is_gemini3 and not sig:
-                        args_str = __import__("json").dumps(getattr(block, "arguments", {}) or {}, indent=2)
-                        parts.append({
-                            "text": (
-                                f'[Historical context: a different model called tool "{block.name}" '
-                                f"with arguments: {args_str}. "
-                                "Do not mimic this format - use proper function calling.]"
-                            )
-                        })
-                    else:
-                        func_call: dict[str, Any] = {
-                            "name": block.name,
-                            "args": getattr(block, "arguments", {}) or {},
-                        }
-                        if requires_tool_call_id(model.id):
-                            func_call["id"] = block.id
-                        part = {"functionCall": func_call}
-                        if sig:
-                            part["thoughtSignature"] = sig
-                        parts.append(part)
+                    # For Gemini 3, use the skip_thought_signature_validator sentinel for unsigned tool calls
+                    # instead of a text fallback — this properly handles cross-provider replay
+                    effective_sig = sig or (_SKIP_THOUGHT_SIGNATURE if is_gemini3 else None)
+                    func_call: dict[str, Any] = {
+                        "name": block.name,
+                        "args": getattr(block, "arguments", {}) or {},
+                    }
+                    if requires_tool_call_id(model.id):
+                        func_call["id"] = block.id
+                    part = {"functionCall": func_call}
+                    if effective_sig:
+                        part["thoughtSignature"] = effective_sig
+                    parts.append(part)
 
             if not parts:
                 continue

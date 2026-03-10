@@ -20,6 +20,9 @@ from ..types import (
     EventTextDelta,
     EventTextEnd,
     EventTextStart,
+    EventThinkingDelta,
+    EventThinkingEnd,
+    EventThinkingStart,
     EventToolCallDelta,
     EventToolCallEnd,
     EventToolCallStart,
@@ -27,6 +30,7 @@ from ..types import (
     Model,
     SimpleStreamOptions,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolResultMessage,
     Usage,
@@ -185,13 +189,26 @@ async def stream_simple(
 
     partial = _make_empty_assistant(model)
     content_blocks: list[Any] = []
-    text_started = False
+    current_block: TextContent | ThinkingContent | None = None
     usage_final = Usage()
+
+    def _block_index() -> int:
+        return len(content_blocks) - 1
+
+    def _is_thinking_part(part: Any) -> bool:
+        return getattr(part, "thought", False) is True
+
+    def _retain_thought_signature(existing: str | None, new_sig: Any) -> str | None:
+        if new_sig:
+            import base64
+            if isinstance(new_sig, bytes):
+                return base64.b64encode(new_sig).decode("ascii")
+            return str(new_sig)
+        return existing
 
     yield EventStart(type="start", partial=partial)
 
     try:
-        # The new SDK: await the call to get an async iterable, then iterate
         stream = await client.aio.models.generate_content_stream(
             model=model.id,
             contents=contents,
@@ -199,7 +216,6 @@ async def stream_simple(
         )
 
         async for chunk in stream:
-            # Accumulate usage — each chunk may carry metadata; last chunk has totals
             if chunk.usage_metadata and chunk.usage_metadata.total_token_count:
                 um = chunk.usage_metadata
                 usage_final = Usage(
@@ -208,45 +224,23 @@ async def stream_simple(
                     total_tokens=um.total_token_count or 0,
                 )
 
-            # chunk.text is a shorthand for the text of the first candidate part
-            if chunk.text:
-                if not text_started:
-                    text_started = True
-                    content_blocks.append(TextContent(type="text", text=""))
-                    partial = partial.model_copy(update={"content": list(content_blocks)})
-                    yield EventTextStart(
-                        type="text_start",
-                        content_index=len(content_blocks) - 1,
-                        partial=partial,
-                    )
-
-                text_idx = next(
-                    (i for i, b in enumerate(content_blocks) if isinstance(b, TextContent)),
-                    -1,
-                )
-                if text_idx >= 0:
-                    content_blocks[text_idx] = TextContent(
-                        type="text",
-                        text=content_blocks[text_idx].text + chunk.text,
-                    )
-                    partial = partial.model_copy(update={"content": list(content_blocks)})
-                    yield EventTextDelta(
-                        type="text_delta",
-                        content_index=text_idx,
-                        delta=chunk.text,
-                        partial=partial,
-                    )
-
-            # Tool calls — iterate candidates/parts for function_call
             for candidate in (chunk.candidates or []):
                 if not candidate.content or not candidate.content.parts:
                     continue
                 for part in candidate.content.parts:
+                    # Handle function_call parts
                     fc = getattr(part, "function_call", None)
                     if fc:
+                        # Close current block
+                        if current_block is not None:
+                            if isinstance(current_block, TextContent):
+                                yield EventTextEnd(type="text_end", content_index=_block_index(), content=current_block.text, partial=partial)
+                            elif isinstance(current_block, ThinkingContent):
+                                yield EventThinkingEnd(type="thinking_end", content_index=_block_index(), content=current_block.thinking, partial=partial)
+                            current_block = None
+
                         idx = len(content_blocks)
                         args = dict(fc.args) if fc.args else {}
-                        # Capture thought_signature (present when thinking mode is on)
                         ts_b64: str | None = None
                         ts_raw = getattr(part, "thought_signature", None)
                         if ts_raw:
@@ -264,34 +258,65 @@ async def stream_simple(
                         )
                         content_blocks.append(tc)
                         partial = partial.model_copy(update={"content": list(content_blocks)})
-                        yield EventToolCallStart(
-                            type="toolcall_start", content_index=idx, partial=partial
-                        )
-                        yield EventToolCallDelta(
-                            type="toolcall_delta",
-                            content_index=idx,
-                            delta=json.dumps(args),
-                            partial=partial,
-                        )
-                        yield EventToolCallEnd(
-                            type="toolcall_end",
-                            content_index=idx,
-                            tool_call=tc,
-                            partial=partial,
-                        )
+                        yield EventToolCallStart(type="toolcall_start", content_index=idx, partial=partial)
+                        yield EventToolCallDelta(type="toolcall_delta", content_index=idx, delta=json.dumps(args), partial=partial)
+                        yield EventToolCallEnd(type="toolcall_end", content_index=idx, tool_call=tc, partial=partial)
+                        continue
 
-        # Finalize text block
-        if text_started:
-            text_idx = next(
-                (i for i, b in enumerate(content_blocks) if isinstance(b, TextContent)),
-                0,
-            )
-            yield EventTextEnd(
-                type="text_end",
-                content_index=text_idx,
-                content=content_blocks[text_idx].text if content_blocks else "",
-                partial=partial,
-            )
+                    # Handle text/thinking parts
+                    part_text = getattr(part, "text", None)
+                    if part_text is not None:
+                        is_thinking = _is_thinking_part(part)
+
+                        # Check if we need to switch block type
+                        if (current_block is None or
+                            (is_thinking and not isinstance(current_block, ThinkingContent)) or
+                            (not is_thinking and not isinstance(current_block, TextContent))):
+
+                            # Close previous block
+                            if current_block is not None:
+                                if isinstance(current_block, TextContent):
+                                    yield EventTextEnd(type="text_end", content_index=_block_index(), content=current_block.text, partial=partial)
+                                elif isinstance(current_block, ThinkingContent):
+                                    yield EventThinkingEnd(type="thinking_end", content_index=_block_index(), content=current_block.thinking, partial=partial)
+
+                            # Start new block
+                            if is_thinking:
+                                current_block = ThinkingContent(type="thinking", thinking="")
+                                content_blocks.append(current_block)
+                                partial = partial.model_copy(update={"content": list(content_blocks)})
+                                yield EventThinkingStart(type="thinking_start", content_index=_block_index(), partial=partial)
+                            else:
+                                current_block = TextContent(type="text", text="")
+                                content_blocks.append(current_block)
+                                partial = partial.model_copy(update={"content": list(content_blocks)})
+                                yield EventTextStart(type="text_start", content_index=_block_index(), partial=partial)
+
+                        # Append to current block
+                        if isinstance(current_block, ThinkingContent):
+                            current_block = ThinkingContent(
+                                type="thinking",
+                                thinking=current_block.thinking + part_text,
+                                thinking_signature=_retain_thought_signature(
+                                    getattr(current_block, "thinking_signature", None),
+                                    getattr(part, "thought_signature", None),
+                                ),
+                            )
+                            content_blocks[_block_index()] = current_block
+                            partial = partial.model_copy(update={"content": list(content_blocks)})
+                            yield EventThinkingDelta(type="thinking_delta", content_index=_block_index(), delta=part_text, partial=partial)
+                        elif isinstance(current_block, TextContent):
+                            current_block = TextContent(type="text", text=current_block.text + part_text)
+                            content_blocks[_block_index()] = current_block
+                            partial = partial.model_copy(update={"content": list(content_blocks)})
+                            yield EventTextDelta(type="text_delta", content_index=_block_index(), delta=part_text, partial=partial)
+
+        # Close final block
+        if current_block is not None:
+            if isinstance(current_block, TextContent):
+                yield EventTextEnd(type="text_end", content_index=_block_index(), content=current_block.text, partial=partial)
+            elif isinstance(current_block, ThinkingContent):
+                yield EventThinkingEnd(type="thinking_end", content_index=_block_index(), content=current_block.thinking, partial=partial)
 
         has_tool_calls = any(isinstance(b, ToolCall) for b in content_blocks)
         stop_reason = "toolUse" if has_tool_calls else "stop"

@@ -158,6 +158,14 @@ class Input:
             self._move_word_forwards()
             return
 
+        # Kitty CSI-u printable decode (for terminals with flag 1, e.g. VS Code)
+        # Must be checked before the control-char guard because CSI-u contains ESC
+        from pi_tui.keys import decode_kitty_printable
+        kitty_ch = decode_kitty_printable(data)
+        if kitty_ch is not None:
+            self._insert_character(kitty_ch)
+            return
+
         # Regular printable characters
         has_control = any(
             ord(ch) < 32 or ord(ch) == 0x7F or (0x80 <= ord(ch) <= 0x9F)

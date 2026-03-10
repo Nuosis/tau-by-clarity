@@ -72,6 +72,63 @@ def detect_image_mime_type(path: str) -> str | None:
         return None
 
 
+MAX_IMAGE_DIMENSION = 2048
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5MB
+
+
+def _auto_resize_image(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    """
+    Auto-resize images that exceed dimension or size limits.
+    Returns (possibly resized data, mime_type).
+    """
+    if len(data) <= MAX_IMAGE_BYTES:
+        try:
+            from PIL import Image
+            import io
+            img = Image.open(io.BytesIO(data))
+            w, h = img.size
+            if w <= MAX_IMAGE_DIMENSION and h <= MAX_IMAGE_DIMENSION:
+                return data, mime_type
+        except Exception:
+            return data, mime_type
+
+    try:
+        from PIL import Image
+        import io
+
+        img = Image.open(io.BytesIO(data))
+        w, h = img.size
+
+        if w > MAX_IMAGE_DIMENSION or h > MAX_IMAGE_DIMENSION:
+            ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
+            new_w = int(w * ratio)
+            new_h = int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        # Re-encode, preferring JPEG for size
+        buf = io.BytesIO()
+        out_format = "JPEG" if mime_type in ("image/jpeg", "image/jpg") else "PNG"
+        if img.mode == "RGBA" and out_format == "JPEG":
+            img = img.convert("RGB")
+        img.save(buf, format=out_format, quality=85)
+        resized = buf.getvalue()
+
+        if len(resized) > MAX_IMAGE_BYTES:
+            # Try lower quality JPEG
+            buf = io.BytesIO()
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=60)
+            resized = buf.getvalue()
+            mime_type = "image/jpeg"
+
+        return resized, mime_type
+    except ImportError:
+        return data, mime_type
+    except Exception:
+        return data, mime_type
+
+
 def create_read_tool(cwd: str, auto_resize_images: bool = True) -> AgentTool:
     """
     Create a read tool for the given working directory.
@@ -106,9 +163,12 @@ def create_read_tool(cwd: str, auto_resize_images: bool = True) -> AgentTool:
         mime_type = detect_image_mime_type(absolute_path)
 
         if mime_type:
-            # Read as image
             async with aiofiles.open(absolute_path, "rb") as f:
                 data = await f.read()
+
+            if auto_resize_images:
+                data, mime_type = _auto_resize_image(data, mime_type)
+
             b64 = base64.b64encode(data).decode("ascii")
             text_note = f"Read image file [{mime_type}]"
             return AgentToolResult(

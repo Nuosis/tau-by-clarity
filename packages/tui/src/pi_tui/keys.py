@@ -137,6 +137,11 @@ _MOD_ALT = 2
 _MOD_CTRL = 4
 _LOCK_MASK = 64 + 128
 
+# Supported modifier bits: Shift, Alt, Ctrl (plus lock bits)
+_SUPPORTED_MOD_MASK = _MOD_SHIFT | _MOD_ALT | _MOD_CTRL | _LOCK_MASK
+# Modifier bits allowed for Kitty printable characters (only Shift + locks)
+_KITTY_PRINTABLE_ALLOWED_MODIFIERS = _MOD_SHIFT | _LOCK_MASK
+
 _CP_ESCAPE = 27
 _CP_TAB = 9
 _CP_ENTER = 13
@@ -340,6 +345,33 @@ _FUNC_CODEPOINTS: dict[int, int] = {
     7: _CP_HOME, 8: _CP_END,
 }
 _ARROW_CODEPOINTS_MAP: dict[str, int] = {"A": _CP_UP, "B": _CP_DOWN, "C": _CP_RIGHT, "D": _CP_LEFT}
+
+
+def decode_kitty_printable(data: str) -> str | None:
+    """
+    Decode a Kitty CSI-u sequence as a printable character.
+    Returns the character if it's a printable key without unsupported modifiers, else None.
+    Mirrors decodeKittyPrintable() in keys.ts.
+    """
+    parsed = _parse_kitty(data)
+    if parsed is None:
+        return None
+    modifier = parsed.modifier
+    # Reject unsupported modifier bits (Super, Meta, Hyper, etc.)
+    if (modifier & ~_KITTY_PRINTABLE_ALLOWED_MODIFIERS) != 0:
+        return None
+    # Reject Ctrl and Alt (handled by keybindings, not printable input)
+    if modifier & (_MOD_ALT | _MOD_CTRL):
+        return None
+    effective = parsed.codepoint
+    if (modifier & _MOD_SHIFT) and parsed.shifted_key is not None:
+        effective = parsed.shifted_key
+    if effective < 32:
+        return None
+    try:
+        return chr(effective)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _parse_kitty(data: str) -> _ParsedKitty | None:
@@ -681,6 +713,9 @@ def parse_key(data: str) -> str | None:
     if kitty:
         cp = kitty.codepoint
         mod = kitty.modifier & ~_LOCK_MASK
+        # Reject unsupported modifier bits (Super, Meta, Hyper, etc.)
+        if (mod & ~(_MOD_SHIFT | _MOD_ALT | _MOD_CTRL)) != 0:
+            return None
         mods: list[str] = []
         if mod & _MOD_SHIFT:
             mods.append("shift")

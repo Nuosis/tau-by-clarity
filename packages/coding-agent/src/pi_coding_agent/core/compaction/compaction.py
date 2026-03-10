@@ -394,11 +394,13 @@ async def generate_summary(
         prompt_text += f"<previous-summary>\n{previous_summary}\n</previous-summary>\n\n"
     prompt_text += base_prompt
 
-    opts = SimpleStreamOptions(max_tokens=max_tokens)
+    # Only pass reasoning="high" for reasoning models; non-reasoning models reject it
+    reasoning_kwarg: dict[str, Any] = {"reasoning": "high"} if getattr(model, "reasoning", False) else {}
+    opts = SimpleStreamOptions(max_tokens=max_tokens, **reasoning_kwarg)
     if signal is not None:
-        opts = SimpleStreamOptions(max_tokens=max_tokens, signal=signal)
+        opts = SimpleStreamOptions(max_tokens=max_tokens, signal=signal, **reasoning_kwarg)
     if api_key:
-        opts = SimpleStreamOptions(max_tokens=max_tokens, api_key=api_key)
+        opts = SimpleStreamOptions(max_tokens=max_tokens, api_key=api_key, **reasoning_kwarg)
 
     try:
         ctx = Context(

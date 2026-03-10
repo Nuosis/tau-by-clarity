@@ -1,68 +1,38 @@
-# Documentation (not committed)
-docs/
-# === Secrets / Environment ===
-.env
-.env.*
-!.env.example
-*.key
-*.pem
-*.p12
-*.pfx
-
-# === Python ===
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg
-*.egg-info/
-dist/
-build/
-eggs/
-parts/
-var/
-sdist/
-develop-eggs/
-.installed.cfg
-lib/
-lib64/
+*$py.class
 *.so
-
-# === Virtual Environments ===
-.venv/
-venv/
+.Python
 env/
+venv/
 ENV/
+.venv/
 
-# === uv ===
-.uv/
-uv-*.lock.bak
+# uv
+.venv/
+uv.lock
 
-# === Testing ===
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
-.tox/
-*.log
-/tmp/
-
-# === IDEs ===
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# === OS ===
+# Project specific
+*.log
 .DS_Store
-Thumbs.db
+.env
 
-# === Temp / scratch files ===
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temp files
 *.tmp
-tmp_*.txt
-scratch.*
+*.bak
 
-# === Documentation (temporary development docs) ===
-
+# Archives (don't push to remote)
+docs/archive/

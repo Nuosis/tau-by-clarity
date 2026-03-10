@@ -98,27 +98,70 @@ def _grapheme_width(segment: str) -> int:
     return 1
 
 
+try:
+    from grapheme import graphemes as _grapheme_lib_split
+    _HAS_GRAPHEME_LIB = True
+except ImportError:
+    _HAS_GRAPHEME_LIB = False
+
+
+# Regional indicator range for flag emoji (🇦-🇿 = U+1F1E6 - U+1F1FF)
+def _is_regional_indicator(cp: int) -> bool:
+    return 0x1F1E6 <= cp <= 0x1F1FF
+
+
 def _segment_graphemes(text: str) -> list[str]:
-    """Segment text into grapheme clusters (simplified — uses unicodedata)."""
+    """
+    Segment text into grapheme clusters.
+    Uses the `grapheme` library (UAX #29) when available, falling back to a
+    heuristic that handles combining marks, ZWJ sequences, and flag emoji.
+    """
     if not text:
         return []
-    # Python doesn't have Intl.Segmenter; we approximate by iterating codepoints
-    # and grouping combining characters with their base
+
+    if _HAS_GRAPHEME_LIB:
+        return list(_grapheme_lib_split(text))
+
     clusters: list[str] = []
     i = 0
-    chars = list(text)
-    while i < len(chars):
-        cluster = chars[i]
+    n = len(text)
+    while i < n:
+        cp = ord(text[i])
+
+        # Flag emoji: pair of regional indicator symbols
+        if _is_regional_indicator(cp) and i + 1 < n and _is_regional_indicator(ord(text[i + 1])):
+            cluster = text[i:i + 2]
+            i += 2
+            # Consume trailing variation selectors
+            while i < n and ord(text[i]) in (0xFE0E, 0xFE0F):
+                cluster += text[i]
+                i += 1
+            clusters.append(cluster)
+            continue
+
+        cluster = text[i]
         i += 1
-        # Consume combining marks
-        while i < len(chars):
-            cat = unicodedata.category(chars[i])
-            if cat in ("Mn", "Me", "Cf") or ord(chars[i]) in (0x200D, 0xFE0F, 0x20E3):
-                cluster += chars[i]
+
+        # Consume combining marks, ZWJ sequences, variation selectors, enclosing keycaps
+        while i < n:
+            ncp = ord(text[i])
+            cat = unicodedata.category(text[i])
+            if cat in ("Mn", "Me", "Cf") or ncp in (0x200D, 0xFE0E, 0xFE0F, 0x20E3):
+                cluster += text[i]
+                i += 1
+                # After ZWJ, consume the next base char (and its modifiers) too
+                if ncp == 0x200D and i < n:
+                    cluster += text[i]
+                    i += 1
+            elif 0x1F3FB <= ncp <= 0x1F3FF:
+                # Skin tone modifier
+                cluster += text[i]
                 i += 1
             else:
                 break
+
         clusters.append(cluster)
+
     return clusters
 
 

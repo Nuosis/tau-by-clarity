@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 KnownApi = Literal[
     "openai-completions",
+    "mistral-conversations",
     "openai-responses",
     "azure-openai-responses",
     "openai-codex-responses",
@@ -44,6 +45,7 @@ KnownProvider = Literal[
     "minimax-cn",
     "huggingface",
     "opencode",
+    "opencode-go",
     "kimi-coding",
 ]
 Provider = str  # KnownProvider or arbitrary string
@@ -95,10 +97,18 @@ class TextContent(BaseModel):
     text_signature: str | None = None
 
 
+class TextSignatureV1(BaseModel):
+    """Structured text signature for OpenAI Responses API (v1 format)."""
+    v: Literal[1] = 1
+    id: str
+    phase: Literal["commentary", "final_answer"] | None = None
+
+
 class ThinkingContent(BaseModel):
     type: Literal["thinking"] = "thinking"
     thinking: str
     thinking_signature: str | None = None
+    redacted: bool | None = None  # True for Anthropic redacted_thinking blocks
 
 
 class ImageContent(BaseModel):

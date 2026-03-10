@@ -27,8 +27,8 @@ def test_get_model_google():
 
 
 def test_get_model_not_found():
-    with pytest.raises(KeyError):
-        get_model("nonexistent", "fake-model")
+    result = get_model("nonexistent", "fake-model")
+    assert result is None
 
 
 def test_get_providers():

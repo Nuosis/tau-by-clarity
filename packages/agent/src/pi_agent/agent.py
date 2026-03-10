@@ -373,6 +373,7 @@ class Agent:
             model=model,
             reasoning=reasoning,
             session_id=self._session_id,
+            transport=self._transport,
             thinking_budgets=self._thinking_budgets,
             max_retry_delay_ms=self._max_retry_delay_ms,
             convert_to_llm=self._convert_to_llm,
@@ -389,6 +390,8 @@ class Agent:
                 ev_stream = agent_loop(messages, context, config, self._cancel_event, self.stream_fn)
             else:
                 ev_stream = agent_loop_continue(context, config, self._cancel_event, self.stream_fn)
+
+            self._running_task = asyncio.current_task()
 
             async for event in ev_stream:
                 # Update internal state
@@ -460,3 +463,4 @@ class Agent:
             self._state.stream_message = None
             self._state.pending_tool_calls = set()
             self._cancel_event = None
+            self._running_task = None

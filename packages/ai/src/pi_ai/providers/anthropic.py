@@ -49,6 +49,7 @@ from ..types import (
 )
 from ..utils.event_stream import EventStream
 from ..utils.json_parse import parse_partial_json, parse_streaming_json
+from .transform_messages import transform_messages as _transform_messages
 
 # Anthropic beta features
 _BETA_FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
@@ -57,7 +58,7 @@ _BETA_OAUTH = "oauth-2025-04-20"
 _BETA_CLAUDE_CODE = "claude-code-20250219"
 
 # Claude Code version for OAuth stealth mode
-_CLAUDE_CODE_VERSION = "2.1.2"
+_CLAUDE_CODE_VERSION = "2.1.62"
 
 # Claude Code canonical tool name lookup (case-insensitive → canonical)
 _CLAUDE_CODE_TOOLS = [
@@ -117,21 +118,41 @@ _EFFORT_MAP = {
     "xhigh": "max",
 }
 
-# Stop reason mapping from Anthropic to pi_ai
+# Stop reason mapping from Anthropic to pi_ai (matches TS exactly)
 _STOP_REASON_MAP = {
     "end_turn": "stop",
     "max_tokens": "length",
     "tool_use": "toolUse",
-    "pause_turn": "pauseTurn",
-    "sensitive": "sensitive",
-    "refusal": "refusal",
+    "pause_turn": "stop",
+    "sensitive": "error",
+    "refusal": "error",
     "stop_sequence": "stop",
 }
 
 
+def _normalize_tool_call_id(id_: str, model: Model, source: AssistantMessage) -> str:
+    """Normalize tool call IDs for Anthropic (max 64 chars, alphanum + _ -)."""
+    import re as _re
+    if len(id_) <= 64 and _re.match(r"^[a-zA-Z0-9_-]+$", id_):
+        return id_
+    import hashlib
+    return "tc_" + hashlib.sha256(id_.encode()).hexdigest()[:60]
+
+
 def _supports_adaptive_thinking(model_id: str) -> bool:
-    """Check if model supports adaptive thinking (Opus 4.6+)."""
-    return "opus-4-6" in model_id or "opus-4.6" in model_id
+    """Check if model supports adaptive thinking (Opus 4.6+ or Sonnet 4.6+)."""
+    return (
+        "opus-4-6" in model_id or "opus-4.6" in model_id
+        or "sonnet-4-6" in model_id or "sonnet-4.6" in model_id
+    )
+
+
+def _map_thinking_level_to_effort(level: str, model_id: str) -> str:
+    """Map thinking level to Anthropic effort string, model-aware."""
+    if level == "xhigh":
+        # Only Opus 4.6 supports "max"; Sonnet 4.6 tops out at "high"
+        return "max" if ("opus-4-6" in model_id or "opus-4.6" in model_id) else "high"
+    return {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}.get(level, "high")
 
 
 def _get_cache_control(base_url: str | None, cache_retention: str | None = None) -> dict | None:
@@ -166,8 +187,11 @@ def _build_client(
     base_url = getattr(model, "base_url", None) or getattr(model, "baseUrl", None)
     model_headers = model.headers or {}
 
+    # Adaptive thinking models don't use the interleaved-thinking beta (it's deprecated for them)
+    needs_interleaved_beta = interleaved_thinking and not _supports_adaptive_thinking(model.id)
+
     beta_features = [_BETA_FINE_GRAINED]
-    if interleaved_thinking:
+    if needs_interleaved_beta:
         beta_features.append(_BETA_INTERLEAVED)
 
     if is_oauth:
@@ -175,7 +199,7 @@ def _build_client(
         default_headers = {
             "accept": "application/json",
             "anthropic-beta": f"{_BETA_CLAUDE_CODE},{_BETA_OAUTH},{','.join(beta_features)}",
-            "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION}",
             "x-app": "cli",
             **model_headers,
             **(options_headers or {}),
@@ -203,6 +227,30 @@ def _build_client(
     return client, is_oauth
 
 
+def _convert_tool_result_block(tr_msg: ToolResultMessage, is_oauth: bool = False) -> dict[str, Any]:
+    """Convert a single ToolResultMessage to an Anthropic tool_result block."""
+    cblocks: list[dict[str, Any]] = []
+    for block in tr_msg.content:
+        if isinstance(block, TextContent):
+            text = _sanitize_surrogates(block.text)
+            cblocks.append({"type": "text", "text": text})
+        elif isinstance(block, ImageContent):
+            cblocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": block.mime_type,
+                    "data": block.data,
+                },
+            })
+    return {
+        "type": "tool_result",
+        "tool_use_id": tr_msg.tool_call_id,
+        "content": cblocks,
+        "is_error": tr_msg.is_error,
+    }
+
+
 def _build_messages(
     context: Context,
     is_oauth: bool = False,
@@ -210,13 +258,15 @@ def _build_messages(
 ) -> list[dict[str, Any]]:
     """
     Convert Context messages to Anthropic API format.
-    Applies sanitize_surrogates and cache_control on last user message.
-    Filters empty content blocks.
+    Batches consecutive toolResult messages into a single user message.
     """
     result: list[dict[str, Any]] = []
+    all_msgs = context.messages
+    i = 0
 
-    for i, msg in enumerate(context.messages):
-        is_last = i == len(context.messages) - 1
+    while i < len(all_msgs):
+        msg = all_msgs[i]
+        is_last = i == len(all_msgs) - 1
 
         if isinstance(msg, UserMessage):
             if isinstance(msg.content, str):
@@ -242,7 +292,6 @@ def _build_messages(
                                 "data": block.data,
                             },
                         })
-                # Add cache_control to last block of last user message
                 if is_last and cache_control and content_blocks:
                     content_blocks[-1] = {**content_blocks[-1], "cache_control": cache_control}
                 if content_blocks:
@@ -253,14 +302,23 @@ def _build_messages(
             for block in msg.content:
                 if isinstance(block, TextContent):
                     text = _sanitize_surrogates(block.text)
-                    if text:  # Filter empty text blocks
+                    if text:
                         content_blocks.append({"type": "text", "text": text})
                 elif isinstance(block, ThinkingContent):
-                    content_blocks.append({
-                        "type": "thinking",
-                        "thinking": block.thinking,
-                        "signature": block.thinking_signature or "",
-                    })
+                    if getattr(block, "redacted", False):
+                        # Redacted block: send back as redacted_thinking with opaque data
+                        content_blocks.append({
+                            "type": "redacted_thinking",
+                            "data": block.thinking_signature or "",
+                        })
+                    elif not block.thinking.strip():
+                        pass  # Skip empty thinking blocks
+                    else:
+                        content_blocks.append({
+                            "type": "thinking",
+                            "thinking": block.thinking,
+                            "signature": block.thinking_signature or "",
+                        })
                 elif isinstance(block, ToolCall):
                     tc_name = _to_claude_code_name(block.name) if is_oauth else block.name
                     content_blocks.append({
@@ -273,29 +331,19 @@ def _build_messages(
                 result.append({"role": "assistant", "content": content_blocks})
 
         elif isinstance(msg, ToolResultMessage):
-            content_blocks = []
-            for block in msg.content:
-                if isinstance(block, TextContent):
-                    text = _sanitize_surrogates(block.text)
-                    content_blocks.append({"type": "text", "text": text})
-                elif isinstance(block, ImageContent):
-                    content_blocks.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": block.mime_type,
-                            "data": block.data,
-                        },
-                    })
-            result.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": msg.tool_call_id,
-                    "content": content_blocks,
-                    "is_error": msg.is_error,
-                }],
-            })
+            # Batch consecutive toolResult messages into a single user message
+            tool_results: list[dict[str, Any]] = [_convert_tool_result_block(msg, is_oauth)]
+
+            j = i + 1
+            while j < len(all_msgs) and isinstance(all_msgs[j], ToolResultMessage):
+                tool_results.append(_convert_tool_result_block(all_msgs[j], is_oauth))
+                j += 1
+
+            result.append({"role": "user", "content": tool_results})
+            i = j
+            continue
+
+        i += 1
 
     return result
 
@@ -386,17 +434,25 @@ async def stream_simple(
         options_headers=getattr(opts, "headers", None),
     )
 
-    messages = _build_messages(context, is_oauth=is_oauth, cache_control=cache_control)
-    tools = _build_tools(context, is_oauth=is_oauth)
-    system = _build_system(context, is_oauth=is_oauth, cache_control=cache_control)
+    # Transform messages for cross-provider compatibility
+    transformed_msgs = _transform_messages(context.messages, model, _normalize_tool_call_id)
+    transformed_context = Context(
+        system_prompt=context.system_prompt,
+        messages=transformed_msgs,
+        tools=context.tools,
+    )
 
-    max_tokens = opts.max_tokens or model.max_tokens or 4096
+    messages = _build_messages(transformed_context, is_oauth=is_oauth, cache_control=cache_control)
+    tools = _build_tools(transformed_context, is_oauth=is_oauth)
+    system = _build_system(transformed_context, is_oauth=is_oauth, cache_control=cache_control)
+
+    max_tokens = opts.max_tokens or (model.max_tokens // 3 if model.max_tokens else 4096)
 
     params: dict[str, Any] = {
         "model": model.id,
         "messages": messages,
         "max_tokens": max_tokens,
-        "stream": True,
+        # Note: "stream": True is NOT passed to client.messages.stream() — the method itself streams
     }
 
     if system:
@@ -405,14 +461,15 @@ async def stream_simple(
     if tools:
         params["tools"] = tools
 
-    if opts.temperature is not None:
+    # Temperature is incompatible with extended thinking
+    if opts.temperature is not None and not opts.reasoning:
         params["temperature"] = opts.temperature
 
     # Thinking configuration
     if opts.reasoning:
         if _supports_adaptive_thinking(model.id) or is_oauth:
-            # Adaptive thinking: effort levels
-            effort = _EFFORT_MAP.get(opts.reasoning, "high")
+            # Adaptive thinking: effort levels (model-aware)
+            effort = _map_thinking_level_to_effort(opts.reasoning, model.id)
             params["thinking"] = {"type": "adaptive"}
             params["output_config"] = {"effort": effort}
         else:
@@ -454,7 +511,7 @@ async def stream_simple(
                             )
                         })
 
-                elif event_type == "ContentBlockStartEvent":
+                elif event_type == "RawContentBlockStartEvent":
                     block = event.content_block
                     ant_idx = event.index
                     cb_idx = len(content_blocks)
@@ -469,6 +526,21 @@ async def stream_simple(
                         content_blocks.append(ThinkingContent(type="thinking", thinking=""))
                         partial = partial.model_copy(update={"content": list(content_blocks)})
                         yield EventThinkingStart(type="thinking_start", content_index=cb_idx, partial=partial)
+
+                    elif block.type == "redacted_thinking":
+                        # Opaque encrypted thinking block — preserve signature, no delta events
+                        data = getattr(block, "data", "")
+                        redacted_block = ThinkingContent(
+                            type="thinking",
+                            thinking="[Reasoning redacted]",
+                            thinking_signature=data,
+                            redacted=True,
+                        )
+                        content_blocks.append(redacted_block)
+                        partial = partial.model_copy(update={"content": list(content_blocks)})
+                        yield EventThinkingStart(type="thinking_start", content_index=cb_idx, partial=partial)
+                        # Immediately emit end — no delta events for redacted blocks
+                        yield EventThinkingEnd(type="thinking_end", content_index=cb_idx, content="[Reasoning redacted]", partial=partial)
 
                     elif block.type == "tool_use":
                         tc_name = block.name
@@ -485,7 +557,7 @@ async def stream_simple(
                         partial = partial.model_copy(update={"content": list(content_blocks)})
                         yield EventToolCallStart(type="toolcall_start", content_index=cb_idx, partial=partial)
 
-                elif event_type == "ContentBlockDeltaEvent":
+                elif event_type == "RawContentBlockDeltaEvent":
                     delta = event.delta
                     ant_idx = event.index
                     cb_idx = block_index_map.get(ant_idx, -1)

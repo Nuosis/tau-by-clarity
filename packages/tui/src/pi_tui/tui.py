@@ -210,6 +210,7 @@ class TUI(Container):
 
         self._previous_lines: list[str] = []
         self._previous_width: int = 0
+        self._previous_height: int = 0
         self._focused_component: object | None = None
         self._input_listeners: list[InputListener] = []
 
@@ -397,6 +398,7 @@ class TUI(Container):
         if force:
             self._previous_lines = []
             self._previous_width = -1
+            self._previous_height = -1
             self._cursor_row = 0
             self._hardware_cursor_row = 0
             self._max_lines_rendered = 0
@@ -542,7 +544,8 @@ class TUI(Container):
         avail_w = max(1, term_width - m_left - m_right)
         avail_h = max(1, term_height - m_top - m_bottom)
 
-        width = _parse_size_value(opt.width, term_width) or min(80, avail_w)
+        parsed_w = _parse_size_value(opt.width, term_width)
+        width = parsed_w if parsed_w is not None else min(80, avail_w)
         if opt.min_width is not None:
             width = max(width, opt.min_width)
         width = max(1, min(width, avail_w))
@@ -746,8 +749,27 @@ class TUI(Container):
         new_lines = self._apply_line_resets(new_lines)
 
         width_changed = self._previous_width != 0 and self._previous_width != width
+        height_changed = self._previous_height != 0 and self._previous_height != height
 
         debug_redraw = os.environ.get("PI_DEBUG_REDRAW") == "1"
+
+        def log_redraw(reason: str) -> None:
+            if not debug_redraw:
+                return
+            try:
+                from datetime import datetime
+                log_path = os.path.join(
+                    os.path.expanduser("~"), ".pi", "agent", "pi-debug.log"
+                )
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                msg = (
+                    f"[{datetime.now().isoformat()}] fullRender: {reason} "
+                    f"(prev={len(self._previous_lines)}, new={len(new_lines)}, height={height})\n"
+                )
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(msg)
+            except Exception:
+                pass
 
         def full_render(clear: bool) -> None:
             nonlocal hardware_cursor_row, viewport_top, prev_viewport_top
@@ -771,12 +793,16 @@ class TUI(Container):
             self._position_hardware_cursor(cursor_pos, len(new_lines))
             self._previous_lines = new_lines
             self._previous_width = width
+            self._previous_height = height
 
-        if not self._previous_lines and not width_changed:
+        if not self._previous_lines and not width_changed and not height_changed:
+            log_redraw("first render")
             full_render(False)
             return
 
-        if width_changed:
+        if width_changed or height_changed:
+            reason = f"terminal size changed ({self._previous_width}x{self._previous_height} -> {width}x{height})"
+            log_redraw(reason)
             full_render(True)
             return
 
@@ -785,6 +811,7 @@ class TUI(Container):
             len(new_lines) < self._max_lines_rendered and
             not self._overlay_stack
         ):
+            log_redraw(f"clearOnShrink (maxLinesRendered={self._max_lines_rendered})")
             full_render(True)
             return
 
@@ -841,6 +868,7 @@ class TUI(Container):
             self._position_hardware_cursor(cursor_pos, len(new_lines))
             self._previous_lines = new_lines
             self._previous_width = width
+            self._previous_height = height
             self._previous_viewport_top = max(0, self._max_lines_rendered - height)
             return
 
@@ -907,6 +935,7 @@ class TUI(Container):
         self._position_hardware_cursor(cursor_pos, len(new_lines))
         self._previous_lines = new_lines
         self._previous_width = width
+        self._previous_height = height
 
     # ─────────────────────────────────────────────────────────────────────────
     # Hardware cursor positioning

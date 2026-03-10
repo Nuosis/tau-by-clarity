@@ -26,6 +26,9 @@ PROVIDER_ENV_VARS: dict[str, str] = {
     "minimax": "MINIMAX_API_KEY",
     "minimax-cn": "MINIMAX_CN_API_KEY",
     "opencode": "OPENCODE_API_KEY",
+    "kimi-coding": "KIMI_API_KEY",  # Kimi Coding API (Anthropic Messages API format)
+    "kimi": "KIMI_API_KEY",  # Kimi alias
+    "moonshot": "MOONSHOT_API_KEY",  # Moonshot API
 }
 
 
@@ -41,6 +44,12 @@ def get_env_api_key(provider: str) -> str | None:
         key = os.environ.get("GEMINI_API_KEY")
         if key:
             return key
+    # Allow KIMI_CODE_API_KEY as alias for KIMI_API_KEY (for compatibility)
+    if provider in ("kimi-coding", "kimi", "moonshot"):
+        for var in ["KIMI_CODE_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY"]:
+            key = os.environ.get(var)
+            if key:
+                return key
     # Fallback: try common naming patterns
     normalized = provider.upper().replace("-", "_")
     return os.environ.get(f"{normalized}_API_KEY")

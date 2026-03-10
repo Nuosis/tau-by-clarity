@@ -74,8 +74,8 @@ class Settings:
     default_model: str | None = None
     default_thinking_level: str | None = None  # off|minimal|low|medium|high|xhigh
     transport: str | None = None               # "sse" | "websocket"
-    steering_mode: str | None = None           # "all" | "one-at-a-time"
-    follow_up_mode: str | None = None          # "all" | "one-at-a-time"
+    steering_mode: str | None = "one-at-a-time"  # "all" | "one-at-a-time"
+    follow_up_mode: str | None = "one-at-a-time"  # "all" | "one-at-a-time"
     theme: str | None = None
     hide_thinking_block: bool | None = None
     shell_path: str | None = None
@@ -87,6 +87,7 @@ class Settings:
     editor_padding_x: int | None = None
     autocomplete_max_visible: int | None = None
     show_hardware_cursor: bool | None = None
+    tree_filter_mode: str | None = None        # "default"|"no-tools"|"user-only"|"labeled-only"|"all"
 
     # Nested settings objects (stored as dicts in JSON)
     compaction: dict[str, Any] | None = None
@@ -374,6 +375,7 @@ class SettingsManager:
             "editorPaddingX": "editor_padding_x",
             "autocompleteMaxVisible": "autocomplete_max_visible",
             "showHardwareCursor": "show_hardware_cursor",
+            "treeFilterMode": "tree_filter_mode",
             "branchSummary": "branch_summary",
             "thinkingBudgets": "thinking_budgets",
             "enabledModels": "enabled_models",
@@ -475,9 +477,19 @@ class SettingsManager:
 
     def get_branch_summary_settings(self) -> dict[str, Any]:
         self._ensure_loaded()
-        defaults: dict[str, Any] = {"reserveTokens": 16384}
+        defaults: dict[str, Any] = {"reserveTokens": 16384, "skipPrompt": False}
         override = self._merged.get("branchSummary") or self._merged.get("branch_summary") or {}
         return {**defaults, **override}
+
+    def get_branch_summary_skip_prompt(self) -> bool:
+        return bool(self.get_branch_summary_settings().get("skipPrompt", False))
+
+    _TREE_FILTER_VALID = {"default", "no-tools", "user-only", "labeled-only", "all"}
+
+    def get_tree_filter_mode(self) -> str:
+        self._ensure_loaded()
+        mode = self._merged.get("treeFilterMode") or self._merged.get("tree_filter_mode")
+        return mode if mode in self._TREE_FILTER_VALID else "default"
 
     def get_enabled_models(self) -> list[str] | None:
         self._ensure_loaded()

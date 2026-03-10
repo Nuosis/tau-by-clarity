@@ -6,13 +6,18 @@ Mirrors packages/coding-agent/src/config.ts
 from __future__ import annotations
 
 import os
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 
 # App metadata (mirrors piConfig in package.json)
 APP_NAME: str = "pi"
 CONFIG_DIR_NAME: str = ".pi"
-VERSION: str = "0.0.1"
+
+try:
+    VERSION: str = _pkg_version("pi-coding-agent")
+except Exception:
+    VERSION = "0.53.0"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 

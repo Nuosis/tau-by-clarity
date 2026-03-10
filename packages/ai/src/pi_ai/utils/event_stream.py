@@ -38,6 +38,11 @@ class EventStream(Generic[T, R]):
     def push(self, event: T) -> None:
         """Push an event into the stream."""
         self._queue.put_nowait(event)
+        if self._is_done and self._is_done(event):
+            result = self._get_result(event) if self._get_result else None
+            self._result = result
+            self._result_event.set()
+            self._queue.put_nowait(_SENTINEL)
 
     def end(self, result: R) -> None:
         """Signal stream completion with the final result."""

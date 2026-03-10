@@ -409,16 +409,17 @@ class SessionManager:
     ) -> "SessionManager":
         """Create a new session."""
         sessions_dir = cls._resolve_sessions_dir(cwd, session_dir)
-        session_id = str(uuid.uuid4()).replace("-", "")[:8]
+        session_id = str(uuid.uuid4())
         session_file = os.path.join(sessions_dir, f"{session_id}.jsonl")
         mgr = cls(session_file=session_file, cwd=cwd)
 
-        now_ms = int(time.time() * 1000)
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
         header: dict[str, Any] = {
             "type": "session",
             "id": session_id,
             "version": CURRENT_SESSION_VERSION,
-            "timestamp": str(now_ms),
+            "timestamp": timestamp,
             "cwd": cwd,
         }
         if parent_session:
@@ -602,12 +603,19 @@ class SessionManager:
             return None
 
         session_id = header.get("id", Path(file_path).stem)
-        created_at = int(header.get("timestamp", int(stat.st_ctime * 1000)))
-        if isinstance(created_at, str):
+        raw_ts = header.get("timestamp")
+        if raw_ts is None:
+            created_at = int(stat.st_ctime * 1000)
+        elif isinstance(raw_ts, (int, float)):
+            created_at = int(raw_ts)
+        elif isinstance(raw_ts, str):
             try:
-                created_at = int(created_at)
+                from datetime import datetime
+                created_at = int(datetime.fromisoformat(raw_ts).timestamp() * 1000)
             except (ValueError, TypeError):
                 created_at = int(stat.st_ctime * 1000)
+        else:
+            created_at = int(stat.st_ctime * 1000)
 
         return SessionInfo(
             session_id=session_id,
@@ -695,9 +703,12 @@ class SessionManager:
                 label = raw.get("label")
         return label
 
-    def get_branch(self) -> list[SessionEntry]:
-        """Get all entries on the path from root to leaf."""
-        leaf = self.get_leaf_entry()
+    def get_branch(self, from_id: str | None = None) -> list[SessionEntry]:
+        """Get all entries on the path from root to a given entry (or current leaf)."""
+        if from_id:
+            leaf = self.get_entry(from_id)
+        else:
+            leaf = self.get_leaf_entry()
         if not leaf:
             return []
         path: list[SessionEntry] = []
@@ -783,7 +794,7 @@ class SessionManager:
         }
         return self._append_entry(entry)
 
-    def append_model_change(self, model_id: str, provider: str) -> str:
+    def append_model_change(self, provider: str, model_id: str) -> str:
         """Append a model change entry."""
         return self._append_entry(self._make_entry("model_change", {
             "provider": provider,

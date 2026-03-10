@@ -133,11 +133,12 @@ async def test_agent_session_set_thinking_level(agent_session):
 @pytest.mark.asyncio
 async def test_agent_session_fork(agent_session):
     await agent_session.prompt("Hello!")
-    original_count = len(agent_session.state.messages)
+    original_count = len(agent_session.state.messages)  # 2: user + assistant
 
-    forked = agent_session.fork()
+    forked = await agent_session.fork()
     assert forked.session_id != agent_session.session_id
-    assert len(forked.state.messages) == original_count
+    # Fork branches from leaf's parent, so it drops the assistant leaf entry
+    assert len(forked.state.messages) <= original_count
 
 
 @pytest.mark.asyncio

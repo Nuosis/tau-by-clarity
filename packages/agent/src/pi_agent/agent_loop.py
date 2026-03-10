@@ -268,13 +268,18 @@ async def _stream_assistant_response(
     from pi_ai import SimpleStreamOptions
     stream_opts = SimpleStreamOptions(
         reasoning=config.reasoning,
+        thinking_budgets=config.thinking_budgets,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         signal=cancel_event,
         api_key=resolved_api_key,
         transport=config.transport,
+        cache_retention=config.cache_retention,
         session_id=config.session_id,
+        on_payload=config.on_payload,
+        headers=config.headers,
         max_retry_delay_ms=config.max_retry_delay_ms,
+        metadata=config.metadata,
     )
 
     partial_message: AssistantMessage | None = None

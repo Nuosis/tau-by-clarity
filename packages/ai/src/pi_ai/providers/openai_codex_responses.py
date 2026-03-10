@@ -93,7 +93,7 @@ def stream_openai_codex_responses(
             async with httpx.AsyncClient(timeout=120.0) as client:
                 async with client.stream(
                     "POST",
-                    f"{base_url.rstrip('/')}/responses",
+                    f"{base_url.rstrip('/')}/codex/responses",
                     headers=headers,
                     content=json.dumps(request_body),
                 ) as response:
@@ -152,7 +152,7 @@ def _build_request_body(
         "model": model.id,
         "input": messages,
         "stream": True,
-        "store": True,
+        "store": False,
     }
     if context.system_prompt:
         body["instructions"] = context.system_prompt

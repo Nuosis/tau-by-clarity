@@ -2,12 +2,16 @@
 Proxy stream function — mirrors packages/agent/src/proxy.ts
 
 Allows routing LLM calls through a server endpoint.
+The server strips the partial field from delta events to reduce bandwidth.
+We reconstruct the partial message client-side.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
-from typing import Any, AsyncGenerator
+from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -21,157 +25,267 @@ from pi_ai.types import (
     EventTextDelta,
     EventTextEnd,
     EventTextStart,
+    EventThinkingDelta,
+    EventThinkingEnd,
+    EventThinkingStart,
+    EventToolCallDelta,
     EventToolCallEnd,
     EventToolCallStart,
     Model,
     SimpleStreamOptions,
     TextContent,
+    ThinkingContent,
     ToolCall,
     Usage,
 )
+from pi_ai.utils.event_stream import EventStream
+from pi_ai.utils.json_parse import parse_streaming_json
 
 
-async def stream_proxy(
+@dataclass
+class ProxyStreamOptions(SimpleStreamOptions):
+    auth_token: str = ""
+    proxy_url: str = ""
+
+
+class ProxyMessageEventStream(EventStream[AssistantMessageEvent, AssistantMessage]):
+    def __init__(self) -> None:
+        super().__init__(
+            is_done=lambda event: event.type in ("done", "error"),
+            extract_result=lambda event: (
+                event.message if event.type == "done"
+                else event.error if event.type == "error"
+                else None
+            ),
+        )
+
+
+def stream_proxy(
     model: Model,
     context: Context,
-    options: SimpleStreamOptions | None = None,
-    proxy_url: str = "/api/stream",
-    extra_headers: dict[str, str] | None = None,
-) -> AsyncGenerator[AssistantMessageEvent, None]:
+    options: ProxyStreamOptions,
+) -> ProxyMessageEventStream:
     """
     Stream LLM responses through a proxy server.
     Mirrors streamProxy() in TypeScript.
-
-    The proxy server should accept the same request format and return
-    Server-Sent Events (SSE) with AssistantMessageEvent JSON.
     """
-    opts = options or SimpleStreamOptions()
+    stream = ProxyMessageEventStream()
 
-    payload = {
-        "model": model.model_dump(),
-        "context": context.model_dump(),
-        "options": opts.model_dump(exclude_none=True),
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-    if extra_headers:
-        headers.update(extra_headers)
-
-    partial: AssistantMessage | None = None
-
-    try:
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "POST",
-                proxy_url,
-                json=payload,
-                headers=headers,
-                timeout=300,
-            ) as response:
-                response.raise_for_status()
-
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-
-                    try:
-                        event_data = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-
-                    event = _parse_proxy_event(event_data, model)
-                    if event:
-                        yield event
-
-    except httpx.HTTPError as e:
-        error_msg = AssistantMessage(
+    async def _run() -> None:
+        partial = AssistantMessage(
             role="assistant",
-            content=[TextContent(type="text", text="")],
+            content=[],
             api=model.api,
             provider=model.provider,
             model=model.id,
             usage=Usage(),
-            stop_reason="error",
-            error_message=str(e),
+            stop_reason="stop",
             timestamp=int(time.time() * 1000),
         )
-        yield EventError(type="error", reason="error", error=error_msg)
+
+        try:
+            payload = {
+                "model": model.model_dump() if hasattr(model, "model_dump") else {},
+                "context": context.model_dump() if hasattr(context, "model_dump") else {},
+                "options": {
+                    "temperature": options.temperature,
+                    "maxTokens": options.max_tokens,
+                    "reasoning": options.reasoning,
+                },
+            }
+
+            headers = {
+                "Authorization": f"Bearer {options.auth_token}",
+                "Content-Type": "application/json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"{options.proxy_url}/api/stream",
+                    json=payload,
+                    headers=headers,
+                    timeout=300,
+                ) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        error_message = f"Proxy error: {response.status_code} {response.reason_phrase}"
+                        try:
+                            error_data = json.loads(error_text)
+                            if "error" in error_data:
+                                error_message = f"Proxy error: {error_data['error']}"
+                        except Exception:
+                            pass
+                        raise RuntimeError(error_message)
+
+                    buffer = ""
+                    async for chunk in response.aiter_text():
+                        if options.signal and options.signal.is_set():
+                            raise RuntimeError("Request aborted by user")
+
+                        buffer += chunk
+                        lines = buffer.split("\n")
+                        buffer = lines.pop()
+
+                        for line in lines:
+                            if line.startswith("data: "):
+                                data = line[6:].strip()
+                                if data and data != "[DONE]":
+                                    proxy_event = json.loads(data)
+                                    event = _process_proxy_event(proxy_event, partial)
+                                    if event:
+                                        stream.push(event)
+
+            stream.end()
+
+        except Exception as e:
+            error_message = str(e)
+            reason = "aborted" if (options.signal and options.signal.is_set()) else "error"
+            partial.stop_reason = reason
+            partial.error_message = error_message
+            stream.push(EventError(type="error", reason=reason, error=partial))
+            stream.end()
+
+    asyncio.ensure_future(_run())
+    return stream
 
 
-def _parse_proxy_event(data: dict[str, Any], model: Model) -> AssistantMessageEvent | None:
-    """Parse a proxy server-sent event into an AssistantMessageEvent."""
-    event_type = data.get("type")
+def _process_proxy_event(
+    proxy_event: dict[str, Any],
+    partial: AssistantMessage,
+) -> AssistantMessageEvent | None:
+    """Process a proxy event and update the partial message."""
+    event_type = proxy_event.get("type")
 
     if event_type == "start":
-        partial = _parse_partial_message(data.get("partial", {}), model)
         return EventStart(type="start", partial=partial)
 
     elif event_type == "text_start":
-        partial = _parse_partial_message(data.get("partial", {}), model)
-        return EventTextStart(
-            type="text_start",
-            content_index=data.get("contentIndex", 0),
-            partial=partial,
-        )
+        idx = proxy_event.get("contentIndex", 0)
+        _ensure_content_slot(partial, idx)
+        partial.content[idx] = TextContent(type="text", text="")
+        return EventTextStart(type="text_start", content_index=idx, partial=partial)
 
     elif event_type == "text_delta":
-        partial = _parse_partial_message(data.get("partial", {}), model)
+        idx = proxy_event.get("contentIndex", 0)
+        delta = proxy_event.get("delta", "")
+        content = partial.content[idx] if idx < len(partial.content) else None
+        if content and content.type == "text":
+            content.text += delta
         return EventTextDelta(
-            type="text_delta",
-            content_index=data.get("contentIndex", 0),
-            delta=data.get("delta", ""),
-            partial=partial,
+            type="text_delta", content_index=idx, delta=delta, partial=partial
         )
 
     elif event_type == "text_end":
-        partial = _parse_partial_message(data.get("partial", {}), model)
+        idx = proxy_event.get("contentIndex", 0)
+        content = partial.content[idx] if idx < len(partial.content) else None
+        text = ""
+        if content and content.type == "text":
+            if "contentSignature" in proxy_event:
+                content.text_signature = proxy_event["contentSignature"]
+            text = content.text
         return EventTextEnd(
-            type="text_end",
-            content_index=data.get("contentIndex", 0),
-            content=data.get("content", ""),
-            partial=partial,
+            type="text_end", content_index=idx, content=text, partial=partial
         )
 
+    elif event_type == "thinking_start":
+        idx = proxy_event.get("contentIndex", 0)
+        _ensure_content_slot(partial, idx)
+        partial.content[idx] = ThinkingContent(type="thinking", thinking="")
+        return EventThinkingStart(
+            type="thinking_start", content_index=idx, partial=partial
+        )
+
+    elif event_type == "thinking_delta":
+        idx = proxy_event.get("contentIndex", 0)
+        delta = proxy_event.get("delta", "")
+        content = partial.content[idx] if idx < len(partial.content) else None
+        if content and content.type == "thinking":
+            content.thinking += delta
+        return EventThinkingDelta(
+            type="thinking_delta", content_index=idx, delta=delta, partial=partial
+        )
+
+    elif event_type == "thinking_end":
+        idx = proxy_event.get("contentIndex", 0)
+        content = partial.content[idx] if idx < len(partial.content) else None
+        text = ""
+        if content and content.type == "thinking":
+            if "contentSignature" in proxy_event:
+                content.thinking_signature = proxy_event["contentSignature"]
+            text = content.thinking
+        return EventThinkingEnd(
+            type="thinking_end", content_index=idx, content=text, partial=partial
+        )
+
+    elif event_type == "toolcall_start":
+        idx = proxy_event.get("contentIndex", 0)
+        _ensure_content_slot(partial, idx)
+        partial.content[idx] = ToolCall(
+            type="toolCall",
+            id=proxy_event.get("id", ""),
+            name=proxy_event.get("toolName", ""),
+            arguments={},
+        )
+        partial.content[idx]._partial_json = ""
+        return EventToolCallStart(
+            type="toolcall_start", content_index=idx, partial=partial
+        )
+
+    elif event_type == "toolcall_delta":
+        idx = proxy_event.get("contentIndex", 0)
+        delta = proxy_event.get("delta", "")
+        content = partial.content[idx] if idx < len(partial.content) else None
+        if content and content.type == "toolCall":
+            pj = getattr(content, "_partial_json", "") + delta
+            content._partial_json = pj
+            parsed = parse_streaming_json(pj)
+            if parsed is not None:
+                content.arguments = parsed
+        return EventToolCallDelta(
+            type="toolcall_delta", content_index=idx, delta=delta, partial=partial
+        )
+
+    elif event_type == "toolcall_end":
+        idx = proxy_event.get("contentIndex", 0)
+        content = partial.content[idx] if idx < len(partial.content) else None
+        if content and content.type == "toolCall":
+            if hasattr(content, "_partial_json"):
+                delattr(content, "_partial_json")
+            return EventToolCallEnd(
+                type="toolcall_end", content_index=idx, tool_call=content, partial=partial
+            )
+        return None
+
     elif event_type == "done":
-        message = _parse_assistant_message(data.get("message", {}), model)
-        return EventDone(type="done", reason=data.get("reason", "stop"), message=message)
+        partial.stop_reason = proxy_event.get("reason", "stop")
+        if "usage" in proxy_event:
+            partial.usage = _parse_usage(proxy_event["usage"])
+        return EventDone(type="done", reason=partial.stop_reason, message=partial)
 
     elif event_type == "error":
-        error = _parse_assistant_message(data.get("error", {}), model)
-        return EventError(type="error", reason=data.get("reason", "error"), error=error)
+        partial.stop_reason = proxy_event.get("reason", "error")
+        partial.error_message = proxy_event.get("errorMessage")
+        if "usage" in proxy_event:
+            partial.usage = _parse_usage(proxy_event["usage"])
+        return EventError(type="error", reason=partial.stop_reason, error=partial)
 
     return None
 
 
-def _parse_partial_message(data: dict[str, Any], model: Model) -> AssistantMessage:
-    return AssistantMessage(
-        role="assistant",
-        content=[],
-        api=data.get("api", model.api),
-        provider=data.get("provider", model.provider),
-        model=data.get("model", model.id),
-        usage=Usage(),
-        stop_reason=data.get("stopReason", "stop"),
-        timestamp=data.get("timestamp", int(time.time() * 1000)),
-    )
+def _ensure_content_slot(partial: AssistantMessage, idx: int) -> None:
+    """Extend content list to ensure idx is accessible."""
+    while len(partial.content) <= idx:
+        partial.content.append(TextContent(type="text", text=""))
 
 
-def _parse_assistant_message(data: dict[str, Any], model: Model) -> AssistantMessage:
-    return AssistantMessage(
-        role="assistant",
-        content=[],
-        api=data.get("api", model.api),
-        provider=data.get("provider", model.provider),
-        model=data.get("model", model.id),
-        usage=Usage(),
-        stop_reason=data.get("stopReason", "error"),
-        error_message=data.get("errorMessage"),
-        timestamp=data.get("timestamp", int(time.time() * 1000)),
+def _parse_usage(data: dict[str, Any]) -> Usage:
+    """Parse usage data from proxy response."""
+    return Usage(
+        input=data.get("input", 0),
+        output=data.get("output", 0),
+        cache_read=data.get("cacheRead", 0),
+        cache_write=data.get("cacheWrite", 0),
+        total_tokens=data.get("totalTokens", 0),
+        cost=data.get("cost", 0),
     )

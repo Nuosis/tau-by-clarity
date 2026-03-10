@@ -19,6 +19,9 @@ from ..types import (
     EventTextDelta,
     EventTextEnd,
     EventTextStart,
+    EventThinkingDelta,
+    EventThinkingEnd,
+    EventThinkingStart,
     EventToolCallDelta,
     EventToolCallEnd,
     EventToolCallStart,
@@ -26,21 +29,33 @@ from ..types import (
     Model,
     SimpleStreamOptions,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolResultMessage,
     Usage,
-    UsageCost,
     UserMessage,
 )
 from ..utils.json_parse import parse_partial_json
+from .transform_messages import transform_messages as _transform_messages
 
 
-def _build_messages(context: Context) -> list[dict[str, Any]]:
+def _uses_developer_role(model: Model) -> bool:
+    """Check if model uses 'developer' role instead of 'system' (reasoning models)."""
+    return bool(getattr(model, "reasoning", False))
+
+
+def _uses_max_completion_tokens(model: Model) -> bool:
+    """Check if model uses max_completion_tokens instead of max_tokens."""
+    return bool(getattr(model, "reasoning", False))
+
+
+def _build_messages(context: Context, model: Model) -> list[dict[str, Any]]:
     """Convert Context messages to OpenAI Chat Completions format."""
     result: list[dict[str, Any]] = []
 
     if context.system_prompt:
-        result.append({"role": "system", "content": context.system_prompt})
+        role = "developer" if _uses_developer_role(model) else "system"
+        result.append({"role": role, "content": context.system_prompt})
 
     for msg in context.messages:
         if isinstance(msg, UserMessage):
@@ -107,6 +122,7 @@ def _build_tools(context: Context) -> list[dict[str, Any]] | None:
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
+                "strict": False,
             },
         }
         for tool in context.tools
@@ -134,13 +150,25 @@ async def stream_simple(
     """Stream a response from the OpenAI Chat Completions API."""
     opts = options or SimpleStreamOptions()
 
+    base_url = model.base_url if model.base_url != "https://api.openai.com/v1" else None
+    extra_headers = opts.headers or {}
+
     client = _openai.AsyncOpenAI(
         api_key=opts.api_key or None,
-        base_url=model.base_url if model.base_url != "https://api.openai.com/v1" else None,
+        base_url=base_url,
+        default_headers=extra_headers or None,
     )
 
-    messages = _build_messages(context)
-    tools = _build_tools(context)
+    # Transform messages for cross-provider compatibility
+    transformed_msgs = _transform_messages(context.messages, model)
+    transformed_context = Context(
+        system_prompt=context.system_prompt,
+        messages=transformed_msgs,
+        tools=context.tools,
+    )
+
+    messages = _build_messages(transformed_context, model)
+    tools = _build_tools(transformed_context)
 
     params: dict[str, Any] = {
         "model": model.id,
@@ -150,7 +178,10 @@ async def stream_simple(
     }
 
     if opts.max_tokens:
-        params["max_tokens"] = opts.max_tokens
+        if _uses_max_completion_tokens(model):
+            params["max_completion_tokens"] = opts.max_tokens
+        else:
+            params["max_tokens"] = opts.max_tokens
 
     if opts.temperature is not None:
         params["temperature"] = opts.temperature
@@ -165,24 +196,69 @@ async def stream_simple(
     partial = _make_empty_assistant(model)
     content_blocks: list[Any] = []
     text_index = -1
-    tool_indices: dict[str, int] = {}  # tool call ID → content_blocks index
+    thinking_index = -1
+    tool_indices: dict[str, int] = {}
     tool_arg_buffers: dict[str, str] = {}
+    usage = Usage()
 
     yield EventStart(type="start", partial=partial)
 
     try:
         async with await client.chat.completions.create(**params) as stream:
             async for chunk in stream:
+                # Process usage from chunks
+                if chunk.usage:
+                    u = chunk.usage
+                    usage = Usage(
+                        input=getattr(u, "prompt_tokens", 0) or 0,
+                        output=getattr(u, "completion_tokens", 0) or 0,
+                        total_tokens=getattr(u, "total_tokens", 0) or 0,
+                    )
+                    # Check for reasoning tokens
+                    details = getattr(u, "completion_tokens_details", None)
+                    if details:
+                        reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
+                        if reasoning_tokens:
+                            usage.output = (getattr(u, "completion_tokens", 0) or 0) - reasoning_tokens
+
                 if not chunk.choices:
-                    if chunk.usage:
-                        pass  # usage update, handled at end
                     continue
 
                 delta = chunk.choices[0].delta
                 finish_reason = chunk.choices[0].finish_reason
 
+                # Reasoning / thinking content (for o1/o3 models)
+                reasoning_content = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if reasoning_content:
+                    if thinking_index == -1:
+                        thinking_index = len(content_blocks)
+                        content_blocks.append(ThinkingContent(type="thinking", thinking=""))
+                        partial = partial.model_copy(update={"content": list(content_blocks)})
+                        yield EventThinkingStart(type="thinking_start", content_index=thinking_index, partial=partial)
+
+                    content_blocks[thinking_index] = ThinkingContent(
+                        type="thinking",
+                        thinking=content_blocks[thinking_index].thinking + reasoning_content,
+                    )
+                    partial = partial.model_copy(update={"content": list(content_blocks)})
+                    yield EventThinkingDelta(
+                        type="thinking_delta",
+                        content_index=thinking_index,
+                        delta=reasoning_content,
+                        partial=partial,
+                    )
+
                 # Text delta
                 if delta.content:
+                    # Close thinking block if transitioning to text
+                    if thinking_index >= 0 and text_index == -1:
+                        yield EventThinkingEnd(
+                            type="thinking_end",
+                            content_index=thinking_index,
+                            content=content_blocks[thinking_index].thinking,
+                            partial=partial,
+                        )
+
                     if text_index == -1:
                         text_index = len(content_blocks)
                         content_blocks.append(TextContent(type="text", text=""))
@@ -208,7 +284,6 @@ async def stream_simple(
                         idx_key = str(tc_delta.index)
 
                         if idx_key not in tool_indices:
-                            # New tool call
                             idx = len(content_blocks)
                             tool_indices[idx_key] = idx
                             tool_arg_buffers[idx_key] = ""
@@ -232,6 +307,15 @@ async def stream_simple(
                             )
 
                 if finish_reason:
+                    # Finalize thinking
+                    if thinking_index >= 0 and text_index == -1:
+                        yield EventThinkingEnd(
+                            type="thinking_end",
+                            content_index=thinking_index,
+                            content=content_blocks[thinking_index].thinking,
+                            partial=partial,
+                        )
+
                     # Finalize text block
                     if text_index >= 0:
                         yield EventTextEnd(
@@ -261,10 +345,14 @@ async def stream_simple(
                         )
 
         # Build final message
-        stop_map = {"stop": "stop", "length": "length", "tool_calls": "toolUse"}
-        stop_reason = "stop"
-        if tool_indices:
+        stop_reason_map = {"stop": "stop", "length": "length", "tool_calls": "toolUse"}
+        stop_reason = stop_reason_map.get(finish_reason or "", "stop")
+        if tool_indices and stop_reason == "stop":
             stop_reason = "toolUse"
+
+        signal = getattr(opts, "signal", None)
+        if signal and callable(getattr(signal, "is_set", None)) and signal.is_set():
+            stop_reason = "aborted"
 
         final = AssistantMessage(
             role="assistant",
@@ -272,11 +360,11 @@ async def stream_simple(
             api=model.api,
             provider=model.provider,
             model=model.id,
-            usage=Usage(),
+            usage=usage,
             stop_reason=stop_reason,
             timestamp=int(time.time() * 1000),
         )
-        yield EventDone(type="done", reason=stop_reason if stop_reason != "stop" else "stop", message=final)
+        yield EventDone(type="done", reason=stop_reason, message=final)
 
     except _openai.APIError as e:
         error_msg = AssistantMessage(
@@ -286,6 +374,19 @@ async def stream_simple(
             provider=model.provider,
             model=model.id,
             usage=Usage(),
+            stop_reason="error",
+            error_message=str(e),
+            timestamp=int(time.time() * 1000),
+        )
+        yield EventError(type="error", reason="error", error=error_msg)
+    except Exception as e:
+        error_msg = AssistantMessage(
+            role="assistant",
+            content=content_blocks or [TextContent(type="text", text="")],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=usage,
             stop_reason="error",
             error_message=str(e),
             timestamp=int(time.time() * 1000),

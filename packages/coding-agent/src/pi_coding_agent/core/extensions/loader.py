@@ -1,226 +1,258 @@
 """
-Extension loader for Python extensions.
+Extension loader — mirrors packages/coding-agent/src/core/extensions/loader.ts
 
-Python extensions are Python modules (files or packages) that export an
-`extension_factory(api)` function. Unlike the TS version which uses jiti to
-dynamically load TypeScript, here we use importlib to load .py files.
-
-Mirrors core/extensions/loader.ts
+Discovers and loads extensions from:
+1. Global: ~/.pi/agent/extensions/
+2. Local: <cwd>/.pi/extensions/
+3. Explicit paths from settings
 """
-
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import os
 import sys
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from pi_coding_agent.core.extensions.types import (
-    Extension,
-    ExtensionAPI,
-    ExtensionFactory,
-    ExtensionFlag,
-    ExtensionRuntime,
-    ExtensionShortcut,
-    LoadExtensionsResult,
-    ProviderConfig,
-    RegisteredCommand,
-    ToolDefinition,
-)
+from .types import Extension, ExtensionAPI, ExtensionFactory
 
 
-def create_extension_runtime() -> ExtensionRuntime:
-    """Create a bare ExtensionRuntime with stub actions that raise if called prematurely."""
-    return ExtensionRuntime()
+@dataclass
+class LoadExtensionsResult:
+    extensions: list[Extension] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
 
 
-def _expand_path(p: str) -> str:
-    home = os.path.expanduser("~")
-    p = p.strip()
-    if p.startswith("~/"):
-        return os.path.join(home, p[2:])
-    if p.startswith("~"):
-        return os.path.join(home, p[1:])
-    return p
+def read_pi_manifest(directory: str) -> dict[str, Any] | None:
+    """Read pi manifest from pyproject.toml or package.json."""
+    pyproject = os.path.join(directory, "pyproject.toml")
+    if os.path.exists(pyproject):
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore
+            except ImportError:
+                return None
+        try:
+            with open(pyproject, "rb") as f:
+                data = tomllib.load(f)
+            pi_config = data.get("tool", {}).get("pi", {})
+            if pi_config:
+                return pi_config
+        except Exception:
+            pass
+
+    pkg_json = os.path.join(directory, "package.json")
+    if os.path.exists(pkg_json):
+        import json
+        try:
+            with open(pkg_json, encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("pi")
+        except Exception:
+            pass
+
+    return None
 
 
-def _resolve_path(ext_path: str, cwd: str) -> str:
-    expanded = _expand_path(ext_path)
-    if os.path.isabs(expanded):
-        return expanded
-    return os.path.abspath(os.path.join(cwd, expanded))
+def discover_extensions_in_dir(directory: str) -> list[str]:
+    """Discover extension paths in a directory."""
+    if not os.path.isdir(directory):
+        return []
+
+    paths: list[str] = []
+    for entry in sorted(os.listdir(directory)):
+        full = os.path.join(directory, entry)
+        if os.path.isfile(full) and entry.endswith(".py") and not entry.startswith("_"):
+            paths.append(full)
+        elif os.path.isdir(full):
+            index = os.path.join(full, "__init__.py")
+            if os.path.exists(index):
+                paths.append(full)
+            else:
+                manifest = read_pi_manifest(full)
+                if manifest and manifest.get("extensions"):
+                    for ext_path in manifest["extensions"]:
+                        resolved = os.path.join(full, ext_path)
+                        if os.path.exists(resolved):
+                            paths.append(resolved)
+
+    return paths
 
 
-class _ConcreteExtensionAPI:
-    """Concrete implementation of ExtensionAPI for extension loading."""
+def _load_extension_module(path: str) -> ExtensionFactory | None:
+    """Load an extension module and return its factory function."""
+    try:
+        module_name = f"pi_ext_{Path(path).stem}"
+        if os.path.isdir(path):
+            spec = importlib.util.spec_from_file_location(
+                module_name, os.path.join(path, "__init__.py"),
+                submodule_search_locations=[path],
+            )
+        else:
+            spec = importlib.util.spec_from_file_location(module_name, path)
 
-    def __init__(self, extension: Extension, runtime: ExtensionRuntime, event_bus: Any) -> None:
-        self._extension = extension
-        self._runtime = runtime
-        self._event_bus = event_bus
+        if not spec or not spec.loader:
+            return None
 
-    def on(self, event: str, handler: Callable) -> None:
-        if event not in self._extension.handlers:
-            self._extension.handlers[event] = []
-        self._extension.handlers[event].append(handler)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
 
-    def register_tool(self, tool: ToolDefinition) -> None:
-        self._extension.tools[tool.name] = tool
-
-    def register_command(self, name: str, options: dict) -> None:
-        cmd = RegisteredCommand(
-            name=name,
-            description=options.get("description"),
-            get_argument_completions=options.get("get_argument_completions"),
-            handler=options.get("handler", lambda args, ctx: None),
+        factory = (
+            getattr(module, "extension_factory", None)
+            or getattr(module, "activate", None)
+            or getattr(module, "default", None)
         )
-        self._extension.commands[name] = cmd
+        if callable(factory):
+            return factory
 
-    def register_shortcut(self, shortcut: str, options: dict) -> None:
-        sc = ExtensionShortcut(
-            shortcut=shortcut,
-            description=options.get("description"),
-            handler=options.get("handler", lambda ctx: None),
-            extension_path=self._extension.path,
-        )
-        self._extension.shortcuts[shortcut] = sc
-
-    def register_flag(self, name: str, options: dict) -> None:
-        flag = ExtensionFlag(
-            name=name,
-            description=options.get("description"),
-            type=options.get("type", "boolean"),
-            default=options.get("default"),
-            extension_path=self._extension.path,
-        )
-        self._extension.flags[name] = flag
-        if name not in self._runtime.flag_values and flag.default is not None:
-            self._runtime.flag_values[name] = flag.default
-
-    def get_flag(self, name: str) -> bool | str | None:
-        return self._runtime.flag_values.get(name)
-
-    def register_message_renderer(self, custom_type: str, renderer: Callable) -> None:
-        self._extension.message_renderers[custom_type] = renderer
-
-    def send_message(self, message: Any, options: dict | None = None) -> None:
-        self._runtime.send_message(message, options)
-
-    def send_user_message(self, content: Any, options: dict | None = None) -> None:
-        self._runtime.send_user_message(content, options)
-
-    def append_entry(self, custom_type: str, data: Any = None) -> None:
-        self._runtime.append_entry(custom_type, data)
-
-    def set_session_name(self, name: str) -> None:
-        self._runtime.set_session_name(name)
-
-    def get_session_name(self) -> str | None:
-        return self._runtime.get_session_name()
-
-    def set_label(self, entry_id: str, label: str | None) -> None:
-        self._runtime.set_label(entry_id, label)
-
-    def register_provider(self, name: str, config: ProviderConfig) -> None:
-        self._runtime.pending_provider_registrations.append({"name": name, "config": config})
-
-    @property
-    def events(self) -> Any:
-        return self._event_bus
+        return None
+    except Exception:
+        return None
 
 
-def _load_module_from_path(path: str) -> Any:
-    """Dynamically import a Python module from a file path."""
-    spec = importlib.util.spec_from_file_location("_pi_ext_" + os.path.basename(path).replace(".", "_"), path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load extension from: {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-async def load_extension_from_factory(
-    factory: ExtensionFactory,
-    cwd: str,
-    event_bus: Any,
-    runtime: ExtensionRuntime,
-    extension_path: str,
-) -> Extension:
-    """Load an extension from a factory function."""
-    extension = Extension(
-        path=extension_path,
-        resolved_path=extension_path,
-    )
-    api = _ConcreteExtensionAPI(extension, runtime, event_bus)
-    result = factory(api)
-    if hasattr(result, "__await__"):
-        await result
-    return extension
+def create_extension_runtime() -> dict[str, Any]:
+    """Create the extension runtime context (mirrors createExtensionRuntime in TS)."""
+    return {
+        "extensions": [],
+        "commands": {},
+        "tools": {},
+        "flags": {},
+    }
 
 
 async def load_extension_from_path(
-    ext_path: str,
+    path: str,
     cwd: str,
     event_bus: Any,
-    runtime: ExtensionRuntime,
+    runtime: dict[str, Any] | None = None,
 ) -> Extension:
-    """Load a single Python extension file."""
-    resolved = _resolve_path(ext_path, cwd)
-    if not os.path.exists(resolved):
-        raise FileNotFoundError(f"Extension not found: {resolved}")
+    """
+    Load a single extension from a file path.
+    Raises FileNotFoundError if the path doesn't exist.
+    Raises ImportError if no factory function is found.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Extension not found: {path}")
 
-    mod = _load_module_from_path(resolved)
-    factory = getattr(mod, "extension_factory", None)
-    if not callable(factory):
-        raise ImportError(f"Extension '{resolved}' has no `extension_factory` function")
+    factory = _load_extension_module(path)
+    if factory is None:
+        raise ImportError(f"No extension_factory(), activate(), or default() export in: {path}")
 
-    extension = Extension(path=ext_path, resolved_path=resolved)
-    api = _ConcreteExtensionAPI(extension, runtime, event_bus)
-    result = factory(api)
-    if hasattr(result, "__await__"):
-        await result
-    return extension
+    resolved = os.path.abspath(path)
+    ext = Extension(path=path, resolved_path=resolved)
+    api = ExtensionAPI(ext)
+
+    import asyncio
+    import inspect
+    ret = factory(api)
+    if inspect.isawaitable(ret):
+        await ret
+
+    return ext
 
 
 async def load_extensions(
     paths: list[str],
-    cwd: str,
-    event_bus: Any,
+    cwd: str = "",
+    event_bus: Any = None,
 ) -> LoadExtensionsResult:
-    """Load multiple extension modules."""
-    from pi_coding_agent.core.event_bus import EventBus
+    """Load extensions from explicit paths (async version)."""
+    result = LoadExtensionsResult()
 
-    runtime = create_extension_runtime()
-    extensions: list[Extension] = []
-    errors: list[dict[str, str]] = []
+    for path in paths:
+        resolved = os.path.abspath(path)
+        factory = _load_extension_module(resolved)
+        if factory is None:
+            result.errors.append({"path": resolved, "error": "No extension_factory(), activate(), or default() export"})
+            continue
 
-    for ext_path in paths:
+        ext = Extension(path=path, resolved_path=resolved)
+        api = ExtensionAPI(ext)
+
         try:
-            ext = await load_extension_from_path(ext_path, cwd, event_bus, runtime)
-            extensions.append(ext)
+            import asyncio
+            import inspect
+            ret = factory(api)
+            if inspect.isawaitable(ret):
+                await ret
         except Exception as e:
-            errors.append({"path": ext_path, "error": str(e)})
+            result.errors.append({"path": resolved, "error": str(e)})
+            continue
 
-    return LoadExtensionsResult(extensions=extensions, errors=errors, runtime=runtime)
+        result.extensions.append(ext)
+
+    return result
+
+
+def load_extensions_sync(paths: list[str]) -> LoadExtensionsResult:
+    """Load extensions synchronously from explicit paths."""
+    result = LoadExtensionsResult()
+
+    for path in paths:
+        resolved = os.path.abspath(path)
+        factory = _load_extension_module(resolved)
+        if factory is None:
+            result.errors.append({"path": resolved, "error": "No extension_factory(), activate(), or default() export"})
+            continue
+
+        ext = Extension(path=path, resolved_path=resolved)
+        api = ExtensionAPI(ext)
+
+        try:
+            import asyncio
+            import inspect
+            ret = factory(api)
+            if inspect.isawaitable(ret):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.run_until_complete(ret)
+                except RuntimeError:
+                    asyncio.run(ret)
+        except Exception as e:
+            result.errors.append({"path": resolved, "error": str(e)})
+            continue
+
+        result.extensions.append(ext)
+
+    return result
 
 
 def discover_and_load_extensions(
-    extensions_dir: str,
     cwd: str,
-    event_bus: Any,
-) -> list[str]:
-    """Discover extension .py files in a directory."""
-    paths: list[str] = []
-    if not os.path.isdir(extensions_dir):
-        return paths
+    agent_dir: str | None = None,
+    extra_paths: list[str] | None = None,
+) -> LoadExtensionsResult:
+    """Discover and load all extensions synchronously."""
+    agent_dir = agent_dir or os.path.join(os.path.expanduser("~"), ".pi", "agent")
+    all_paths: list[str] = []
 
-    try:
-        for entry in sorted(os.scandir(extensions_dir), key=lambda e: e.name):
-            if entry.name.startswith(".") or entry.name.startswith("__"):
-                continue
-            if entry.is_file(follow_symlinks=True) and entry.name.endswith(".py"):
-                paths.append(entry.path)
-    except OSError:
-        pass
+    # Global extensions
+    global_dir = os.path.join(agent_dir, "extensions")
+    all_paths.extend(discover_extensions_in_dir(global_dir))
 
-    return paths
+    # Local project extensions
+    local_dir = os.path.join(cwd, ".pi", "extensions")
+    all_paths.extend(discover_extensions_in_dir(local_dir))
+
+    # Explicit paths
+    if extra_paths:
+        for p in extra_paths:
+            resolved = os.path.abspath(p) if not os.path.isabs(p) else p
+            if os.path.exists(resolved):
+                all_paths.append(resolved)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in all_paths:
+        rp = os.path.abspath(p)
+        if rp not in seen:
+            seen.add(rp)
+            unique.append(p)
+
+    return load_extensions_sync(unique)

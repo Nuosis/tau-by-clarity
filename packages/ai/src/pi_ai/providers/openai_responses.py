@@ -154,7 +154,7 @@ def _create_client(
     if base_url:
         kwargs["base_url"] = base_url
 
-    return openai.OpenAI(**{k: v for k, v in kwargs.items() if v is not None})
+    return openai.AsyncOpenAI(**{k: v for k, v in kwargs.items() if v is not None})
 
 
 def _resolve_cache_retention(cache_retention: str | None) -> str:
@@ -194,10 +194,7 @@ def _build_params(
     if service_tier:
         params["service_tier"] = service_tier
 
-    cache_retention = _resolve_cache_retention(opts.get("cache_retention"))
-    base_url = getattr(model, "base_url", "") or ""
-    if cache_retention == "long" and "api.openai.com" in base_url:
-        params["store"] = True
+    params["store"] = False
 
     reasoning_effort = opts.get("reasoning_effort")
     reasoning_summary = opts.get("reasoning_summary")

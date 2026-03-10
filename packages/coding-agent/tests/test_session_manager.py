@@ -29,10 +29,10 @@ def session_manager(session_dir):
 # ── SessionManager tests ──────────────────────────────────────────────────────
 
 def test_create_session(session_manager):
-    """Session ID is an 8-char hex string (matching TypeScript generate_id)."""
+    """Session ID is a UUID (matching TypeScript randomUUID() behavior)."""
     sid = session_manager.get_session_id()
     assert sid
-    assert len(sid) == 8  # 8-char hex (TypeScript parity)
+    assert len(sid) == 36  # full UUID (TypeScript randomUUID() parity)
 
 
 def test_create_session_with_label(session_dir):
@@ -68,7 +68,7 @@ def test_multiple_messages(session_manager):
 
 
 def test_model_change(session_manager):
-    session_manager.append_model_change("claude-3-5-sonnet-20241022", "anthropic")
+    session_manager.append_model_change("anthropic", "claude-3-5-sonnet-20241022")
 
     entries = session_manager.load_entries()
     model_entries = [e for e in entries if e.type == "model_change"]

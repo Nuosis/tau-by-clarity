@@ -23,6 +23,7 @@ class AuthStorage:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
         self._loaded = False
+        self._runtime_overrides: dict[str, str] = {}  # Runtime API key overrides (in-memory only)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
@@ -90,16 +91,191 @@ class AuthStorage:
             del self._data["oauth_tokens"][provider]
             self._save()
 
+    def set_runtime_api_key(self, provider: str, api_key: str) -> None:
+        """
+        Set runtime API key override (in-memory only, not persisted to disk).
+        Mirrors TypeScript AuthStorage.setRuntimeApiKey().
+        
+        Runtime overrides have the highest priority in resolve_api_key().
+        Used by openclaw to inject API keys from auth-profiles.json.
+        """
+        self._runtime_overrides[provider] = api_key
+
     def resolve_api_key(self, provider: str) -> str | None:
         """
         Resolve API key for a provider.
-        Priority: stored key → environment variable.
+        Priority (aligned with TypeScript):
+        1. Runtime override (CLI --api-key, openclaw injection) - highest
+        2. OAuth token from auth.json (auto-refresh)
+        3. Stored API key from auth.json
+        4. Environment variable
         """
+        # 1. Runtime override takes highest priority
+        if provider in self._runtime_overrides:
+            return self._runtime_overrides[provider]
+        
+        # 2. Try OAuth token
+        oauth = self.get_oauth_token(provider)
+        if oauth:
+            access_token = oauth.get("access_token")
+            if access_token:
+                # Check expiry
+                expires_at = oauth.get("expires_at", 0)
+                import time
+                if expires_at and expires_at > time.time():
+                    return access_token
+                # Token expired, try refresh
+                refreshed = self._refresh_oauth_token(provider)
+                if refreshed:
+                    return refreshed
+
+        # 3. Stored key from auth.json
         stored = self.get_api_key(provider)
         if stored:
             return stored
+        
+        # 4. Environment variable fallback
         from pi_ai.env_api_keys import get_env_api_key
         return get_env_api_key(provider)
+
+    def is_using_oauth(self, provider: str) -> bool:
+        """Check if provider uses OAuth authentication."""
+        self._ensure_loaded()
+        return provider in self._data.get("oauth_tokens", {})
+
+    async def login(
+        self,
+        provider: str,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        auth_url: str | None = None,
+        token_url: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Perform OAuth login for a provider.
+        Returns the token dict on success, None on failure.
+        Mirrors login() in TypeScript AuthStorage.
+        """
+        import webbrowser
+        import urllib.parse
+        import secrets
+        import asyncio
+
+        state = secrets.token_urlsafe(32)
+        redirect_port = 19747
+        redirect_uri = f"http://localhost:{redirect_port}/oauth/callback"
+
+        if not auth_url or not token_url:
+            return None
+
+        params = {
+            "client_id": client_id or "",
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "state": state,
+            "scope": " ".join(scopes or []),
+        }
+        full_url = f"{auth_url}?{urllib.parse.urlencode(params)}"
+
+        auth_code: str | None = None
+        received_state: str | None = None
+
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+
+        class CallbackHandler(BaseHTTPRequestHandler):
+            def do_GET(self_handler):
+                nonlocal auth_code, received_state
+                parsed = urllib.parse.urlparse(self_handler.path)
+                qs = urllib.parse.parse_qs(parsed.query)
+                auth_code = qs.get("code", [None])[0]
+                received_state = qs.get("state", [None])[0]
+                self_handler.send_response(200)
+                self_handler.send_header("Content-Type", "text/html")
+                self_handler.end_headers()
+                self_handler.wfile.write(b"<html><body><h1>Login successful. You can close this tab.</h1></body></html>")
+
+            def log_message(self_handler, format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", redirect_port), CallbackHandler)
+        server.timeout = 120
+
+        webbrowser.open(full_url)
+
+        # Wait for callback in a thread
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, server.handle_request)
+        server.server_close()
+
+        if not auth_code or received_state != state:
+            return None
+
+        # Exchange code for token
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(token_url, data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id or "",
+                "client_secret": client_secret or "",
+            })
+            if resp.status_code != 200:
+                return None
+            token_data = resp.json()
+
+        import time
+        expires_in = token_data.get("expires_in", 3600)
+        token_data["expires_at"] = time.time() + expires_in
+
+        self.set_oauth_token(provider, token_data)
+        return token_data
+
+    def logout(self, provider: str) -> None:
+        """Logout from a provider by removing stored credentials."""
+        self.delete_api_key(provider)
+        self.delete_oauth_token(provider)
+
+    def _refresh_oauth_token(self, provider: str) -> str | None:
+        """Attempt to refresh an expired OAuth token synchronously."""
+        oauth = self.get_oauth_token(provider)
+        if not oauth:
+            return None
+        refresh_token = oauth.get("refresh_token")
+        token_url = oauth.get("token_url")
+        client_id = oauth.get("client_id")
+        if not refresh_token or not token_url:
+            return None
+
+        try:
+            import httpx
+            with httpx.Client() as client:
+                resp = client.post(token_url, data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id or "",
+                })
+                if resp.status_code != 200:
+                    return None
+                token_data = resp.json()
+
+            import time
+            expires_in = token_data.get("expires_in", 3600)
+            token_data["expires_at"] = time.time() + expires_in
+            token_data["refresh_token"] = refresh_token
+            token_data["token_url"] = token_url
+            token_data["client_id"] = client_id
+
+            self.set_oauth_token(provider, token_data)
+            return token_data.get("access_token")
+        except Exception:
+            return None
+
+    def get_oauth_providers(self) -> list[str]:
+        """Get list of providers with OAuth credentials."""
+        self._ensure_loaded()
+        return list(self._data.get("oauth_tokens", {}).keys())
 
     def list_stored_providers(self) -> list[str]:
         """List all providers with stored credentials."""

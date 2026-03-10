@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_MAX_LINES = 2000
-DEFAULT_MAX_BYTES = 30 * 1024  # 30 KB
+DEFAULT_MAX_BYTES = 50 * 1024  # 50 KB (matches TS)
 GREP_MAX_LINE_LENGTH = 500
 
 
@@ -27,7 +27,7 @@ def format_size(bytes_: int) -> str:
         return f"{bytes_}B"
     kb = bytes_ / 1024
     if kb < 1024:
-        return f"{kb:.0f}KB"
+        return f"{kb:.1f}KB"
     mb = kb / 1024
     return f"{mb:.1f}MB"
 

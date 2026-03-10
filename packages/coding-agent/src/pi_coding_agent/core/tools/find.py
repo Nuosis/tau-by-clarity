@@ -31,18 +31,49 @@ def _find_fd() -> str | None:
     return shutil.which("fd") or shutil.which("fdfind")
 
 
+def _load_gitignore_patterns(search_path: str) -> list[str]:
+    """Load .gitignore patterns from the search path."""
+    patterns: list[str] = []
+    gitignore = os.path.join(search_path, ".gitignore")
+    if os.path.exists(gitignore):
+        try:
+            with open(gitignore, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        patterns.append(line)
+        except Exception:
+            pass
+    return patterns
+
+
+def _is_gitignored(rel_path: str, patterns: list[str]) -> bool:
+    """Check if a path matches any gitignore pattern."""
+    parts = rel_path.replace("\\", "/").split("/")
+    for pattern in patterns:
+        stripped = pattern.rstrip("/")
+        if fnmatch.fnmatch(rel_path, stripped) or fnmatch.fnmatch(rel_path, stripped + "/*"):
+            return True
+        for part in parts:
+            if fnmatch.fnmatch(part, stripped):
+                return True
+    return False
+
+
 def _glob_files(pattern: str, search_path: str, limit: int) -> list[str]:
     """Fallback glob using Python's os.walk if fd is not available."""
     results: list[str] = []
     ignore_dirs = {".git", "node_modules", "__pycache__", ".venv"}
+    gitignore_patterns = _load_gitignore_patterns(search_path)
 
     for root, dirs, files in os.walk(search_path):
-        # Filter out ignored directories in-place
         dirs[:] = [d for d in dirs if d not in ignore_dirs]
 
         for filename in files:
             full_path = os.path.join(root, filename)
             rel_path = os.path.relpath(full_path, search_path)
+            if gitignore_patterns and _is_gitignored(rel_path, gitignore_patterns):
+                continue
             if fnmatch.fnmatch(filename, pattern) or fnmatch.fnmatch(rel_path, pattern):
                 results.append(rel_path)
                 if len(results) >= limit:

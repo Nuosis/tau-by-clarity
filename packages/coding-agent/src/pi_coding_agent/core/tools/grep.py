@@ -138,6 +138,7 @@ def create_grep_tool(cwd: str) -> AgentTool:
             rg_path, *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
 
         stderr_data = b""

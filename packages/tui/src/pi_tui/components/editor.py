@@ -25,6 +25,9 @@ _KITTY_MOD_ALT = 2
 _KITTY_MOD_CTRL = 4
 
 
+_KITTY_PRINTABLE_ALLOWED_MODIFIERS = _KITTY_MOD_SHIFT | 64 | 128  # Shift + lock bits
+
+
 def _decode_kitty_printable(data: str) -> str | None:
     m = _KITTY_CSI_U_RE.match(data)
     if not m:
@@ -33,6 +36,10 @@ def _decode_kitty_printable(data: str) -> str | None:
     shifted_key = int(m.group(2)) if m.group(2) else None
     mod_value = int(m.group(4)) if m.group(4) else 1
     modifier = mod_value - 1 if mod_value else 0
+    # Reject Super/Meta/Hyper and other unsupported modifier bits
+    if (modifier & ~_KITTY_PRINTABLE_ALLOWED_MODIFIERS) != 0:
+        return None
+    # Reject Ctrl and Alt (handled by keybindings)
     if modifier & (_KITTY_MOD_ALT | _KITTY_MOD_CTRL):
         return None
     effective = codepoint
@@ -454,7 +461,8 @@ class Editor:
         # New line
         is_new_line = (
             kb.matches(data, "newLine") or
-            (len(data) > 1 and data.charCodeAt(0) == 10 if hasattr(data, "charCodeAt") else False) or
+            (len(data) > 1 and ord(data[0]) == 10) or
+            (len(data) > 1 and "\x1b" in data and "\r" in data) or
             data == "\x1b\r" or
             data == "\x1b[13;2~" or
             (len(data) == 1 and data == "\n")
