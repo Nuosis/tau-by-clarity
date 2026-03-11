@@ -2,7 +2,7 @@
 name = "pi-mono-python"
 version = "0.53.0"
 description = "Python mirror of pi-mono TypeScript monorepo"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 
 [tool.uv]
 dev-dependencies = [
