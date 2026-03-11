@@ -55,6 +55,9 @@ EditorAction = Literal[
     "undo",
     # Tool output
     "expandTools",
+    # Tree navigation (NEW)
+    "treeFoldOrUp",
+    "treeUnfoldOrDown",
     # Session
     "toggleSessionPath",
     "toggleSessionSort",
@@ -110,6 +113,9 @@ DEFAULT_EDITOR_KEYBINDINGS: dict[str, list[KeyId]] = {
     "undo": ["ctrl+-"],
     # Tool output
     "expandTools": ["ctrl+o"],
+    # Tree navigation (NEW)
+    "treeFoldOrUp": ["ctrl+left", "alt+left"],
+    "treeUnfoldOrDown": ["ctrl+right", "alt+right"],
     # Session
     "toggleSessionPath":        ["ctrl+p"],
     "toggleSessionSort":        ["ctrl+s"],

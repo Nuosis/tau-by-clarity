@@ -118,9 +118,31 @@ def create_find_tool(cwd: str) -> AgentTool:
                 "--color=never",
                 "--hidden",
                 "--max-results", str(effective_limit),
-                pattern,
-                search_path,
             ]
+            
+            # Include .gitignore files (mirrors TS behavior)
+            gitignore_files: set[str] = set()
+            root_gitignore = os.path.join(search_path, ".gitignore")
+            if os.path.exists(root_gitignore):
+                gitignore_files.add(root_gitignore)
+            
+            # Find nested .gitignore files
+            try:
+                for root, dirs, files in os.walk(search_path):
+                    # Skip common directories
+                    dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+                    if ".gitignore" in files:
+                        nested_gitignore = os.path.join(root, ".gitignore")
+                        gitignore_files.add(nested_gitignore)
+            except Exception:
+                pass  # Ignore walk errors
+            
+            # Add all .gitignore files to fd arguments
+            for gitignore_path in sorted(gitignore_files):
+                args.extend(["--ignore-file", gitignore_path])
+            
+            args.extend([pattern, search_path])
+            
             result = subprocess.run(
                 args,
                 capture_output=True,

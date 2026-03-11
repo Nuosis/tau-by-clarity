@@ -13,9 +13,13 @@ def parse_partial_json(text: str) -> dict[str, Any] | None:
     return _parse_partial_json_impl(text)
 
 
-def parse_streaming_json(text: str) -> dict[str, Any] | None:
-    """Parse potentially incomplete JSON from a streaming response (alias)."""
-    return _parse_partial_json_impl(text)
+def parse_streaming_json(text: str) -> dict[str, Any]:
+    """
+    Parse potentially incomplete JSON from a streaming response.
+    Returns empty dict {} on failure (mirrors TS behavior).
+    """
+    result = _parse_partial_json_impl(text)
+    return result if result is not None else {}  # Return {} instead of None
 
 
 def _parse_partial_json_impl(text: str) -> dict[str, Any] | None:

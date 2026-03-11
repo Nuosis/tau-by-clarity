@@ -24,6 +24,9 @@ from .types import (
     AgentState,
     AgentTool,
     AgentToolResult,
+    AgentToolUpdateCallback,
+    CustomAgentMessages,
+    StreamFn,
     ThinkingLevel,
 )
 
@@ -54,5 +57,8 @@ __all__ = [
     "AgentState",
     "AgentTool",
     "AgentToolResult",
+    "AgentToolUpdateCallback",
+    "CustomAgentMessages",
+    "StreamFn",
     "ThinkingLevel",
 ]

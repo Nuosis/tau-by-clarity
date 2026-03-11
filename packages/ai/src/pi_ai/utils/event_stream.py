@@ -80,3 +80,35 @@ class _Sentinel:
 
 
 _SENTINEL = _Sentinel()
+
+
+# Import types for AssistantMessageEventStream
+from ..types import AssistantMessage, AssistantMessageEvent
+
+
+class AssistantMessageEventStream(EventStream[AssistantMessageEvent, AssistantMessage]):
+    """
+    Specialized EventStream for AssistantMessageEvent -> AssistantMessage.
+    Mirrors AssistantMessageEventStream in TypeScript.
+    """
+    
+    def __init__(self):
+        def is_done(event: AssistantMessageEvent) -> bool:
+            return event.type == "done" or event.type == "error"
+        
+        def get_result(event: AssistantMessageEvent) -> AssistantMessage:
+            if event.type == "done":
+                return event.message
+            elif event.type == "error":
+                return event.error
+            raise RuntimeError(f"Unexpected event type for final result: {event.type}")
+        
+        super().__init__(is_done, get_result)
+
+
+def create_assistant_message_event_stream() -> AssistantMessageEventStream:
+    """
+    Factory function for AssistantMessageEventStream.
+    Mirrors createAssistantMessageEventStream() in TypeScript.
+    """
+    return AssistantMessageEventStream()

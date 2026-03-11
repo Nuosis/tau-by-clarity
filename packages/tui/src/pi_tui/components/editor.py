@@ -209,6 +209,24 @@ class Editor:
             self._padding_x = new_padding
             self._tui.request_render()
 
+    def get_autocomplete_max_visible(self) -> int:
+        """Get autocomplete max visible items."""
+        return self._options.autocomplete_max_visible
+
+    def set_autocomplete_max_visible(self, max_visible: int) -> None:
+        """Set autocomplete max visible items."""
+        self._options.autocomplete_max_visible = max(1, int(max_visible))
+        if self._autocomplete_list:
+            # If autocomplete is currently shown, recreate it with new max_visible
+            self._autocomplete_list = SelectList(
+                self._autocomplete_list._items,
+                self._options.autocomplete_max_visible,
+                self._theme.select_list,
+            )
+            self._autocomplete_list.on_select = self._on_autocomplete_select
+            self._autocomplete_list.on_cancel = self._on_autocomplete_cancel
+        self._tui.request_render()
+
     def set_autocomplete_provider(self, provider: AutocompleteProvider) -> None:
         self._autocomplete_provider = provider
 

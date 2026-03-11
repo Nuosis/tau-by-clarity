@@ -5,7 +5,7 @@ from ..keybindings import get_editor_keybindings
 from ..kill_ring import KillRing
 from ..tui import CURSOR_MARKER
 from ..undo_stack import UndoStack
-from ..utils import _segment_graphemes, is_punctuation_char, is_whitespace_char, visible_width
+from ..utils import _segment_graphemes, is_punctuation_char, is_whitespace_char, visible_width, slice_by_column
 
 
 class _InputState:
@@ -326,8 +326,10 @@ class Input:
     def _handle_paste(self, pasted_text: str) -> None:
         self._last_action = None
         self._push_undo()
+        # Convert tabs to spaces (mirrors TS behavior)
+        clean = pasted_text.replace("\t", "    ")
         # Remove newlines from single-line input
-        clean = pasted_text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+        clean = clean.replace("\r\n", "").replace("\r", "").replace("\n", "")
         self._value = self._value[:self._cursor] + clean + self._value[self._cursor:]
         self._cursor += len(clean)
 
@@ -343,42 +345,37 @@ class Input:
 
         visible_text = ""
         cursor_display = cursor
+        total_width = visible_width(value)  # Use visible_width instead of len
 
-        if len(value) < available:
+        if total_width < available:
+            # Everything fits
             visible_text = value
         else:
+            # Need horizontal scrolling
             scroll_width = available - 1 if cursor == len(value) else available
-            half_width = scroll_width // 2
+            cursor_col = visible_width(value[:cursor])  # Use visible_width for cursor position
 
-            def find_valid_start(start: int) -> int:
-                while start < len(value):
-                    c = ord(value[start])
-                    if 0xDC00 <= c < 0xE000:
-                        start += 1
-                        continue
-                    break
-                return start
+            if scroll_width > 0:
+                half_width = scroll_width // 2
+                start_col = 0
 
-            def find_valid_end(end: int) -> int:
-                while end > 0:
-                    c = ord(value[end - 1])
-                    if 0xD800 <= c < 0xDC00:
-                        end -= 1
-                        continue
-                    break
-                return end
+                if cursor_col < half_width:
+                    # Cursor near start
+                    start_col = 0
+                elif cursor_col > total_width - half_width:
+                    # Cursor near end
+                    start_col = max(0, total_width - scroll_width)
+                else:
+                    # Cursor in middle
+                    start_col = max(0, cursor_col - half_width)
 
-            if cursor < half_width:
-                visible_text = value[:find_valid_end(scroll_width)]
-                cursor_display = cursor
-            elif cursor > len(value) - half_width:
-                start = find_valid_start(len(value) - scroll_width)
-                visible_text = value[start:]
-                cursor_display = cursor - start
+                # Use slice_by_column instead of string slicing
+                visible_text = slice_by_column(value, start_col, scroll_width, True)
+                before_cursor = slice_by_column(value, start_col, max(0, cursor_col - start_col), True)
+                cursor_display = len(before_cursor)
             else:
-                start = find_valid_start(cursor - half_width)
-                visible_text = value[start:find_valid_end(start + scroll_width)]
-                cursor_display = half_width
+                visible_text = ""
+                cursor_display = 0
 
         graphemes_after = _segment_graphemes(visible_text[cursor_display:])
         cursor_grapheme = graphemes_after[0] if graphemes_after else None

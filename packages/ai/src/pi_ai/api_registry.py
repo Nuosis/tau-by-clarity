@@ -57,3 +57,11 @@ def unregister_api_providers(source_id: str) -> None:
 def clear_api_providers() -> None:
     """Clear all registered API providers."""
     _registry.clear()
+
+
+def get_api_providers() -> list[ApiProvider]:
+    """Get all registered API providers."""
+    return [
+        provider for key, provider in _registry.items()
+        if not key.endswith(":source")
+    ]

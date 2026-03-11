@@ -3,7 +3,8 @@ Core type definitions — mirrors packages/ai/src/types.ts
 """
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator, Callable, Literal, Union
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -56,6 +57,37 @@ Transport = Literal["sse", "websocket", "auto"]
 StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
 
 
+# ─── Compat types ─────────────────────────────────────────────────────────────
+
+@dataclass
+class OpenAICompletionsCompat:
+    """Compatibility settings for OpenAI Completions API."""
+    supports_store: bool = False
+    supports_developer_role: bool = False
+    reasoning_effort_map: dict[str, str] | None = None
+    supports_usage_in_streaming: bool = False
+
+
+@dataclass
+class OpenAIResponsesCompat:
+    """Compatibility settings for OpenAI Responses API."""
+    pass  # Currently empty, reserved for future extensions
+
+
+@dataclass
+class OpenRouterRouting:
+    """Routing configuration for OpenRouter."""
+    only: list[str] | None = None
+    order: list[str] | None = None
+
+
+@dataclass
+class VercelGatewayRouting:
+    """Routing configuration for Vercel Gateway."""
+    only: list[str] | None = None
+    order: list[str] | None = None
+
+
 # ─── Thinking budgets ─────────────────────────────────────────────────────────
 
 class ThinkingBudgets(BaseModel):
@@ -75,12 +107,35 @@ class StreamOptions(BaseModel):
     transport: Transport | None = None
     cache_retention: CacheRetention | None = "short"
     session_id: str | None = None
-    on_payload: Callable[[Any], None] | None = None
+    on_payload: (
+        Callable[[Any, "Model"], Any | None] | 
+        Callable[[Any, "Model"], Awaitable[Any | None]] | 
+        None
+    ) = None
     headers: dict[str, str] | None = None
     max_retry_delay_ms: int | None = 60000
     metadata: dict[str, Any] | None = None
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-style .get() for backwards compatibility with provider code.
+
+        Provider implementations use opts.get("field") to safely read options
+        without raising AttributeError. This mirrors TypeScript's optional
+        chaining: ``options?.field``.
+        """
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        """Dict-style [] access for backwards compatibility.
+
+        Used in provider code like: ``opts["on_payload"](params, model)``.
+        """
+        value = getattr(self, key, None)
+        if value is None:
+            raise KeyError(key)
+        return value
 
 
 class SimpleStreamOptions(StreamOptions):
@@ -214,7 +269,14 @@ class Model(BaseModel):
     context_window: int = 128000
     max_tokens: int = 8192
     headers: dict[str, str] | None = None
-    compat: dict[str, Any] | None = None
+    compat: (
+        OpenAICompletionsCompat | 
+        OpenAIResponsesCompat | 
+        OpenRouterRouting | 
+        VercelGatewayRouting | 
+        dict[str, Any] | 
+        None
+    ) = None
 
 
 # ─── Streaming events ─────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ from ..types import (
 )
 from ..utils.event_stream import EventStream
 from ..utils.json_parse import parse_partial_json, parse_streaming_json
+from ..utils.sanitize_unicode import sanitize_surrogates
 from .transform_messages import transform_messages as _transform_messages
 
 # Anthropic beta features
@@ -232,7 +233,7 @@ def _convert_tool_result_block(tr_msg: ToolResultMessage, is_oauth: bool = False
     cblocks: list[dict[str, Any]] = []
     for block in tr_msg.content:
         if isinstance(block, TextContent):
-            text = _sanitize_surrogates(block.text)
+            text = sanitize_surrogates(block.text)
             cblocks.append({"type": "text", "text": text})
         elif isinstance(block, ImageContent):
             cblocks.append({
@@ -280,7 +281,7 @@ def _build_messages(
                 content_blocks: list[dict[str, Any]] = []
                 for block in msg.content:
                     if isinstance(block, TextContent):
-                        text = _sanitize_surrogates(block.text)
+                        text = sanitize_surrogates(block.text)
                         if text.strip():
                             content_blocks.append({"type": "text", "text": text})
                     elif isinstance(block, ImageContent):
@@ -301,7 +302,7 @@ def _build_messages(
             content_blocks = []
             for block in msg.content:
                 if isinstance(block, TextContent):
-                    text = _sanitize_surrogates(block.text)
+                    text = sanitize_surrogates(block.text)
                     if text:
                         content_blocks.append({"type": "text", "text": text})
                 elif isinstance(block, ThinkingContent):
@@ -489,6 +490,15 @@ async def stream_simple(
     content_blocks: list[Any] = []
     block_index_map: dict[int, int] = {}  # anthropic index → content_blocks index
     tool_arg_buffers: dict[int, str] = {}
+
+    # Apply on_payload callback (mirrors TS: const nextParams = await options?.onPayload?.(params, model))
+    if opts.get("on_payload"):
+        modified = opts["on_payload"](params, model)
+        # Support async callbacks
+        if hasattr(modified, "__await__"):
+            modified = await modified
+        if modified is not None:
+            params = modified
 
     yield EventStart(type="start", partial=partial)
 

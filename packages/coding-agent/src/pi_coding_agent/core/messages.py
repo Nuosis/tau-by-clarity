@@ -121,7 +121,16 @@ def create_custom_message(
 
 
 def convert_to_llm(messages: list[Any]) -> list[dict[str, Any]]:
-    """Transform AgentMessages (including custom types) to LLM-compatible messages."""
+    """
+    Transform AgentMessages (including custom types) to LLM-compatible messages.
+    
+    This is used by:
+    - Agent's convert_to_llm option (for prompt calls and queued messages)
+    - Compaction's generate_summary (for summarization)
+    - Custom extensions and tools
+    
+    Mirrors convertToLlm() from TypeScript.
+    """
     result: list[dict[str, Any]] = []
     for m in messages:
         role = getattr(m, "role", None)
@@ -168,3 +177,49 @@ def convert_to_llm(messages: list[Any]) -> list[dict[str, Any]]:
                 result.append(m)
 
     return result
+
+
+def wrap_convert_to_llm(block_images: bool):
+    """
+    Wrap convert_to_llm to optionally block images.
+    
+    Mirrors wrapConvertToLlm() from TypeScript, including deduplication
+    of consecutive placeholder text blocks **within each message's content array**.
+    """
+    placeholder = "Image reading is disabled."
+    
+    def wrapped_convert(messages: list[Any]) -> list[dict[str, Any]]:
+        converted = convert_to_llm(messages)
+        
+        if not block_images:
+            return converted
+        
+        # Replace images with placeholder and deduplicate within each message's content
+        for msg in converted:
+            role = msg.get("role")
+            if role in ("user", "toolResult"):
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    new_content = []
+                    prev_was_placeholder = False
+                    
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "image":
+                            # Replace image with placeholder, but skip if previous was also placeholder
+                            if not prev_was_placeholder:
+                                new_content.append({"type": "text", "text": placeholder})
+                                prev_was_placeholder = True
+                        else:
+                            new_content.append(c)
+                            # Reset flag if we added non-placeholder content
+                            prev_was_placeholder = (
+                                isinstance(c, dict) 
+                                and c.get("type") == "text" 
+                                and c.get("text") == placeholder
+                            )
+                    
+                    msg["content"] = new_content
+        
+        return converted
+    
+    return wrapped_convert

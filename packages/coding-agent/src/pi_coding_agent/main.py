@@ -17,7 +17,7 @@ from .core.event_bus import create_event_bus
 from .core.extensions.loader import load_extensions
 from .core.model_registry import ModelRegistry
 from .core.package_manager import DefaultPackageManager
-from .core.sdk import AgentSessionOptions, create_agent_session
+from .core.sdk import CreateAgentSessionOptions, create_agent_session
 from .core.session_manager import SessionManager
 from .core.settings_manager import SettingsManager
 from .migrations import run_migrations, show_deprecation_warnings
@@ -350,7 +350,7 @@ async def _run(args: Sequence[str]) -> int:
     if parsed.session and session_manager is None:
         return 1
 
-    opts = AgentSessionOptions(
+    opts = CreateAgentSessionOptions(
         cwd=cwd,
         model_id=parsed.model,
         provider=parsed.provider,
@@ -362,7 +362,8 @@ async def _run(args: Sequence[str]) -> int:
         auth_storage=auth_storage,
         model_registry=model_registry,
     )
-    session = create_agent_session(opts)
+    result = await create_agent_session(opts)
+    session = result.session
 
     if parsed.list_models is not None:
         pattern = parsed.list_models if isinstance(parsed.list_models, str) else None
@@ -407,8 +408,8 @@ async def _run(args: Sequence[str]) -> int:
             print("No session selected")
             return 0
         sm = SessionManager.open(selected, parsed.session_dir)
-        session = create_agent_session(
-            AgentSessionOptions(
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
                 cwd=cwd,
                 model_id=parsed.model,
                 provider=parsed.provider,
@@ -421,6 +422,7 @@ async def _run(args: Sequence[str]) -> int:
                 model_registry=model_registry,
             )
         )
+        session = result.session
 
     initial_messages = []
     if initial_prompt:

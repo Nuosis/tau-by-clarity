@@ -83,6 +83,26 @@ def truncate_head(
     )
 
 
+def _truncate_string_to_bytes_from_end(s: str, max_bytes: int) -> str:
+    """
+    Truncate a string to fit within a byte limit, keeping the end.
+    Mirrors truncateStringToBytesFromEnd() in TypeScript.
+    """
+    buf = s.encode("utf-8")
+    if len(buf) <= max_bytes:
+        return s
+
+    # Start from the end, skip max_bytes back
+    start = len(buf) - max_bytes
+
+    # Find a valid UTF-8 boundary (start of a character)
+    # UTF-8 continuation bytes have the pattern 10xxxxxx (0x80)
+    while start < len(buf) and (buf[start] & 0xC0) == 0x80:
+        start += 1
+
+    return buf[start:].decode("utf-8", errors="ignore")
+
+
 def truncate_tail(
     text: str,
     max_lines: int = DEFAULT_MAX_LINES,
@@ -94,6 +114,18 @@ def truncate_tail(
     """
     lines = text.split("\n")
     total_lines = len(lines)
+    total_bytes = len(text.encode("utf-8"))
+
+    # Check if no truncation needed
+    if total_lines <= max_lines and total_bytes <= max_bytes:
+        return TruncationResult(
+            content=text,
+            truncated=False,
+            truncated_by=None,
+            output_lines=total_lines,
+            total_lines=total_lines,
+            output_bytes=total_bytes,
+        )
 
     # Work from the end
     selected_lines: list[str] = []
@@ -101,48 +133,48 @@ def truncate_tail(
     truncated_by: str | None = None
     last_line_partial = False
 
-    # Check last line
-    if lines and len(lines[-1].encode("utf-8")) > max_bytes:
-        last_line_partial = True
-        # Truncate the last line itself
-        last_line = lines[-1]
-        truncated_last = last_line.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
-        return TruncationResult(
-            content=truncated_last,
-            truncated=True,
-            truncated_by="bytes",
-            output_lines=1,
-            total_lines=total_lines,
-            output_bytes=len(truncated_last.encode("utf-8")),
-            last_line_partial=True,
-        )
-
-    for line in reversed(lines):
+    for i in range(len(lines) - 1, -1, -1):
         if len(selected_lines) >= max_lines:
             truncated_by = "lines"
             break
-        line_bytes = len(line.encode("utf-8")) + 1
+        
+        line = lines[i]
+        line_bytes = len(line.encode("utf-8")) + (1 if selected_lines else 0)  # +1 for newline
+
         if current_bytes + line_bytes > max_bytes:
             truncated_by = "bytes"
+            # Edge case: if we haven't added ANY lines yet and this line exceeds maxBytes,
+            # take the end of the line (partial)
+            if not selected_lines:
+                truncated_line = _truncate_string_to_bytes_from_end(line, max_bytes)
+                selected_lines.insert(0, truncated_line)
+                current_bytes = len(truncated_line.encode("utf-8"))
+                last_line_partial = True
             break
+
         selected_lines.insert(0, line)
         current_bytes += line_bytes
 
-    truncated = truncated_by is not None
+    # If we exited due to line limit
+    if len(selected_lines) >= max_lines and current_bytes <= max_bytes:
+        truncated_by = "lines"
+
     content = "\n".join(selected_lines)
+    final_output_bytes = len(content.encode("utf-8"))
 
     return TruncationResult(
         content=content,
-        truncated=truncated,
+        truncated=True,
         truncated_by=truncated_by,
         output_lines=len(selected_lines),
         total_lines=total_lines,
-        output_bytes=current_bytes,
+        output_bytes=final_output_bytes,
+        last_line_partial=last_line_partial,
     )
 
 
 def truncate_line(line: str, max_length: int = GREP_MAX_LINE_LENGTH) -> tuple[str, bool]:
-    """Truncate a single line to max_length. Returns (truncated_text, was_truncated)."""
+    """Truncate a single line to max_length with [truncated] suffix. Mirrors truncateLine() in TypeScript."""
     if len(line) <= max_length:
         return line, False
-    return line[:max_length] + "...", True
+    return line[:max_length] + "... [truncated]", True

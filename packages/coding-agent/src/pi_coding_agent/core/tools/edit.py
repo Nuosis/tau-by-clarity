@@ -53,8 +53,26 @@ def strip_bom(text: str) -> tuple[str, str]:
 
 
 def normalize_for_fuzzy_match(text: str) -> str:
-    """Normalize text for fuzzy matching: collapse multiple whitespace to single space."""
-    return re.sub(r"\s+", " ", text).strip()
+    """
+    Normalize text for fuzzy matching.
+    Mirrors normalizeForFuzzyMatch() in edit-diff.ts:
+    - Strip trailing whitespace from each line
+    - Normalize smart quotes to ASCII
+    - Normalize Unicode dashes/hyphens to ASCII hyphen
+    - Normalize special Unicode spaces to regular space
+    """
+    result = text
+    # Strip trailing whitespace per line
+    result = "\n".join(line.rstrip() for line in result.split("\n"))
+    # Smart single quotes → '
+    result = re.sub(r"[\u2018\u2019\u201A\u201B]", "'", result)
+    # Smart double quotes → "
+    result = re.sub(r"[\u201C\u201D\u201E\u201F]", '"', result)
+    # Various dashes/hyphens → -
+    result = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]", "-", result)
+    # Special spaces → regular space
+    result = re.sub(r"[\u00A0\u2002-\u200A\u202F\u205F\u3000]", " ", result)
+    return result
 
 
 def fuzzy_find_text(

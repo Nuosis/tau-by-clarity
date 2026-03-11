@@ -437,6 +437,20 @@ def _matches_modify_other_keys(data: str, expected_keycode: int, expected_mod: i
     return keycode == expected_keycode and mod_val == expected_mod
 
 
+def _parse_modify_other_keys_sequence(data: str) -> tuple[int, int] | None:
+    """
+    Parse xterm modifyOtherKeys sequence: ESC [ 27 ; modifiers ; keycode ~
+    Returns (codepoint, modifier) or None.
+    Mirrors parseModifyOtherKeysSequence() in keys.ts.
+    """
+    m = re.match(r"^\x1b\[27;(\d+);(\d+)~$", data)
+    if not m:
+        return None
+    mod_val = int(m.group(1))
+    codepoint = int(m.group(2))
+    return (codepoint, mod_val - 1)  # Modifier is 1-indexed, so subtract 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Key ID parsing
 # ─────────────────────────────────────────────────────────────────────────────
@@ -659,6 +673,20 @@ def matches_key(data: str, key_id: KeyId) -> bool:
             return False
         return data in _LEGACY_KEY_SEQS.get(key, [])
 
+    # Digit keys (0-9) - NEW: Support digit key matching
+    if len(key) == 1 and "0" <= key <= "9":
+        codepoint = ord(key)
+        
+        # alt+digit (no Kitty protocol)
+        if alt and not ctrl and not shift and not _kitty_protocol_active:
+            return data == f"\x1b{key}"
+        
+        # Plain digit or with modifiers in Kitty protocol
+        if modifier == 0:
+            return data == key or _matches_kitty(data, codepoint, 0)
+        
+        return _matches_kitty(data, codepoint, modifier)
+
     # Single-letter and symbol keys
     if len(key) == 1 and (("a" <= key <= "z") or key in SYMBOL_KEYS):
         codepoint = ord(key)
@@ -761,9 +789,39 @@ def parse_key(data: str) -> str | None:
             key_name = "right"
         elif 97 <= effective_cp <= 122:
             key_name = chr(effective_cp)
+        elif 48 <= effective_cp <= 57:  # NEW: Digit keys (0-9)
+            key_name = chr(effective_cp)
         elif 0 <= effective_cp <= 0xFFFF and chr(effective_cp) in SYMBOL_KEYS:
             key_name = chr(effective_cp)
 
+        if key_name:
+            return "+".join(mods + [key_name]) if mods else key_name
+
+    # Parse modifyOtherKeys sequence (xterm fallback)
+    modify_other = _parse_modify_other_keys_sequence(data)
+    if modify_other:
+        cp, mod = modify_other
+        mod = mod & ~_LOCK_MASK
+        if (mod & ~(_MOD_SHIFT | _MOD_ALT | _MOD_CTRL)) != 0:
+            return None
+        mods: list[str] = []
+        if mod & _MOD_SHIFT:
+            mods.append("shift")
+        if mod & _MOD_CTRL:
+            mods.append("ctrl")
+        if mod & _MOD_ALT:
+            mods.append("alt")
+        
+        key_name: str | None = None
+        if cp == _CP_ENTER:
+            key_name = "enter"
+        elif 48 <= cp <= 57:
+            key_name = chr(cp)
+        elif 97 <= cp <= 122:
+            key_name = chr(cp)
+        elif 0 <= cp <= 0xFFFF and chr(cp) in SYMBOL_KEYS:
+            key_name = chr(cp)
+        
         if key_name:
             return "+".join(mods + [key_name]) if mods else key_name
 

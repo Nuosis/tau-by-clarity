@@ -101,14 +101,34 @@ class ExtensionRunner:
         })
 
     async def emit_context(self, messages: list[Any]) -> list[Any]:
-        """Emit context event for message modification."""
-        result = await self.emit({
-            "type": "context",
-            "messages": messages,
-        })
-        if result and "messages" in result:
-            return result["messages"]
-        return messages
+        """
+        Emit context event for message modification.
+        Uses chain passing - each handler receives the output of the previous handler.
+        Mirrors ExtensionRunner.emitContext() in TypeScript.
+        """
+        current_messages = messages
+        
+        for ext in self._extensions:
+            handlers = ext.handlers.get("context", [])
+            for handler in handlers:
+                try:
+                    ctx = ExtensionContext(
+                        cwd=self._cwd,
+                        session_id=self._session_id,
+                    )
+                    # Pass current_messages to handler
+                    result = handler(ctx, {"type": "context", "messages": current_messages})
+                    if inspect.isawaitable(result):
+                        result = await result
+                    
+                    # Update current_messages with handler result (chain passing)
+                    if isinstance(result, dict) and "messages" in result:
+                        current_messages = result["messages"]
+                except Exception:
+                    # On error, skip this handler but continue chain
+                    pass
+        
+        return current_messages
 
     async def emit_tool_call(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Emit tool_call event (before tool execution)."""

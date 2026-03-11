@@ -411,11 +411,11 @@ class SettingsManager:
 
     def get_steering_mode(self) -> str:
         self._ensure_loaded()
-        return self._merged.get("steeringMode") or self._merged.get("steering_mode", "all")
+        return self._merged.get("steeringMode") or self._merged.get("steering_mode", "one-at-a-time")
 
     def get_follow_up_mode(self) -> str:
         self._ensure_loaded()
-        return self._merged.get("followUpMode") or self._merged.get("follow_up_mode", "all")
+        return self._merged.get("followUpMode") or self._merged.get("follow_up_mode", "one-at-a-time")
 
     def get_quiet_startup(self) -> bool:
         self._ensure_loaded()
@@ -443,6 +443,20 @@ class SettingsManager:
         defaults: dict[str, Any] = {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 20000}
         override = self._merged.get("compaction") or {}
         return {**defaults, **override}
+
+    def get_block_images(self) -> bool:
+        """Get whether images should be blocked from being sent to LLM providers."""
+        self._ensure_loaded()
+        images = self._merged.get("images") or {}
+        return bool(images.get("blockImages", False))
+
+    def set_block_images(self, blocked: bool) -> None:
+        """Set whether images should be blocked from being sent to LLM providers."""
+        self._ensure_loaded()
+        if "images" not in self._global_raw:
+            self._global_raw["images"] = {}
+        self._global_raw["images"]["blockImages"] = blocked
+        self.save_global()
 
     def get_retry_settings(self) -> dict[str, Any]:
         self._ensure_loaded()

@@ -59,6 +59,7 @@ class AgentOptions:
         stream_fn: StreamFn | None = None,
         session_id: str | None = None,
         get_api_key: Callable | None = None,
+        on_payload: Callable[[Any, Model], Any | None] | None = None,
         thinking_budgets: ThinkingBudgets | None = None,
         transport: Transport = "sse",
         max_retry_delay_ms: int | None = None,
@@ -71,9 +72,15 @@ class AgentOptions:
         self.stream_fn = stream_fn
         self.session_id = session_id
         self.get_api_key = get_api_key
+        self.on_payload = on_payload
         self.thinking_budgets = thinking_budgets
         self.transport = transport
         self.max_retry_delay_ms = max_retry_delay_ms
+
+    @classmethod
+    def from_dict(cls, opts_dict: dict[str, Any]) -> "AgentOptions":
+        """Construct AgentOptions from a dict (mirrors TS object literal usage)."""
+        return cls(**opts_dict)
 
 
 class Agent:
@@ -82,7 +89,10 @@ class Agent:
     Mirrors the Agent class in TypeScript.
     """
 
-    def __init__(self, opts: AgentOptions | None = None) -> None:
+    def __init__(self, opts: AgentOptions | dict[str, Any] | None = None) -> None:
+        # Support dict (like TS object literal) or AgentOptions instance
+        if isinstance(opts, dict):
+            opts = AgentOptions.from_dict(opts)
         opts = opts or AgentOptions()
 
         default_model = get_model("google", "gemini-2.5-flash-lite-preview-06-17")
@@ -111,6 +121,7 @@ class Agent:
         self.stream_fn: StreamFn = opts.stream_fn or stream_simple
         self._session_id: str | None = opts.session_id
         self.get_api_key = opts.get_api_key
+        self._on_payload = opts.on_payload
         self._thinking_budgets: ThinkingBudgets | None = opts.thinking_budgets
         self._transport: Transport = opts.transport
         self._max_retry_delay_ms: int | None = opts.max_retry_delay_ms
@@ -379,6 +390,7 @@ class Agent:
             convert_to_llm=self._convert_to_llm,
             transform_context=self._transform_context,
             get_api_key=self.get_api_key,
+            on_payload=self._on_payload,
             get_steering_messages=get_steering,
             get_follow_up_messages=self._async_dequeue_follow_up,
         )

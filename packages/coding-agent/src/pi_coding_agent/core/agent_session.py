@@ -27,6 +27,7 @@ from pi_ai.types import AssistantMessage, ImageContent, Model, TextContent, User
 
 from .auth_storage import AuthStorage
 from .compaction import compact_context, should_compact
+from .messages import wrap_convert_to_llm
 from .model_registry import ModelRegistry
 from .session_manager import SessionManager
 from .settings_manager import Settings, SettingsManager
@@ -106,7 +107,15 @@ class AgentSession:
             self.cwd, selected_tools=[t.name for t in active_tools]
         )
 
-        opts = AgentOptions(get_api_key=self._resolve_api_key)
+        # Create convertToLlm wrapper with blockImages support
+        convert_to_llm_fn = wrap_convert_to_llm(self._settings_manager.get_block_images())
+
+        # Create Agent with convert_to_llm and transform_context
+        opts = AgentOptions(
+            get_api_key=self._resolve_api_key,
+            convert_to_llm=convert_to_llm_fn,
+            transform_context=self._transform_context,
+        )
         self._agent = Agent(opts)
         self._agent.set_model(resolved_model)
         self._agent.set_system_prompt(self._base_system_prompt)
@@ -132,6 +141,9 @@ class AgentSession:
         # ── Bash execution state ──────────────────────────────────────────────
         self._pending_bash_messages: list[AgentMessage] = []
         self._pending_next_turn_messages: list[AgentMessage] = []
+
+        # ── Scoped models (for cycling) ───────────────────────────────────────
+        self._scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
 
     # ── Tool construction ─────────────────────────────────────────────────────
 
@@ -173,6 +185,23 @@ class AgentSession:
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
                 return get_model("google", "gemini-2.0-flash")
             return get_model("anthropic", "claude-3-5-sonnet-20241022")
+
+    async def _transform_context(
+        self, 
+        messages: list[AgentMessage], 
+        signal: asyncio.Event | None = None
+    ) -> list[AgentMessage]:
+        """
+        Transform context before convert_to_llm.
+        
+        Currently returns messages unchanged. 
+        Will be connected to ExtensionRunner.emit_context when extension support is added.
+        Mirrors the transform_context callback in TypeScript SDK.
+        """
+        # TODO: Connect to ExtensionRunner.emit_context when available
+        # if self._extension_runner:
+        #     return await self._extension_runner.emit_context(messages)
+        return messages
 
     async def _resolve_api_key(self, provider: str) -> str | None:
         return self._auth_storage.resolve_api_key(provider)
@@ -1082,6 +1111,197 @@ class AgentSession:
             )
             return text.strip() or None
         return None
+
+    # ── Additional session methods (mirrors TS) ───────────────────────────────
+
+    def dispose(self) -> None:
+        """Clean up session resources and event listeners."""
+        self._listeners = []
+
+    def set_scoped_models(self, scoped_models: list[dict[str, Model | ThinkingLevel | None]]) -> None:
+        """
+        Set models available for cycling (Ctrl+P).
+        Mirrors setScopedModels() in TypeScript.
+        """
+        self._scoped_models = scoped_models
+
+    def set_auto_compaction_enabled(self, enabled: bool) -> None:
+        """Enable or disable auto-compaction."""
+        # SettingsManager doesn't have set_compaction_enabled
+        # This is a read-only property from settings files
+        # In TS version this calls settingsManager.setCompactionEnabled
+        # For now, this is a no-op as settings are file-based
+        pass
+
+    @property
+    def auto_compaction_enabled(self) -> bool:
+        """Whether auto-compaction is currently enabled."""
+        return self._settings_manager.get_compaction_settings().get("enabled", True)
+
+    def set_auto_retry_enabled(self, enabled: bool) -> None:
+        """Enable or disable auto-retry."""
+        # SettingsManager doesn't have set_retry_enabled
+        # This is a read-only property from settings files
+        # In TS version this calls settingsManager.setRetryEnabled
+        # For now, this is a no-op as settings are file-based
+        pass
+
+    @property
+    def auto_retry_enabled(self) -> bool:
+        """Whether auto-retry is currently enabled."""
+        return self._settings_manager.get_retry_settings().get("enabled", True)
+
+    async def bind_extensions(self, bindings: dict[str, Any]) -> None:
+        """
+        Bind extension UI context and handlers.
+        Mirrors bindExtensions() in TypeScript.
+        This is a stub for future extension support.
+        """
+        # TODO: Implement extension bindings when extension system is added
+        pass
+
+    async def reload(self) -> None:
+        """
+        Reload configuration and resources.
+        Mirrors reload() in TypeScript.
+        """
+        # Reload settings
+        await self._settings_manager.reload()
+        # Reset API providers if needed
+        # TODO: Add resetApiProviders when available
+        pass
+
+    async def execute_bash(
+        self,
+        command: str,
+        on_chunk: Callable[[str], None] | None = None,
+        exclude_from_context: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Execute a bash command and return the result.
+        Mirrors executeBash() in TypeScript.
+        
+        Returns dict with:
+            - output: str
+            - exit_code: int
+            - cancelled: bool
+            - truncated: bool
+            - full_output_path: str | None
+        """
+        from pi_ai.types import ToolResultMessage
+        
+        # Apply command prefix if configured
+        prefix = self._settings_manager.get_shell_command_prefix()
+        resolved_command = f"{prefix}\n{command}" if prefix else command
+        
+        # Execute bash command
+        # TODO: Integrate with actual bash executor when available
+        import subprocess
+        try:
+            proc = subprocess.run(
+                resolved_command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=self.cwd,
+                timeout=300,  # 5 minute timeout
+            )
+            output = proc.stdout + proc.stderr
+            exit_code = proc.returncode
+            cancelled = False
+            truncated = False
+            full_output_path = None
+            
+            if on_chunk:
+                on_chunk(output)
+        except subprocess.TimeoutExpired:
+            output = "Command timed out after 5 minutes"
+            exit_code = -1
+            cancelled = True
+            truncated = False
+            full_output_path = None
+        except Exception as e:
+            output = f"Error executing command: {str(e)}"
+            exit_code = -1
+            cancelled = False
+            truncated = False
+            full_output_path = None
+        
+        result = {
+            "output": output,
+            "exit_code": exit_code,
+            "cancelled": cancelled,
+            "truncated": truncated,
+            "full_output_path": full_output_path,
+        }
+        
+        # Record result in session
+        self.record_bash_result(
+            tool_call_id="manual_exec",
+            output=output,
+            exit_code=exit_code,
+        )
+        
+        return result
+
+    def abort_bash(self) -> None:
+        """
+        Abort current bash execution.
+        Mirrors abortBash() in TypeScript.
+        """
+        # TODO: Integrate with bash executor abort mechanism
+        pass
+
+    def set_session_name(self, name: str) -> None:
+        """
+        Set a human-readable name for the session.
+        Mirrors setSessionName() in TypeScript.
+        """
+        self._session_manager.append_session_info(name)
+
+    def get_user_messages_for_forking(self) -> list[dict[str, str]]:
+        """
+        Get all user messages suitable for forking.
+        Mirrors getUserMessagesForForking() in TypeScript.
+        
+        Returns list of dicts with:
+            - entry_id: str
+            - text: str
+        """
+        entries = self._session_manager.get_entries()
+        result: list[dict[str, str]] = []
+        
+        for entry in entries:
+            if entry.type != "message":
+                continue
+            msg_data = entry.data.get("message", {})
+            if isinstance(msg_data, dict) and msg_data.get("role") == "user":
+                text = self._extract_user_message_text(msg_data.get("content", ""))
+                if text:
+                    result.append({"entry_id": entry.id, "text": text})
+        
+        return result
+
+    def _extract_user_message_text(self, content: str | list[dict] | Any) -> str:
+        """Extract text from user message content."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "text"
+            )
+        return ""
+
+    def has_extension_handlers(self, event_type: str) -> bool:
+        """
+        Check if any extensions handle the given event type.
+        Mirrors hasExtensionHandlers() in TypeScript.
+        This is a stub for future extension support.
+        """
+        # TODO: Implement when extension system is added
+        return False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

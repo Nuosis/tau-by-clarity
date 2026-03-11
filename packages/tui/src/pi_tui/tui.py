@@ -110,6 +110,7 @@ class OverlayOptions:
     col: SizeValue | None = None
     margin: OverlayMargin | int | None = None
     visible: Callable[[int, int], bool] | None = None
+    non_capturing: bool = False  # NEW: If true, don't capture keyboard focus when shown
 
 
 @dataclass
@@ -118,20 +119,25 @@ class OverlayEntry:
     options: OverlayOptions | None
     pre_focus: object | None  # Component | None
     hidden: bool = False
+    focus_order: int = 0  # NEW: For sorting overlays by focus order
 
 
 class OverlayHandle:
-    """Handle returned by show_overlay(). Controls overlay visibility."""
+    """Handle returned by show_overlay(). Controls overlay visibility and focus."""
 
     def __init__(
         self,
         hide_fn: Callable[[], None],
         set_hidden_fn: Callable[[bool], None],
         is_hidden_fn: Callable[[], bool],
+        entry: OverlayEntry,
+        tui: "TUI",
     ) -> None:
         self._hide = hide_fn
         self._set_hidden = set_hidden_fn
         self._is_hidden = is_hidden_fn
+        self._entry = entry
+        self._tui = tui
 
     def hide(self) -> None:
         self._hide()
@@ -141,6 +147,23 @@ class OverlayHandle:
 
     def is_hidden(self) -> bool:
         return self._is_hidden()
+    
+    def focus(self) -> None:
+        """Set focus to this overlay."""
+        self._tui._focused_overlay = self._entry
+        self._entry.focus_order = self._tui._next_focus_order
+        self._tui._next_focus_order += 1
+        self._tui.request_render()
+    
+    def unfocus(self) -> None:
+        """Remove focus from this overlay."""
+        if self._tui._focused_overlay == self._entry:
+            self._tui._focused_overlay = None
+            self._tui.request_render()
+    
+    def is_focused(self) -> bool:
+        """Check if this overlay has focus."""
+        return self._tui._focused_overlay == self._entry
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +250,8 @@ class TUI(Container):
         self._stopped = False
 
         self._overlay_stack: list[OverlayEntry] = []
+        self._focused_overlay: OverlayEntry | None = None  # NEW: Track focused overlay
+        self._next_focus_order: int = 0  # NEW: For focus ordering
         self._main_loop: "asyncio.AbstractEventLoop | None" = None
 
     @property
@@ -268,10 +293,17 @@ class TUI(Container):
             options=options,
             pre_focus=self._focused_component,
             hidden=False,
+            focus_order=self._next_focus_order,
         )
         self._overlay_stack.append(entry)
-        if self._is_overlay_visible(entry):
+        
+        # Only set focus if not non-capturing and overlay is visible
+        is_non_capturing = options and options.non_capturing
+        if not is_non_capturing and self._is_overlay_visible(entry):
             self.set_focus(component)
+            self._focused_overlay = entry
+            self._next_focus_order += 1
+        
         self.terminal.hide_cursor()
         self.request_render()
 
@@ -283,6 +315,8 @@ class TUI(Container):
             if self._focused_component is component:
                 top = self._get_topmost_visible_overlay()
                 self.set_focus(top.component if top else entry.pre_focus)
+            if self._focused_overlay == entry:
+                self._focused_overlay = None
             if not self._overlay_stack:
                 self.terminal.hide_cursor()
             self.request_render()
@@ -295,15 +329,21 @@ class TUI(Container):
                 if self._focused_component is component:
                     top = self._get_topmost_visible_overlay()
                     self.set_focus(top.component if top else entry.pre_focus)
+                if self._focused_overlay == entry:
+                    self._focused_overlay = None
             else:
-                if self._is_overlay_visible(entry):
+                is_non_capturing = options and options.non_capturing
+                if not is_non_capturing and self._is_overlay_visible(entry):
                     self.set_focus(component)
+                    self._focused_overlay = entry
+                    entry.focus_order = self._next_focus_order
+                    self._next_focus_order += 1
             self.request_render()
 
-        def _is_hidden() -> bool:
+        def _is_hidden():
             return entry.hidden
 
-        return OverlayHandle(_hide, _set_hidden, _is_hidden)
+        return OverlayHandle(_hide, _set_hidden, _is_hidden, entry, self)
 
     def hide_overlay(self) -> None:
         """Hide the topmost overlay and restore previous focus."""
@@ -327,9 +367,14 @@ class TUI(Container):
         return True
 
     def _get_topmost_visible_overlay(self) -> OverlayEntry | None:
+        """Find the topmost visible capturing overlay, if any."""
         for i in range(len(self._overlay_stack) - 1, -1, -1):
-            if self._is_overlay_visible(self._overlay_stack[i]):
-                return self._overlay_stack[i]
+            entry = self._overlay_stack[i]
+            # Skip non-capturing overlays
+            if entry.options and entry.options.non_capturing:
+                continue
+            if self._is_overlay_visible(entry):
+                return entry
         return None
 
     def invalidate(self) -> None:
@@ -618,12 +663,14 @@ class TUI(Container):
             return lines
         result = list(lines)
 
+        # Get visible overlays and sort by focus_order
+        visible_entries = [e for e in self._overlay_stack if self._is_overlay_visible(e)]
+        visible_entries.sort(key=lambda e: e.focus_order)  # NEW: Sort by focus order
+
         rendered: list[tuple[list[str], int, int, int]] = []  # (overlay_lines, row, col, w)
         min_lines_needed = len(result)
 
-        for entry in self._overlay_stack:
-            if not self._is_overlay_visible(entry):
-                continue
+        for entry in visible_entries:
             w, _, _, max_h = self._resolve_overlay_layout(entry.options, 0, term_width, term_height)
             comp = entry.component
             overlay_lines: list[str] = comp.render(w) if hasattr(comp, "render") else []  # type: ignore

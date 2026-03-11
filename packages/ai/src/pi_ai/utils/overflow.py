@@ -29,6 +29,8 @@ OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"greater than the context length", re.IGNORECASE),            # LM Studio
     re.compile(r"context window exceeds limit", re.IGNORECASE),               # MiniMax
     re.compile(r"exceeded model token limit", re.IGNORECASE),                 # Kimi For Coding
+    re.compile(r"too large for model with \d+ maximum context length", re.IGNORECASE),  # Mistral
+    re.compile(r"model_context_window_exceeded", re.IGNORECASE),              # z.ai
     re.compile(r"context[_ ]length[_ ]exceeded", re.IGNORECASE),              # Generic fallback
     re.compile(r"too many tokens", re.IGNORECASE),                            # Generic fallback
     re.compile(r"token limit exceeded", re.IGNORECASE),                       # Generic fallback

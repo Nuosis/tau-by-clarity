@@ -42,8 +42,8 @@ from pi_ai.utils.event_stream import EventStream
 from pi_ai.utils.json_parse import parse_streaming_json
 
 
-@dataclass
 class ProxyStreamOptions(SimpleStreamOptions):
+    """Options for proxy streaming. Extends SimpleStreamOptions."""
     auth_token: str = ""
     proxy_url: str = ""
 

@@ -17,6 +17,7 @@ from .types import (
     PiManifest,
     RegisteredCommand,
     RegisteredTool,
+    ToolDefinition,
 )
 from .runner import ExtensionRunner
 from .loader import discover_and_load_extensions, load_extensions
@@ -30,6 +31,7 @@ __all__ = [
     "PiManifest",
     "RegisteredCommand",
     "RegisteredTool",
+    "ToolDefinition",
     "discover_and_load_extensions",
     "load_extensions",
 ]
