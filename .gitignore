@@ -35,6 +35,7 @@ htmlcov/
 *.bak
 
 # Archives (don't push to remote)
+docs/
 docs/archive/
 .archive_*/
 
