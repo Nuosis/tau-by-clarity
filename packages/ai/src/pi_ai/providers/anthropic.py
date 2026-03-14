@@ -695,7 +695,12 @@ async def stream_simple(
                 timestamp=int(time.time() * 1000),
             )
 
-            yield EventDone(type="done", reason=stop_reason, message=final)
+            # EventDone only accepts "stop", "length", "toolUse"
+            # For "error" or "aborted", emit EventError instead
+            if stop_reason in ("error", "aborted"):
+                yield EventError(type="error", reason=stop_reason, error=final)
+            else:
+                yield EventDone(type="done", reason=stop_reason, message=final)
 
     except Exception as e:
         signal = getattr(opts, "signal", None)

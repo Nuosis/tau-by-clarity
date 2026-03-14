@@ -1,6 +1,8 @@
 # pi-mono-python
 
-Python port of the [pi-mono](../pi-mono) TypeScript monorepo — four packages with aligned code, logic, algorithms, and folder structure.
+> Python port of the [pi-mono](../pi-mono) TypeScript monorepo — four packages with aligned code, logic, algorithms, and folder structure.
+>
+> **[中文 README →](README_CN.md)**
 
 | TypeScript | Python | Description |
 |---|---|---|
@@ -11,21 +13,20 @@ Python port of the [pi-mono](../pi-mono) TypeScript monorepo — four packages w
 
 ---
 
-## Requirements
+## Installation
 
-| Tool | Version |
-|------|---------|
-| Python | 3.11+ |
-| [`uv`](https://docs.astral.sh/uv/) | latest |
+### Prerequisites
+
+- **Python 3.11+** — Check with `python3 --version`
+- **[uv](https://docs.astral.sh/uv/)** — Fast Python package manager
+
+Install `uv` if you don't have it:
 
 ```bash
-# Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
----
-
-## Installation
+### Clone and Install
 
 ```bash
 git clone https://github.com/openxjarvis/pi-mono-python.git
@@ -37,35 +38,35 @@ uv sync
 
 ---
 
-## Configuration
+## Quick Start
 
-Create or edit `.env` in the project root:
+### 1. Configure API Keys
 
-```env
-# Google Gemini (default provider)
+Create `.env` in the project root:
+
+```bash
+# Google Gemini (recommended default)
 GEMINI_API_KEY=your_key_here
 
 # Optional — add whichever providers you need
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 GOOGLE_API_KEY=        # alternative to GEMINI_API_KEY
-AWS_ACCESS_KEY_ID=     # for Bedrock
+AWS_ACCESS_KEY_ID=     # for AWS Bedrock
 AWS_SECRET_ACCESS_KEY=
 ```
 
-> `.env` is loaded automatically at runtime. **Never commit it to git.**
+> **Important:** `.env` is loaded automatically at runtime. **Never commit it to git.**
 
----
-
-## Usage
-
-### Interactive TUI (default)
+### 2. Launch the Interactive TUI
 
 ```bash
 uv run --package pi-coding-agent pi
 ```
 
-Launches the full-featured terminal UI:
+This opens the full-featured terminal UI where you can chat with the coding agent.
+
+**Keyboard shortcuts:**
 
 | Key | Action |
 |-----|--------|
@@ -76,56 +77,66 @@ Launches the full-featured terminal UI:
 | `Ctrl+P` | Cycle to next model |
 | `Ctrl+C` / `Esc` | Quit |
 
-**Slash commands** (type `/` to see completions):
+### 3. Try a Simple Task
 
-| Command | Description |
-|---------|-------------|
-| `/model <name>` | Switch model by name |
-| `/thinking <level>` | Set thinking level: `minimal` · `low` · `medium` · `high` · `xhigh` |
-| `/compact` | Compact conversation context |
-| `/session` | Show session statistics (tokens, cost) |
-| `/tools` | List active tools |
+Type in the terminal:
+
+```
+Create a Python function to calculate fibonacci numbers
+```
+
+The agent will write the code and save it to your current directory.
 
 ---
 
-### Non-interactive (single prompt)
+## Common Use Cases
+
+### Single Prompt (Non-Interactive)
+
+For scripting or quick tasks:
 
 ```bash
 uv run --package pi-coding-agent pi --print "Write a quicksort in Python"
 ```
 
-Prints the agent's response to stdout and exits — useful for scripting.
+The agent's response prints to stdout and exits.
 
----
-
-### Specify a model
+### Switch Models
 
 ```bash
-# By model ID
+# Use a specific model
 uv run --package pi-coding-agent pi --model gemini-2.5-pro-preview
 
-# By provider + model
+# Use a provider + model name
 uv run --package pi-coding-agent pi --provider google --model gemini-2.0-flash
 
 # List all available models
 uv run --package pi-coding-agent pi --list-models
 ```
 
----
-
-### Session management
+### Resume Previous Sessions
 
 ```bash
-# Resume the most recent session
+# Continue the most recent session
 uv run --package pi-coding-agent pi --continue
 
-# Pick a previous session from a list
+# Pick from a list of previous sessions
 uv run --package pi-coding-agent pi --resume
 ```
 
----
+### Slash Commands in TUI
 
-### Full CLI reference
+Type `/` in the interactive TUI to see available commands:
+
+| Command | Description |
+|---------|-------------|
+| `/model <name>` | Switch to a different model |
+| `/thinking <level>` | Set thinking detail: `minimal` · `low` · `medium` · `high` · `xhigh` |
+| `/compact` | Compress conversation context to save tokens |
+| `/session` | Show session statistics (tokens used, cost estimate) |
+| `/tools` | List all active tools available to the agent |
+
+### Full CLI Help
 
 ```bash
 uv run --package pi-coding-agent pi --help

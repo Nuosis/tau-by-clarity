@@ -251,7 +251,7 @@ def create_read_tool(
             f"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). "
             f"Images are sent as attachments. For text files, output is truncated to "
             f"{DEFAULT_MAX_LINES} lines or {DEFAULT_MAX_BYTES // 1024}KB (whichever is hit first). "
-            f"Use offset/limit for large files."
+            f"Use offset/limit for large files. When you need the full file, continue with offset until complete."
         ),
         parameters={
             "type": "object",
