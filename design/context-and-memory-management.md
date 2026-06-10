@@ -1,12 +1,53 @@
 # Context & Memory Management — Design Thinking
 
-Status: design note / not yet implemented
-Scope: how `pi-py` assembles per-call context today, and a proposed signal-routed
-strategy for managing it more intelligently.
+Status: design + offline/Tier-1 evidence in hand; **not yet wired into `pi-py`**.
+Scope: how `pi-py` assembles per-call context today, and the planned **"active
+compression"** strategy for managing it.
 
-This document captures a line of reasoning, not a finished spec. It exists so the
-"why" survives — the mechanics below constrain every memory decision we make, and
-they are easy to forget once the code looks like it "just works."
+This document captures both the plan (next section) and the reasoning that produced
+it (§§1–10). Read the TL;DR for *what we're building*; read the rest for *why*, and
+for the dead-ends we deliberately rejected.
+
+---
+
+## TL;DR — the current plan (v1: "active compression")
+
+Decided by the evidence in §9. If you only read one section, read this.
+
+- **Compress by POSITION, not per-turn relevance.** Keep a **head budget** (anchor:
+  task/spec/early decisions) and a **tail budget** (recent turns) verbatim; compress
+  the middle. Compression is **persistent** — compress once and hold it stable so the
+  prompt **prefix stays byte-stable and the model's prompt cache stays warm**. As the
+  frontier advances, turns aging past the tail budget are compressed in **batches**,
+  not every turn.
+- **Compression is LOSSLESS and deterministic.** A compressed block → a **TF-IDF
+  keyword cue** (no LLM) **+ a ref to the retained full text**. Binary: full | cue+ref.
+  No multi-tier fidelity ramp.
+- **Recovery is AUTOMATIC and harness-driven — NOT model-driven.** When a later turn's
+  terms match a compressed block's cue, the **harness auto-injects the full text at the
+  tail** (cache-safe append). Do **not** rely on an `expand` tool the model calls:
+  Tier-1 showed the model won't (0/6 calls, even `gpt-5.4-mini` with an explicit
+  instruction to expand — it can't tell it's missing what it can no longer see).
+- **No embeddings in v1.** Lexical keyword-overlap recovery clears **~98%** of real
+  cross-references (§9). Embeddings are a measured, **local-only** upgrade (Ollama),
+  considered only if a Tier-1 judge shows the paraphrase tail is large. Never send
+  customer content to a cloud embedder; Anthropic has no embeddings endpoint anyway.
+- **Flag-gated; lossless ⇒ safe to A/B in prod.** Toggle on/off. Because nothing is
+  destroyed, population A/B (or shadow replay) verifies effectiveness post-hoc. Default
+  ON once validated (kill-switch flag retained).
+
+**Seam:** `transform_context()` in `core/agent_session.py` (currently an identity stub).
+
+**Open questions (not yet answered):** (1) the paraphrase-recovery tail — how often a
+real recovery need shares *no* terms with the target (needs a Tier-1 LLM judge); (2)
+end-to-end non-inferiority of compressed-context **with auto-recovery wired in** (the
+next eval — the Tier-1 runs so far tested model-driven expand, which we're abandoning).
+
+**Rejected along the way** (kept below as reasoning, each with its reason): a high/low-
+recency **mode router** (§6 — regimes are emergent, not configured); **per-turn
+relevance re-shaping** and **pivot-triggered** re-shaping (cache-hostile to apply;
+position approximates it); a multi-tier **fidelity ramp** (unvalidated + needed an LLM);
+**model-driven `expand`** (Tier-1: model won't call it in real flow).
 
 ---
 
@@ -202,27 +243,31 @@ resurrects it** at the pivot. Two rules follow:
   irrelevant today, so "high-relevance is never touched" does not save them — recall
   does. Budget for recall accordingly; it is the safety net, not an enhancement.
 
-### The cache discipline: score continuously, re-shape only at pivots
+### The cache discipline → why v1 compresses by POSITION, not per-turn relevance
 
 Scoring is free and continuous. **Re-shaping (recompressing) is not** — it mutates
-the prefix, invalidates the cache, and forces reprocessing. So the rule is:
+the prefix, invalidates the cache, and forces reprocessing. An earlier draft tried to
+contain this by re-shaping "only at relevance pivots." **v1 drops the pivot machinery
+entirely** and compresses by *position* instead, because position is cache-stable by
+construction and Lost-in-the-Middle says the middle is the right thing to thin anyway:
 
-> recompute the compressed set only at **relevance discontinuities** — user-prompt
-> **pivots** — and at floor crossings. Between pivots, hold the shape **stable** so
-> the cache stays warm.
+- Protect a **head budget** and **tail budget** verbatim; compress the middle.
+- Compression is **persistent** — compress once, hold it. The prefix only changes when
+  the frontier advances enough to age a turn past the tail budget, handled in
+  **batches** (every K turns / N tokens), so cache breaks are rare and bounded.
+- **No pivot detection.** Position decides *what* is compressed; relevance is used only
+  on the **recovery** path (which compressed block to page back), which appends at the
+  tail and never mutates the prefix.
 
-This is the elegant part: it **bounds cache cost in both regimes for free.**
-High-recency / coding — relevance barely moves turn to turn, so you almost never
-re-shape → looks like append, cache hot. Low-recency — pivots are *rare by
-definition* (few, slow turns), so you re-shape seldom, one cache break per pivot.
-The same mechanism is cache-cheap in both regimes, which is *why* the explicit mode
-router was unnecessary.
+This still bounds cache cost in both regimes, but without per-turn scoring or a pivot
+detector: high-recency work keeps everything in the head/tail budgets (looks like
+append); long low-recency dialogue compresses an aging middle in batches.
 
-The pivot is also free to detect and doubly useful: compare the new prompt's
-similarity to the recent frontier vs. to older regions. New prompt closer to
-something 40 turns back than to the last 5 → relevance just jumped, *and* you have
-identified which buried region to resurrect. One measurement yields both "re-shape
-now" and "here's what to page back in."
+> Deferred upgrade: per-turn relevance scoring + pivot-triggered re-shaping (the
+> superseded approach above) could in principle out-select position. It is deferred
+> because position + automatic recovery already clears ~98% (§9) at far lower
+> complexity and zero cache risk. Revisit only if evals show position leaving value on
+> the table.
 
 ### The break-even floor
 
@@ -254,30 +299,35 @@ starting point — §10):
 Recall injection fights the cache **unless it lives at the tail.** Inject fresh
 recall after the system prompt but before the transcript and you invalidate the
 whole transcript cache every turn. Rule: **stable prefix = system prompt +
-(stable-between-pivots) transcript; churning tail = recall + new turn.** Recall goes
-at the bottom.
+(persistently-compressed) transcript; churning tail = recovered blocks + new turn.**
+Recovered full-text and the new turn go at the bottom.
 
 ## 8. Where this plugs into pi-py
 
-There is **one** strategy (§6/§7), not a mode switch. It needs three seams:
+One strategy (the TL;DR plan), three seams:
 
 - **`transform_context()`** (`core/agent_session.py`, currently the identity stub) —
-  the assembly seam. On each turn it: (1) detects a pivot (prompt-vs-frontier-vs-old
-  similarity); (2) if a pivot or floor crossing, re-scores blocks by relevance and
-  re-shapes (protect high, breadcrumb-demote low, harder by age); (3) otherwise holds
-  the prior shape so the prefix stays cache-warm; (4) appends recall + new turn at the
-  **tail**.
-- **A recall layer** — the non-negotiable other half. Demotion is only lossless
-  because demoted content is retrievable: cold store + similarity recall + an
-  **`expand(ref)`** tool the model can call on a breadcrumb. Build this *with* the
-  eviction, never after.
-- **Reversible store** — every demotion keeps the original retrievable by id (à la the
-  Oracle pattern, *not* pi's current lossy compaction). This is a standalone upgrade
-  over today's compaction and is worth landing first, before any relevance scoring.
+  the assembly seam. Each turn it: (1) **position-compresses** — protect head/tail
+  budgets, batch-compress turns that have aged past the tail budget into keyword
+  cue + ref (persistent; no per-turn re-scoring, no pivot detection); (2) runs
+  **automatic recovery** — score compressed blocks' cues against the current prompt
+  (lexical in v1) and **append the full text of matches at the tail**; (3) appends the
+  new turn. The prefix stays byte-stable between compression batches → cache warm.
+- **A recall layer — the non-negotiable other half, and it must be HARNESS-DRIVEN.**
+  Demotion is only lossless because the harness *automatically* re-injects a compressed
+  block when its cue matches the prompt. **Do not rely on a model-called `expand`
+  tool** — Tier-1 showed the model won't call it in real flow (0/6, even
+  `gpt-5.4-mini` instructed to): it can't tell it's missing what it can no longer see,
+  and confabulates instead. An `expand` tool may exist as a *fallback*, but it is never
+  the primary recovery path. (This is exactly Oracle's "retrieval is **programmatic**,
+  not agent-triggered" rule — see §10.)
+- **Reversible store** — every compression keeps the original retrievable by id (à la
+  the Oracle pattern, *not* pi's current lossy compaction). Standalone upgrade over
+  today's compaction; worth landing first.
 
-What this is **not**: a "cache mode vs lean mode" toggle. The barbell/append behaviour
-in coding and the dispersed-demotion behaviour in long dialogue both *emerge* from the
-single policy — nothing selects them.
+What this is **not**: a "cache mode vs lean mode" toggle, and **not** model-driven
+expand. The append-like behaviour in coding and the middle-compression in long dialogue
+both *emerge* from position-compression — nothing selects them.
 
 ## 9. What to build first — measure before you ship
 
@@ -398,6 +448,31 @@ to a cloud embedder). **Caveat:** Test B's term-overlap ground truth cannot see
 *pure-paraphrase* cross-references, so their real-world frequency is unmeasured — that is
 the one thing Tier-1's LLM judge must quantify before trusting the ~2 % figure.
 
+### Tier-1 A/B — model-driven `expand` fails; recovery must be automatic (`evals/tier1_recovery_ab.py`)
+
+Live A/B on the low-recency Claire chat: full context vs active-compressed-with-an-
+`expand`-tool, pairwise non-inferiority judge. Runs on a chosen model (local Ollama
+`qwen3:30b`, or OpenAI). Result was the same across **two very different models**:
+
+- `qwen3:30b`: 1/4 non-inferior, **0/4 used expand**.
+- `gpt-5.4-mini` (frontier tool-caller, hardened tool def, system prompt *mandating*
+  expand): 2/6 non-inferior, **0/6 used expand**.
+
+A smoke test confirmed `gpt-5.4-mini` *will* call `expand` on a pointed question about a
+single obviously-relevant stub — so this is not a tool-definition defect. In **real
+multi-block flow it never fires**: the model can't tell it's missing what it can no
+longer see, so it confabulates a fluent answer and silently drops the compressed
+specifics (names, numbers, the exact flow steps). The compressed arm degrades exactly
+as Tier-0 predicted *when recovery doesn't fire*.
+
+**Decision — recovery must be HARNESS-DRIVEN (automatic), not model-driven.** Tier-0
+said automatic lexical recovery ≈ 98 %; Tier-1 says model-driven `expand` ≈ 0 % in
+realistic flow. This is precisely Oracle's "retrieval is **programmatic**, not
+agent-triggered" rule (§10): we tested the agent-triggered path, it failed as Oracle
+predicts, and v1 adopts the programmatic path. **Still open:** the Tier-1 runs so far
+tested the *wrong* (model-driven) half; the decisive eval — compressed context with
+**auto-recovery wired in** vs full context — has not been run yet.
+
 ## 10. Prior work — this design is a recombination, not a new invention
 
 Two layers in the literature; keep them distinct:
@@ -427,8 +502,17 @@ Two layers in the literature; keep them distinct:
   **question-aware** and targets middle-loss. Concrete tool for the light/heavy
   fidelity tiers; "question-aware" = the user prompt is the relevance query (§7).
 - **MemGPT** (Packer et al., 2023). OS-paging: main context (RAM) vs recall/archival
-  (disk), model pages content in/out via function calls. This *is* reversible-ref +
-  model-triggered `expand`.
+  (disk). This *is* our reversible-ref store. **Caveat:** MemGPT pages in/out via
+  *model* function calls — the model-driven path Tier-1 (§9) found unreliable in real
+  flow. We keep the paging architecture but drive recovery programmatically (next).
+- **Oracle Agent Memory** (workshop, §11). The decisive rule: **retrieval is
+  programmatic, not agent-triggered** — "critical memory behaviour must not depend on
+  the model remembering to call a tool." The harness retrieves and injects relevant
+  memory *every turn*; only optional extras (web search, expanding an *already-surfaced*
+  reference) are agent-triggered. Tier-1's 0/6 `expand` rate is this rule proven: the
+  agent-triggered path fails, so v1's recovery is **programmatic/automatic**, exactly as
+  Oracle prescribes. Oracle uses *semantic* (embedding) retrieval; v1 uses lexical — the
+  one place we diverge, and the locus of the open paraphrase-tail question.
 
 ### Changes the design
 
@@ -443,14 +527,17 @@ Two layers in the literature; keep them distinct:
 
 ### Net
 
-The pieces are each independently validated — relevance scoring (Generative Agents),
-the U-shape (Lost in the Middle), eviction+recall paging (MemGPT), graduated
-compression (LLMLingua). The **less-charted** synthesis — and what the evals (§9, §11)
-must earn — is the **cache discipline**: relevance-to-prompt as the single eviction
-metric, recomputed **only at pivots** so per-prompt scoring stays cache-affordable, with
-shape and regime left **emergent** rather than configured. No prior work pairs
-relevance-eviction with pivot-gated re-shaping this way. That is the contribution and
-the risk.
+The pieces are each independently validated — the U-shape (Lost in the Middle),
+reversible paging (MemGPT), programmatic retrieval (Oracle), graduated compression
+(LLMLingua). v1 is their **recombination**, not a new invention: **position-based
+lossless compression** (head/tail protected, middle → keyword cue + ref) with
+**programmatic/automatic lexical recovery** — cache-stable by construction, embeddings-
+free, and Oracle-shaped (programmatic, not model-driven). The genuinely unproven parts —
+what the *remaining* evals must earn — are narrow: (1) the **paraphrase tail** (how often
+recovery needs share no terms, which would force local embeddings — Oracle's semantic
+choice); and (2) **end-to-end non-inferiority with auto-recovery wired in** (every eval
+so far tested either the static working set or the abandoned model-driven path). Those
+two, not the architecture, are the risk.
 
 References: Lost in the Middle `arxiv.org/abs/2307.03172` · Context Rot
 `research.trychroma.com/context-rot` · Generative Agents `arxiv.org/abs/2304.03442`

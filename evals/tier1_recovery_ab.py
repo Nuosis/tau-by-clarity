@@ -55,10 +55,11 @@ def make_client(base_url: str):
     import openai
     if "localhost" in base_url or "127.0.0.1" in base_url:
         return openai.OpenAI(base_url=base_url, api_key="ollama")  # local: key ignored
+    key = ""
     for line in Path(".env").read_text().splitlines():
         if line.startswith("OPENAI_API_KEY=") and line.split("=", 1)[1].strip():
-            os.environ["OPENAI_API_KEY"] = line.split("=", 1)[1].strip()
-    return openai.OpenAI()
+            key = line.split("=", 1)[1].strip()
+    return openai.OpenAI(base_url=base_url, api_key=key)
 
 
 def to_chat(blocks: list[Block]) -> list[dict]:
@@ -89,14 +90,31 @@ EXPAND_TOOL = [{
     "type": "function",
     "function": {
         "name": "expand",
-        "description": "Retrieve the full original text of a compressed block by its ref id.",
+        "description": (
+            "Retrieve the FULL original text of an earlier conversation turn that has "
+            "been compressed to a keyword placeholder. Call this whenever you need the "
+            "exact details (names, numbers, wording, decisions) of a block shown as "
+            "'[compressed block ref=<id>; keywords: ...]'. Returns the verbatim text."),
+        "strict": True,
         "parameters": {
             "type": "object",
-            "properties": {"ref": {"type": "string", "description": "the ref id, e.g. m42"}},
+            "additionalProperties": False,
+            "properties": {
+                "ref": {"type": "string",
+                        "description": "the block ref id exactly as shown, e.g. m42"}},
             "required": ["ref"],
         },
     },
 }]
+
+SYS_BASE = ("You are the assistant in this ongoing conversation. Respond to the user's "
+            "most recent message, using the conversation so far.")
+SYS_COMPRESSED = SYS_BASE + (
+    " NOTE: to save space, some earlier turns have been replaced by placeholders of the "
+    "form '[compressed block ref=<id>; keywords: ...]'. The full text of those turns is "
+    "NOT shown. If answering accurately needs the exact details of any compressed block, "
+    "you MUST call the expand(ref) tool to retrieve its full text BEFORE answering. Never "
+    "guess or fabricate the contents of a compressed block.")
 
 
 def answer(client, model: str, messages: list[dict], full_text: dict[str, str] | None):
@@ -105,8 +123,9 @@ def answer(client, model: str, messages: list[dict], full_text: dict[str, str] |
     tools = EXPAND_TOOL if full_text is not None else None
     expand_calls: list[str] = []
     for _ in range(6):
-        resp = client.chat.completions.create(
-            model=model, messages=msgs, tools=tools, temperature=0)
+        # no temperature: gpt-5.x reasoning models reject non-default values
+        kw = {"tools": tools, "tool_choice": "auto"} if tools else {}
+        resp = client.chat.completions.create(model=model, messages=msgs, **kw)
         m = resp.choices[0].message
         if getattr(m, "tool_calls", None):
             msgs.append({"role": "assistant", "content": m.content or "",
@@ -135,7 +154,7 @@ def judge(client, model: str, question: str, a: str, b: str) -> dict:
              'Reply ONLY JSON: {"non_inferior": true|false, "reason": "<short>"}.')
     u = f"USER MESSAGE:\n{question}\n\n--- ANSWER A ---\n{a}\n\n--- ANSWER B ---\n{b}"
     resp = client.chat.completions.create(
-        model=model, temperature=0,
+        model=model,
         messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": u}])
     parsed = extract_json(resp.choices[0].message.content or "")
     return parsed or {"non_inferior": None, "reason": "unparseable"}
@@ -187,9 +206,11 @@ def main() -> int:
             print(f"turn {idx}: no compressed middle at this depth — skip")
             continue
 
-        full_msgs = to_chat(prefix) + [{"role": "user", "content": question}]
-        comp_msgs = to_compressed_chat(prefix, comp, cues) + [
-            {"role": "user", "content": question}]
+        full_msgs = ([{"role": "system", "content": SYS_BASE}]
+                     + to_chat(prefix) + [{"role": "user", "content": question}])
+        comp_msgs = ([{"role": "system", "content": SYS_COMPRESSED}]
+                     + to_compressed_chat(prefix, comp, cues)
+                     + [{"role": "user", "content": question}])
 
         a_full, _ = answer(client, args.model, full_msgs, None)
         a_comp, calls = answer(client, args.model, comp_msgs, full_text)
