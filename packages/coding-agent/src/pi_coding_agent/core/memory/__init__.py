@@ -18,6 +18,12 @@ from .models import (
 from .curator import CommitDecision, Curator, Evidence
 from .recall import build_recall_block, latest_user_query
 from .store import MemoryStore
+from .working_context import (
+    CtxBlock,
+    WorkingContextConfig,
+    compress_working_context,
+    profile_for,
+)
 
 __all__ = [
     "MemoryStore", "SemanticMemory", "MemoryHit", "ConversationTurn", "Scope",
@@ -26,4 +32,5 @@ __all__ = [
     "embedding_provider_from_env", "cosine",
     "Curator", "Evidence", "CommitDecision",
     "build_recall_block", "latest_user_query",
+    "compress_working_context", "WorkingContextConfig", "CtxBlock", "profile_for",
 ]
