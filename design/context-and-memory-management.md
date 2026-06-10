@@ -739,6 +739,17 @@ single `deep-swe/tasks/<task-id>`). So the loop is: **micro run (≈10 tasks, fi
 baseline vs memory-augmented for a fast pass@1 estimate → full 113 only once the micro
 delta looks right.**
 
+**P6 build status (`evals/deep_swe/`):** infra **validated** here — docker up,
+`datacurve-pier` installed, deep-swe clones, custom-agent hook confirmed
+(`--agent-import-path module:Class` + `--agent-env PI_MEMORY_ENABLED=0|1`); Pier
+`BaseAgent` interface mapped (`name/version/setup/run`, `env.exec/upload_file`). The
+pi-py adapter is **scaffolded** (`pi_py_agent.py`, mirrors `mini_swe_agent`). The actual
+pass@1 micro run is the **remaining step**, gated on three open issues (see
+`evals/deep_swe/README.md`): (1) headless pi-py invocation contract, (2) M3 wiring +
+sandbox network allowlist for `api.minimax.io`, (3) **embeddings in the sandbox** —
+memory recall uses local Ollama, absent in the isolated env; until that's solved the
+memory arm isn't a fair test. No pass@1 number is claimed until the run is real.
+
 ## 10. Prior work — this design is a recombination, not a new invention
 
 Two layers in the literature; keep them distinct:
