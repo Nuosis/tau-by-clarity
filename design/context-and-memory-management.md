@@ -283,21 +283,33 @@ append); long low-recency dialogue compresses an aging middle in batches.
 > complexity and zero cache risk. Revisit only if evals show position leaving value on
 > the table.
 
-### The break-even floor → a MEASURED, model-calibrated target
+### Two thresholds: the ceiling (measured) and the floor (cost)
 
-Below a size floor, compute and act on nothing — nothing worth reclaiming, cache cost
-dominates. Above it, the cost gate is a break-even (act when `tokens-reclaimed ×
-cost-per-turn × turns-remaining > cache-reprocessing cost at that edit point`;
-per-location — editing the middle reprocesses everything after, the tail little).
+Compression is bounded by **two** sizes, both derived from one calibrated number —
+`~128k` was a placeholder for both.
 
-But the floor is not arbitrary, and **`~128k` was a placeholder.** The §9 coding eval
-showed gpt-5.4-mini **fails to recall a verbatim fact buried in 55k tokens of dense
-content** (lost-in-the-middle / context rot). That gives the floor a *principled,
-measured* definition:
+**Ceiling C — the measured reliable working-set size.** The §9 coding eval showed
+gpt-5.4-mini **fails to recall a verbatim fact buried in 55k tokens of dense content**
+(lost-in-the-middle / context rot). So:
 
-> **floor = target = the model's measured "reliable working-set size"** — the largest
-> context in which it still recalls a worst-depth needle at ≥ ~95%. Compress to keep
-> the working set at or below it.
+> **C = the largest context in which the model still recalls a worst-depth needle at
+> ≥ ~95%, on realistic dense content.** Compress to keep the working set **≤ C**.
+
+**Floor F — below it, don't compress at all.** Two reasons, same direction: below C the
+model finds everything (no recall benefit), and compression's overhead (curator +
+embedding + retrieval + cache invalidation) exceeds its savings while a stable small
+prefix stays cache-warm. So:
+
+> **F ≈ 0.5·C** (start compressing with headroom as you approach C), floored by an
+> absolute cost-minimum (never run the machinery below ~20–30k — any model is fine and
+> cheap there). **Below F:** append + cache-warm, do nothing. **F→C:** compress
+> progressively to stay under C. **Above C:** danger zone, must compress.
+
+Context size manages **effectiveness *and* cost**: below F more context is both
+effective (model handles it) and cheap (cache-warm), so compressing trades a free lunch
+for overhead and risk. The cost gate above F is still a break-even (act when
+`tokens-reclaimed × cost-per-turn × turns-remaining > cache-reprocessing cost`;
+per-location — editing the middle reprocesses everything after it, the tail little).
 
 Consequences:
 - **Model-specific.** Each model/tier has its own reliable size (Context Rot, §10,
@@ -404,6 +416,39 @@ agent**. Build against this map, not from scratch:
 end-to-end non-inferiority eval at atomic granularity. We are using the docs + Claire as
 the model while that validation continues.
 
+### Full memory system (project-local) — compression is one consumer
+
+The §8 Claire-mapping table is the component blueprint; this is the *whole system* pi-py
+builds, with the deltas that are pi-py-specific. **Active compression (§§6–7) is one
+consumer of the store, not the system.** The system = **store + scope + curator +
+lifecycle + retrieval**, and the defining choice is **project-local**:
+
+- **Storage / persistence.** `./.pi-py/memory/memory.db` in the **cwd** — SQLite + local
+  768-d embeddings (§8 table; local per §10 Oracle-divergence note). Tables as in §8
+  (semantic / conversation / summary / tool_log). Cross-session persistence per project
+  is the continuity pi lacks today (§3).
+- **Scope = poisoning boundary.** Project-local storage means an agent in repo A cannot
+  read/write repo B's store — that *is* the anti-poisoning mechanism. Within a project,
+  scope by session / task / file-module + a project-global lane. Every memory carries a
+  **provenance tag** (which session wrote it) → read-side trust filter; the curator's
+  grounding-verification (§8, assistant output ineligible) is the write-side gate.
+  **Open decision:** `./.pi-py/memory/` **gitignored** (per-clone, fully isolated —
+  recommended) vs **committed** (team/CI share, but memories mix). Default isolate +
+  explicit export.
+- **Formation = the curator** (§8 writer-of-record). pi-py triggers add post-tool-result
+  and post-decision to Claire's post-turn/session. Coding atomic taxonomy: decisions,
+  constraints, file/API facts, task-state, error→fix, preferences. Dedup via canonical
+  keys + supersession.
+- **Lifecycle + the coding-specific hazard.** States active/superseded/archived/deleted.
+  **New vs Claire: file-fact staleness.** Code facts rot when files change — tie
+  file-scoped memories to a **content hash / mtime** and invalidate on change, or the
+  store self-poisons with stale signatures (worse than cross-agent poisoning).
+- **Retrieval** — exactly §9's verified path: hybrid `max(lexical, semantic)`, scoped,
+  breadcrumb-aware (never evict to zero), top-k recovery as the bonus, injected at the
+  tail. Passive auto-inject + scope-gated `memory.lookup`.
+
+So the build order is store → curator → retrieval (the proven core), with active
+compression layered on top as the working-context consumer that pages atomic memories in.
 ## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
@@ -632,6 +677,18 @@ stub** (with `84.3`/`RUBICON-7` in its cue) recovered the answer.
 
 Matrix complete (coding + low-recency, on M3). Caveats unchanged: n is small, judging
 is exact-substring, calibration was n=1/cell — indicative, not statistically tight.
+
+### Acceptance benchmark (post-build): deep-swe
+
+The evals above verify the recall *mechanism*. The end-to-end question — *does the memory
+harness outperform a simple one?* — needs a task-success metric, and **deep-swe**
+(`github.com/datacurve-ai/deep-swe`) fits: **113 long-horizon SWE tasks** (TS/Go/Python/
+JS/Rust), **test-based pass/fail**, run via the **Pier** runner (`--agent`/`--model`).
+Plan: plug pi-py in as a Harbor/Pier agent and run **baseline pi-py vs memory-augmented
+pi-py, same model (M3), same tasks → pass@1 delta.** Long-horizon = the realistic
+context accumulation our micro-evals lacked; pass/fail = objective (no judge). This is
+the **acceptance test run after the system is built** (113 long tasks × 2 harnesses × M3
+= real compute), and the guard against the harness *degrading* vs a simple baseline.
 
 ## 10. Prior work — this design is a recombination, not a new invention
 
