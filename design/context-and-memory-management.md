@@ -449,6 +449,42 @@ lifecycle + retrieval**, and the defining choice is **project-local**:
 
 So the build order is store → curator → retrieval (the proven core), with active
 compression layered on top as the working-context consumer that pages atomic memories in.
+
+### Implementation plan (build phases — each gated by an eval before the next)
+
+Build the *proven core first* (store → retrieval → curator), compression last. Reuse the
+existing `evals/` harnesses — do not rebuild them. Each phase ships behind the same flag,
+default off until its gate passes.
+
+- **P0 — Store & scaffolding.** `core/memory/` package; SQLite at **`./.pi-py/memory/
+  memory.db`** (cwd-rooted §8); typed tables (§8 Claire map); scope + provenance model;
+  local embedding provider (Ollama `nomic-embed-text` 768-d) + deterministic test
+  fallback. *Gate:* schema + write/read round-trip tests.
+- **P1 — Retrieval (read path) first.** Hybrid `max(lexical, semantic)`, scoped,
+  breadcrumb-aware, top-k + budget (§9 verified path); passive tail-injection via
+  `transform_context`. *Gate:* re-run `evals/coding_recall_ab.py` against the **live
+  store** (not the proxy) → reproduce §9's 4/4 on M3.
+- **P2 — Curator (write path).** LLM curator post-turn/session/tool-result; grounding
+  verify + structural guards; `memory.propose` + scope-gated `memory.lookup` tools
+  (hardened: input_schema + retry-hinting errors + tracing); **no direct agent write**.
+  *Gate:* TDD + add curator to the BASIC eval runner with curator-specific requirements
+  (atom-extraction precision, assistant-output-ineligible, grounding) — never excluded.
+- **P3 — Lifecycle + staleness.** active/superseded/archived/deleted; **file-fact
+  content-hash invalidation** (the pi-py-specific hazard). *Gate:* stale-file
+  invalidation test.
+- **P4 — Active compression consumer.** Position-compress middle above floor **F** to
+  breadcrumb+ref; recover atomic memories into the lean tail; cache discipline (§7);
+  floor/ceiling per-model config from calibration (`evals/niah_calibrate.py`). *Gate:*
+  cache-stability + recall on the live path.
+- **P5 — Replace native compaction.** Swap the compaction path; flag default-on once
+  validated, kill-switch retained; lossless ⇒ prod-A/B-able (TL;DR).
+- **P6 — Acceptance.** Plug pi-py into Pier as a Harbor agent; **deep-swe micro run**
+  (`--n-tasks 10 --sample-seed 0`) baseline vs memory-augmented on M3 → fast pass@1
+  estimate; full 113 once the micro delta looks right.
+
+**Open decisions before P0:** gitignore-vs-commit the store (§8); the curator's atomic
+taxonomy. **Process:** building this is substantial code — work on an authorized branch
+only (no branch without explicit go-ahead).
 ## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
@@ -689,6 +725,12 @@ pi-py, same model (M3), same tasks → pass@1 delta.** Long-horizon = the realis
 context accumulation our micro-evals lacked; pass/fail = objective (no judge). This is
 the **acceptance test run after the system is built** (113 long tasks × 2 harnesses × M3
 = real compute), and the guard against the harness *degrading* vs a simple baseline.
+
+**Estimate first with a micro run.** A full 113-task pass is slow/expensive; Pier takes a
+deterministic subset — `pier run -p deep-swe/tasks --n-tasks 10 --sample-seed 0` (or a
+single `deep-swe/tasks/<task-id>`). So the loop is: **micro run (≈10 tasks, fixed seed)
+baseline vs memory-augmented for a fast pass@1 estimate → full 113 only once the micro
+delta looks right.**
 
 ## 10. Prior work — this design is a recombination, not a new invention
 
