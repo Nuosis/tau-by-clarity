@@ -486,11 +486,12 @@ default off until its gate passes.
 task-state · error→fix · preferences. (Canonical-keyed where the unit has identity,
 e.g. `decision:db_choice`, `fileapi:config/net.py`; superseded on change.)
 
-**Store persistence (DECIDED):** `./.pi-py/memory/` is **gitignored** — per-clone
-isolation is the anti-poisoning boundary (the whole point of project-local). Sharing is
-an **explicit `export`/`import`**, never an implicit commit. No open decisions remain
-before P0. **Process:** building this is substantial code — work on an authorized branch
-only (no branch without explicit go-ahead).
+**Store persistence (DECIDED):** `./.pi-py/memory/` is **committed to git** — tracked
+and versioned with the project. The anti-poisoning boundary is the **cwd / project root
+itself** (an agent in another project cannot reach it); committing just versions and
+shares the store *within* this project. No open decisions remain before P0.
+**Process:** building this is substantial code — work on an authorized branch only (no
+branch without explicit go-ahead).
 ## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
