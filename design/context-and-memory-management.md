@@ -601,8 +601,37 @@ preconditions proved **load-bearing** (and they're why earlier proxies failed):
 **Honest residue:** the one miss (trace-1 paraphrase) had the needle retrieved #1 but
 answer-synthesis lost it among semantic distractors — a *precision* issue, not
 retrieval, and narrower for coding (recall keys are mostly exact tokens — IDs, paths,
-identifiers — where literal recovery is clean). **Still not run:** the low-recency
-stitched-papers regime (the contrasting half of the matrix).
+identifiers — where literal recovery is clean).
+
+### MiniMax-M3 replication + low-recency papers (matrix completed)
+
+**Coding A/B on MiniMax-M3** (the model we'd actually run): hybrid recall **4/4**
+(2 traces × literal+paraphrase), needle rank #1. Two contrasts vs gpt-5.4-mini:
+- **M3 full-context = correct at 55k where gpt-5.4-mini failed** — the calibration's
+  model-reliable-size gap, reproduced in the A/B. Recovery is *more* necessary for
+  weak-recall models; M3 at 55k didn't even need it.
+- **no-recovery LITERAL = correct** — the keyword-cue stub retains the distinctive token
+  (`7741`), so the breadcrumb alone answers exact-token queries; paraphrase needs full
+  recovery.
+
+**Low-recency regime — stitched arXiv papers** (4 disjoint papers, real head/tail,
+camouflaged paper-claim needle in the compressed middle, M3): hybrid **4/4**. The
+decisive finding came from a bug: a "lean" render that *dropped* the stubs lost the
+paraphrase needle (which ranked **#12**, not top-8 — a retrieval-benchmark needle has
+~11 semantic competitors in a corpus *of retrieval papers*). Keeping the **breadcrumb
+stub** (with `84.3`/`RUBICON-7` in its cue) recovered the answer.
+
+**Two load-bearing conclusions, now evidenced:**
+1. **Never evict to zero — the breadcrumb stub is the safety net.** In topically-dense
+   corpora, top-k semantic recovery *alone* misses (needle ranks #12); the cue's
+   distinctive tokens are what save it. Top-k full-text recovery is the *bonus* for
+   paraphrase, not the floor.
+2. **Reliable working-set size is the dominant tuning constant**, and it's per-model:
+   M3 tolerates large dense working sets (recovery rarely needed below ~250k); a weak
+   model needs aggressive compression early. Model choice ⇔ compression aggressiveness.
+
+Matrix complete (coding + low-recency, on M3). Caveats unchanged: n is small, judging
+is exact-substring, calibration was n=1/cell — indicative, not statistically tight.
 
 ## 10. Prior work — this design is a recombination, not a new invention
 
