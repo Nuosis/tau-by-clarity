@@ -86,6 +86,26 @@ def to_compressed_chat(blocks: list[Block], comp: set[str],
     return out
 
 
+def auto_recovered_msgs(blocks: list[Block], comp: set[str],
+                        cues: dict[str, set[str]], question: str,
+                        max_recover: int = 6) -> tuple[list[dict], list[str]]:
+    """Harness-driven recovery (Oracle programmatic pattern): compressed transcript +
+    the FULL text of compressed blocks whose keyword cue lexically matches the current
+    prompt, injected as a system note at the tail. No expand tool — the harness decides."""
+    from recovery_eval import lexical_score
+    msgs = to_compressed_chat(blocks, comp, cues)
+    qt = lex_set(question)
+    scored = sorted(((lexical_score(qt, cues.get(b.eid, set())), b)
+                     for b in blocks if b.eid in comp),
+                    key=lambda x: x[0], reverse=True)
+    recovered = [b for s, b in scored if s > 0][:max_recover]
+    if recovered:
+        note = ("Relevant detail from earlier turns has been retrieved for you:\n\n"
+                + "\n\n".join(f"[{b.eid}]\n{b.text}" for b in recovered))
+        msgs.append({"role": "system", "content": note})
+    return msgs, [b.eid for b in recovered]
+
+
 EXPAND_TOOL = [{
     "type": "function",
     "function": {
@@ -196,7 +216,7 @@ def main() -> int:
     print(f"session {os.path.basename(args.session)}  blocks={len(blocks)}  "
           f"model={args.model}  test turns={turns}\n")
 
-    ni = expanded = total = 0
+    total = exp_ni = exp_used = auto_ni = 0
     for idx in turns:
         prefix = blocks[:idx]
         question = blocks[idx].text
@@ -208,29 +228,37 @@ def main() -> int:
 
         full_msgs = ([{"role": "system", "content": SYS_BASE}]
                      + to_chat(prefix) + [{"role": "user", "content": question}])
-        comp_msgs = ([{"role": "system", "content": SYS_COMPRESSED}]
-                     + to_compressed_chat(prefix, comp, cues)
+        expand_msgs = ([{"role": "system", "content": SYS_COMPRESSED}]
+                       + to_compressed_chat(prefix, comp, cues)
+                       + [{"role": "user", "content": question}])
+        auto_chat, recovered = auto_recovered_msgs(prefix, comp, cues, question)
+        auto_msgs = ([{"role": "system", "content": SYS_BASE}] + auto_chat
                      + [{"role": "user", "content": question}])
 
         a_full, _ = answer(client, args.model, full_msgs, None)
-        a_comp, calls = answer(client, args.model, comp_msgs, full_text)
+        a_exp, calls = answer(client, args.model, expand_msgs, full_text)
+        a_auto, _ = answer(client, args.model, auto_msgs, None)
 
-        # fixed order: A = full (reference), B = compressed. The judge question
-        # "is B non-inferior to A" then reads directly as "is comp non-inferior to
-        # full". (Fixed order => possible position bias; noted in the writeup.)
-        v = judge(client, args.model, question, a_full, a_comp)
-        comp_non_inferior = v.get("non_inferior")
+        # fixed order A=full (reference), B=candidate => "is candidate non-inferior to full"
+        v_exp = judge(client, args.model, question, a_full, a_exp)
+        v_auto = judge(client, args.model, question, a_full, a_auto)
         total += 1
-        ni += 1 if comp_non_inferior else 0
-        expanded += 1 if calls else 0
-        q1 = question.replace("\n", " ")[:60]
-        print(f"turn {idx}: comp_non_inferior={comp_non_inferior}  "
-              f"expand_calls={calls or '[]'}  q={q1!r}")
-        print(f"         judge: {v.get('reason','')[:140]}")
+        exp_ni += 1 if v_exp.get("non_inferior") else 0
+        exp_used += 1 if calls else 0
+        auto_ni += 1 if v_auto.get("non_inferior") else 0
+        q1 = question.replace("\n", " ")[:55]
+        print(f"turn {idx}: q={q1!r}")
+        print(f"  model-expand : non_inf={v_exp.get('non_inferior')}  "
+              f"expand_calls={calls or '[]'}")
+        print(f"  auto-recover : non_inf={v_auto.get('non_inferior')}  "
+              f"recovered={recovered or '[]'}")
+        if not v_auto.get("non_inferior"):
+            print(f"     auto judge: {v_auto.get('reason','')[:150]}")
 
-    print(f"\nSUMMARY  turns={total}  "
-          f"non-inferior={ni}/{total} ({100*ni/total if total else 0:.0f}%)  "
-          f"used-expand={expanded}/{total}")
+    p = lambda x: f"{x}/{total} ({100*x/total if total else 0:.0f}%)"
+    print(f"\nSUMMARY  turns={total}")
+    print(f"  model-driven expand : non-inferior={p(exp_ni)}   used-expand={p(exp_used)}")
+    print(f"  harness auto-recover: non-inferior={p(auto_ni)}")
     return 0
 
 
