@@ -486,9 +486,11 @@ default off until its gate passes.
 task-state · error→fix · preferences. (Canonical-keyed where the unit has identity,
 e.g. `decision:db_choice`, `fileapi:config/net.py`; superseded on change.)
 
-**Open decision before P0:** gitignore-vs-commit the store (§8). **Process:** building
-this is substantial code — work on an authorized branch only (no branch without explicit
-go-ahead).
+**Store persistence (DECIDED):** `./.pi-py/memory/` is **gitignored** — per-clone
+isolation is the anti-poisoning boundary (the whole point of project-local). Sharing is
+an **explicit `export`/`import`**, never an implicit commit. No open decisions remain
+before P0. **Process:** building this is substantial code — work on an authorized branch
+only (no branch without explicit go-ahead).
 ## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
