@@ -305,11 +305,26 @@ Consequences:
 - **Couples context-management to model selection.** A model with weak middle-recall
   needs *more aggressive* compression — "which model" and "how hard to compress" are one
   decision. A weak-recall model can be *more expensive* to run well than a stronger one.
-- **Calibrate via a NIAH sweep** (the §9 `niah_recovery` harness, extended): size **×
-  depth**, realistic dense distractors, N needles/size, threshold on accuracy (not
-  first-failure). The number is a heuristic *upper bound* — it measures recall, not
-  multi-fact reasoning, which may degrade earlier. **Not yet run** — this is the next
-  calibration eval.
+- **Calibrate via a NIAH sweep** (`evals/niah_calibrate.py`): size **× depth**,
+  realistic dense distractors, threshold on accuracy. The number is a heuristic *upper
+  bound* — it measures recall, not multi-fact reasoning, which may degrade earlier.
+
+**Calibration results (depth 0.5, n=1 — indicative, not precise):**
+
+| MiniMax-M3 (1M window) | reliable | fails by |
+| --- | --- | --- |
+| clean prose | ~500k | 700k |
+| dense agent content | ≥250k (corpus-capped) | — |
+
+Two findings dominate: **(1) content density, not raw size, sets the reliable point** —
+on clean prose models hold far longer than on dense agent content (the §9 55k dense
+failure was density, not length). **(2) Even a 1M-window model degrades before the
+window fills** — M3 reliably uses ~half its window on clean prose, less on dense. So a
+model's *advertised* context window is **not** its usable working set; the compression
+target is the *measured* reliable size on **realistic dense** content (per model, per
+content type). (Sweep was n=1/cell — indicative; a precise number needs N needles ×
+multiple depths. gpt-5.4-mini was dropped from comparison — not a model we'd run; for
+the record it collapsed on dense content even at 10k.)
 
 ### Measuring relevance (per-block score, cheapest first)
 
