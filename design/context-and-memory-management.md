@@ -364,6 +364,40 @@ the gradient net-positive therefore **requires Tier-1** (cheap-model A/B with a 
 non-inferiority judge + an expand tool), then production model on the contested subset.
 Token counts are char/4 approximations — fine for deltas, not billing.
 
+### Recovery eval — do we need embeddings? (`evals/recovery_eval.py`)
+
+The "active compression" recovery question — *can lexical recovery (no embeddings)
+surface a compressed block when it becomes relevant?* — tested stdlib-only (no
+embedding model is installed; embeddings would mean network + a key + shipping content
+out). Position-compress the middle to a deterministic TF-IDF **keyword cue**; recovery
+signal = overlap of the query terms with that cue. Two tests:
+
+- **A — controlled needle.** Literal query (shares terms) → **recovered**; paraphrase
+  query (zero shared terms) → **missed at any cue size.** That paraphrase miss is the
+  entire embedding-shaped gap, shown without embeddings.
+- **B — real cross-reference recall vs cue size:**
+
+  | cue size | agent trace (big tool-dumps) | Claire chat (small dense) |
+  | --- | --- | --- |
+  | 12 | 43 % | 60 % |
+  | 30 | 80 % | 94 % |
+  | 60 | 87 % | 98 % |
+  | 120 | 98 % | — |
+
+**Findings.** (1) Lexical recovery reaches **~98 %** of genuine cross-references on both
+regimes with an adequately-sized cue — the early low number was *cue starvation*, not a
+method limit. (2) **Cue size is the knob**, and it self-aligns with where compression
+pays: chat plateaus at ~30–60 terms (but barely compresses anyway); huge tool-dumps need
+~120 terms yet still compress ~16× at 98 % recall. (3) The residual ~2 % is the
+paraphrase case — embeddings' *entire* marginal value here.
+
+**Decision: v1 ships WITHOUT embeddings.** Deterministic keyword cue (sized to block:
+~30 chat / ~120 tool-dump) + lexical recovery clears ~98 %. Embeddings stay a measured,
+**local-only** upgrade (Anthropic has no embeddings endpoint; never ship Claire content
+to a cloud embedder). **Caveat:** Test B's term-overlap ground truth cannot see
+*pure-paraphrase* cross-references, so their real-world frequency is unmeasured — that is
+the one thing Tier-1's LLM judge must quantify before trusting the ~2 % figure.
+
 ## 10. Prior work — this design is a recombination, not a new invention
 
 Two layers in the literature; keep them distinct:
