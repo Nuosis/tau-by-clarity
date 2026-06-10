@@ -8,6 +8,7 @@ the poisoning boundary. Hybrid recall = max(lexical, local-semantic) per design 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -86,6 +87,9 @@ class MemoryStore:
             mem.created_at = _now()
         if mem.embedding is None:
             mem.embedding = self.embedder.embed([mem.embedding_text()])[0]
+        # stamp file-fact hash for staleness tracking (P3) if not provided
+        if mem.file_path and mem.content_hash is None:
+            mem.content_hash = self.file_content_hash(mem.file_path)
         self._conn.execute(
             "UPDATE semantic_memory SET status='superseded' "
             "WHERE project=? AND key=? AND status='active'",
@@ -126,6 +130,43 @@ class MemoryStore:
         r = self._conn.execute("SELECT * FROM semantic_memory WHERE id=?",
                                (memory_id,)).fetchone()
         return self._row_to_mem(r) if r else None
+
+    # ── lifecycle + file-fact staleness (P3) ─────────────────────────────────
+
+    def set_status(self, memory_id: str, status: str) -> None:
+        self._conn.execute("UPDATE semantic_memory SET status=? WHERE id=?",
+                           (status, memory_id))
+        self._conn.commit()
+
+    def file_content_hash(self, file_path: str) -> str | None:
+        """SHA1 of a project-relative (or absolute) file's bytes; None if missing."""
+        path = file_path if os.path.isabs(file_path) else os.path.join(
+            self.project_root, file_path)
+        try:
+            with open(path, "rb") as fh:
+                return hashlib.sha1(fh.read()).hexdigest()
+        except OSError:
+            return None
+
+    def invalidate_stale(self) -> list[str]:
+        """Re-check active file-scoped memories against current file content. A changed
+        file → 'superseded' (the fact may be wrong); a missing file → 'archived'.
+        Returns the invalidated memory ids. This is the pi-py-specific hazard Claire
+        doesn't face: code facts rot when files change."""
+        rows = self._conn.execute(
+            "SELECT id, file_path, content_hash FROM semantic_memory "
+            "WHERE project=? AND status='active' AND file_path IS NOT NULL",
+            (self.project_root,)).fetchall()
+        invalidated: list[str] = []
+        for r in rows:
+            current = self.file_content_hash(r["file_path"])
+            if current is None:
+                self.set_status(r["id"], "archived")
+                invalidated.append(r["id"])
+            elif r["content_hash"] is not None and current != r["content_hash"]:
+                self.set_status(r["id"], "superseded")
+                invalidated.append(r["id"])
+        return invalidated
 
     def _active_rows(self, scope: Scope | None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM semantic_memory WHERE project=? AND status='active'"
