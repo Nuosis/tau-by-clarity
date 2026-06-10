@@ -186,7 +186,9 @@ class AgentSession:
         self._memory_scope = None
         try:
             from .memory.integration import MemoryIntegration, memory_enabled
-            if memory_enabled():
+            # settings.json `memory_enabled` is the CLI home; env var forces on (tests/CI)
+            enabled = getattr(self._settings, "memory_enabled", False) or memory_enabled()
+            if enabled:
                 model_name = getattr(getattr(self._agent.state, "model", None), "id", None)
                 self._memory = MemoryIntegration(
                     os.getcwd(), allm_fn=self._memory_acomplete, model=model_name)

@@ -22,24 +22,31 @@ class AStub:
             "source_ids": ["m0"], "verdict": "auto_commit", "confidence": 0.9}]})
 
 
-def _session(tmp_path, monkeypatch) -> AgentSession:
+def _session(tmp_path, monkeypatch, *, memory: bool) -> AgentSession:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("PI_MEMORY_ENABLED", "1")
+    monkeypatch.delenv("PI_MEMORY_ENABLED", raising=False)   # prove the SETTING path
     monkeypatch.setenv("PI_MEMORY_EMBED", "deterministic")
     monkeypatch.chdir(tmp_path)                       # store roots at cwd
     model = get_model("anthropic", "claude-3-5-sonnet-20241022")
     sm = SessionManager.create(cwd=str(tmp_path), session_dir=str(tmp_path))
     return AgentSession(cwd=str(tmp_path), model=model,
-                        settings=Settings(auto_compact=False), session_manager=sm)
+                        settings=Settings(auto_compact=False, memory_enabled=memory),
+                        session_manager=sm)
 
 
-async def test_memory_attached_when_flag_on(tmp_path, monkeypatch):
-    s = _session(tmp_path, monkeypatch)
+async def test_memory_off_by_default(tmp_path, monkeypatch):
+    s = _session(tmp_path, monkeypatch, memory=False)
+    assert s._memory is None and s._memory_store is None
+
+
+async def test_memory_attached_via_setting(tmp_path, monkeypatch):
+    # settings.json memory_enabled=true (no env var) attaches memory
+    s = _session(tmp_path, monkeypatch, memory=True)
     assert s._memory is not None and s._memory_store is not None
 
 
 async def test_live_curation_then_recall(tmp_path, monkeypatch):
-    s = _session(tmp_path, monkeypatch)
+    s = _session(tmp_path, monkeypatch, memory=True)
     s._memory.curator.allm_fn = AStub()              # stub the curator's model call
 
     s._agent.append_message(UserMessage(content="please read config/net.py", timestamp=0))
