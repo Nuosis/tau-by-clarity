@@ -8,9 +8,13 @@ model/thinking cycling, context usage, session stats, and queue management.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import html
+import json
 import os
 import re
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -25,14 +29,18 @@ from pi_agent.types import (
 from pi_ai import get_model, is_context_overflow
 from pi_ai.types import AssistantMessage, ImageContent, Model, TextContent, UserMessage
 
+from pi_coding_agent.config import get_share_viewer_url
 from .auth_storage import AuthStorage
 from .compaction import compact_context, should_compact
-from .messages import wrap_convert_to_llm
+from .extensions.runner import ExtensionRunner
+from .messages import CustomMessage, wrap_convert_to_llm
 from .model_registry import ModelRegistry
 from .session_manager import SessionManager
 from .settings_manager import Settings, SettingsManager
 from .system_prompt import build_system_prompt
+from .trust_manager import ProjectTrustDecision, ProjectTrustStore
 from .tools import (
+    create_tool_definition_from_agent_tool,
     create_bash_tool,
     create_edit_tool,
     create_find_tool,
@@ -40,6 +48,7 @@ from .tools import (
     create_ls_tool,
     create_read_tool,
     create_write_tool,
+    wrap_tool_definition,
 )
 
 # ── Thinking levels (mirrors TS constants) ────────────────────────────────────
@@ -81,12 +90,25 @@ class AgentSession:
         auth_storage: AuthStorage | None = None,
         model_registry: ModelRegistry | None = None,
         settings_manager: SettingsManager | None = None,
+        resource_loader: Any | None = None,
+        custom_tools: list[Any] | None = None,
+        initial_active_tool_names: list[str] | None = None,
+        session_start_event: dict[str, Any] | None = None,
     ) -> None:
         self.cwd = cwd or os.getcwd()
         self._settings = settings or Settings()
         self._auth_storage = auth_storage or AuthStorage()
         self._model_registry = model_registry or ModelRegistry()
         self._settings_manager = settings_manager or SettingsManager.create(cwd=self.cwd)
+        self._resource_loader = resource_loader
+        self._custom_tools = list(custom_tools or [])
+        self._session_start_event = session_start_event or {
+            "type": "session_start",
+            "reason": "startup",
+        }
+        self._extension_bindings: dict[str, Any] = {}
+        self._steering_mode_override: str | None = None
+        self._follow_up_mode_override: str | None = None
 
         if session_manager is not None:
             self._session_manager = session_manager
@@ -94,18 +116,22 @@ class AgentSession:
             self._session_manager = SessionManager.create(cwd=self.cwd)
 
         self.session_id = self._session_manager.get_session_id()
+        self._extension_runner = self._create_extension_runner()
 
         # Build all tools; keep registry for set_active_tools_by_name
         self._all_tools: list[AgentTool] = self._build_tools()
-        active_tools = list(self._all_tools)  # start with all tools active
+        active_names = (
+            list(initial_active_tool_names)
+            if initial_active_tool_names is not None
+            else ["read", "bash", "edit", "write"]
+        )
+        active_tools = self._tools_for_names(active_names)
 
         # Resolve model
         resolved_model = model or self._resolve_default_model()
 
         # Build system prompt (stored as _base_system_prompt so it can be rebuilt)
-        self._base_system_prompt = build_system_prompt(
-            self.cwd, selected_tools=[t.name for t in active_tools]
-        )
+        self._base_system_prompt = self._build_system_prompt([t.name for t in active_tools])
 
         # Create convertToLlm wrapper with blockImages support
         convert_to_llm_fn = wrap_convert_to_llm(self._settings_manager.get_block_images())
@@ -115,6 +141,10 @@ class AgentSession:
             get_api_key=self._resolve_api_key,
             convert_to_llm=convert_to_llm_fn,
             transform_context=self._transform_context,
+            on_payload=self._on_provider_payload,
+            on_response=self._on_provider_response,
+            beforeToolCall=self._before_tool_call,
+            afterToolCall=self._after_tool_call,
         )
         self._agent = Agent(opts)
         self._agent.set_model(resolved_model)
@@ -129,6 +159,7 @@ class AgentSession:
         self._retry_attempt: int = 0
         self._retry_event: asyncio.Event | None = None      # set when retry resolves/fails
         self._retry_success: bool = False
+        self._bash_cancel_event: asyncio.Event | None = None
 
         # ── Auto-compaction abort ─────────────────────────────────────────────
         self._compaction_abort: asyncio.Event = asyncio.Event()
@@ -144,12 +175,13 @@ class AgentSession:
 
         # ── Scoped models (for cycling) ───────────────────────────────────────
         self._scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
+        self._bind_extension_context({})
 
     # ── Tool construction ─────────────────────────────────────────────────────
 
     def _build_tools(self) -> list[AgentTool]:
         """Create all default coding tools."""
-        return [
+        tools = [
             create_read_tool(self.cwd),
             create_write_tool(self.cwd),
             create_edit_tool(self.cwd),
@@ -158,6 +190,141 @@ class AgentSession:
             create_find_tool(self.cwd),
             create_ls_tool(self.cwd),
         ]
+        for extension_tool in self._extension_runner.get_all_registered_tools():
+            try:
+                tools.append(
+                    wrap_tool_definition(
+                        extension_tool,
+                        self._extension_runner.create_context,
+                    )
+                )
+            except Exception:
+                pass
+        for custom_tool in self._custom_tools:
+            adapted = self._adapt_custom_tool(custom_tool)
+            if adapted is not None:
+                tools.append(adapted)
+        return tools
+
+    def _adapt_custom_tool(self, custom_tool: Any) -> AgentTool | None:
+        if isinstance(custom_tool, AgentTool):
+            return custom_tool
+
+        name = getattr(custom_tool, "name", None)
+        execute = getattr(custom_tool, "execute", None)
+        if not isinstance(name, str) or not callable(execute):
+            return None
+        return wrap_tool_definition(custom_tool)
+
+    def _tools_for_names(self, tool_names: list[str]) -> list[AgentTool]:
+        tools_by_name = {tool.name: tool for tool in self._all_tools}
+        return [tools_by_name[name] for name in tool_names if name in tools_by_name]
+
+    def _build_system_prompt(self, selected_tools: list[str]) -> str:
+        loader = self._resource_loader
+        custom_prompt = None
+        append_parts: list[str] = []
+        context_files: list[dict[str, str]] = []
+        skills: list[dict[str, str]] = []
+
+        if loader is not None:
+            get_system_prompt = getattr(loader, "get_system_prompt", None)
+            if callable(get_system_prompt):
+                custom_prompt = get_system_prompt()
+
+            get_append_system_prompt = getattr(loader, "get_append_system_prompt", None)
+            if callable(get_append_system_prompt):
+                append_parts = [part for part in get_append_system_prompt() if part]
+
+            get_agents_files = getattr(loader, "get_agents_files", None)
+            if callable(get_agents_files):
+                agents_result = get_agents_files() or {}
+                context_files = list(
+                    agents_result.get("agentsFiles")
+                    or agents_result.get("agents_files")
+                    or []
+                )
+
+            get_skills = getattr(loader, "get_skills", None)
+            if callable(get_skills):
+                skills_result = get_skills() or {}
+                skills = self._skills_for_prompt(skills_result.get("skills") or [])
+
+        return build_system_prompt(
+            self.cwd,
+            custom_prompt=custom_prompt,
+            selected_tools=selected_tools,
+            append_system_prompt="\n\n".join(append_parts) if append_parts else None,
+            context_files=context_files,
+            skills=skills,
+        )
+
+    def _skills_for_prompt(self, loaded_skills: list[Any]) -> list[dict[str, str]]:
+        skills: list[dict[str, str]] = []
+        for skill in loaded_skills:
+            name = getattr(skill, "name", None)
+            if not isinstance(name, str):
+                continue
+            content = getattr(skill, "content", None)
+            if not isinstance(content, str):
+                file_path = getattr(skill, "file_path", None)
+                if isinstance(file_path, str) and os.path.exists(file_path):
+                    try:
+                        with open(file_path, encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                    except OSError:
+                        content = ""
+                else:
+                    content = ""
+            skills.append({"name": name, "content": content})
+        return skills
+
+    def _create_extension_runner(
+        self,
+        flag_values: dict[str, bool | str] | None = None,
+    ) -> ExtensionRunner:
+        extensions: list[Any] = []
+        runtime: dict[str, Any] = {"flagValues": {}}
+        loader = self._resource_loader
+        if loader is not None:
+            get_extensions = getattr(loader, "get_extensions", None)
+            if callable(get_extensions):
+                result = get_extensions()
+                if isinstance(result, dict):
+                    extensions = list(result.get("extensions") or [])
+                    runtime_result = result.get("runtime")
+                    if isinstance(runtime_result, dict):
+                        runtime = runtime_result
+                else:
+                    extensions = list(getattr(result, "extensions", []) or [])
+                    runtime_result = getattr(result, "runtime", None)
+                    if isinstance(runtime_result, dict):
+                        runtime = runtime_result
+        runtime.setdefault("flagValues", {})
+        runtime.setdefault("pendingProviderRegistrations", [])
+        self._flush_pending_provider_registrations(runtime)
+        if flag_values:
+            runtime["flagValues"].update(flag_values)
+        return ExtensionRunner(
+            extensions=extensions,
+            runtime=runtime,
+            cwd=self.cwd,
+            session_id=self.session_id,
+        )
+
+    def _flush_pending_provider_registrations(self, runtime: dict[str, Any]) -> None:
+        pending = list(runtime.get("pendingProviderRegistrations") or [])
+        for registration in pending:
+            if not isinstance(registration, dict):
+                continue
+            name = registration.get("name")
+            config = registration.get("config")
+            if isinstance(name, str) and isinstance(config, dict):
+                try:
+                    self._model_registry.register_provider(name, config)
+                except Exception:
+                    pass
+        runtime["pendingProviderRegistrations"] = []
 
     # ── Model resolution ──────────────────────────────────────────────────────
 
@@ -172,9 +339,9 @@ class AgentSession:
             has_auth = bool(self._model_registry.get_api_key(resolved.provider))
             if explicit_requested and not has_auth:
                 for prov, mid in (
-                    ("google", "gemini-2.0-flash"),
+                    ("openai", "gpt-5.5"),
                     ("anthropic", "claude-3-5-sonnet-20241022"),
-                    ("openai", "gpt-4o"),
+                    ("google", "gemini-2.5-pro"),
                 ):
                     if self._model_registry.get_api_key(prov):
                         fallback = self._model_registry.find(prov, mid)
@@ -183,8 +350,10 @@ class AgentSession:
             return resolved
         except Exception:
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-                return get_model("google", "gemini-2.0-flash")
-            return get_model("anthropic", "claude-3-5-sonnet-20241022")
+                if not os.environ.get("OPENAI_API_KEY"):
+                    return get_model("google", "gemini-2.5-pro")
+            # Default to OpenAI gpt-5.5 in every other case.
+            return get_model("openai", "gpt-5.5")
 
     async def _transform_context(
         self, 
@@ -198,13 +367,96 @@ class AgentSession:
         Will be connected to ExtensionRunner.emit_context when extension support is added.
         Mirrors the transform_context callback in TypeScript SDK.
         """
-        # TODO: Connect to ExtensionRunner.emit_context when available
-        # if self._extension_runner:
-        #     return await self._extension_runner.emit_context(messages)
+        if self._extension_runner.has_handlers("context"):
+            messages = await self._extension_runner.emit_context(messages)
+        # P1: memory recall — inject a tail recall block when a store is attached.
+        # Off by default (store is None) so existing behaviour is unchanged.
+        store = getattr(self, "_memory_store", None)
+        if store is not None:
+            from .memory.recall import build_recall_block, latest_user_query
+            from .messages import CustomMessage
+            query = latest_user_query(messages)
+            block = build_recall_block(store, query, getattr(self, "_memory_scope", None))
+            if block:
+                messages = list(messages) + [
+                    CustomMessage(custom_type="memory_recall", content=block, display=False)
+                ]
         return messages
 
     async def _resolve_api_key(self, provider: str) -> str | None:
         return self._auth_storage.resolve_api_key(provider)
+
+    async def _on_provider_payload(self, payload: Any, model: Model | None = None) -> Any:
+        if not self._extension_runner.has_handlers("before_provider_request"):
+            return payload
+        return await self._extension_runner.emit_before_provider_request(payload)
+
+    async def _on_provider_response(self, response: Any, model: Model | None = None) -> None:
+        if not self._extension_runner.has_handlers("after_provider_response"):
+            return None
+        await self._extension_runner.emit_after_provider_response(response)
+        return None
+
+    async def _before_tool_call(
+        self,
+        context: dict[str, Any],
+        signal: asyncio.Event | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._extension_runner.has_handlers("tool_call"):
+            return None
+        tool_call = context.get("toolCall") or context.get("tool_call")
+        tool_name = getattr(tool_call, "name", "")
+        tool_call_id = getattr(tool_call, "id", "")
+        args = context.get("args") or {}
+        try:
+            return await self._extension_runner.emit_tool_call({
+                "type": "tool_call",
+                "toolName": tool_name,
+                "toolCallId": tool_call_id,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "input": args,
+            })
+        except Exception as err:
+            if isinstance(err, Exception):
+                raise
+            raise RuntimeError(f"Extension failed, blocking execution: {err}")
+
+    async def _after_tool_call(
+        self,
+        context: dict[str, Any],
+        signal: asyncio.Event | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._extension_runner.has_handlers("tool_result"):
+            return None
+        tool_call = context.get("toolCall") or context.get("tool_call")
+        tool_name = getattr(tool_call, "name", "")
+        tool_call_id = getattr(tool_call, "id", "")
+        args = context.get("args") or {}
+        result = context.get("result")
+        is_error = bool(context.get("isError", context.get("is_error", False)))
+        content = result.get("content", []) if isinstance(result, dict) else getattr(result, "content", [])
+        details = result.get("details") if isinstance(result, dict) else getattr(result, "details", None)
+        hook_result = await self._extension_runner.emit_tool_result({
+            "type": "tool_result",
+            "toolName": tool_name,
+            "toolCallId": tool_call_id,
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "input": args,
+            "content": content,
+            "details": details,
+            "isError": is_error,
+            "is_error": is_error,
+        })
+        if not hook_result:
+            return None
+        return {
+            "content": hook_result.get("content"),
+            "details": hook_result.get("details"),
+            "isError": hook_result.get("isError", hook_result.get("is_error")),
+            "is_error": hook_result.get("is_error", hook_result.get("isError")),
+        }
 
     # ── Event handling ────────────────────────────────────────────────────────
 
@@ -282,6 +534,7 @@ class AgentSession:
         source: str | None = None,
         expand_prompt_templates: bool = True,
         streaming_behavior: str | None = None,
+        preflight_result: Callable[[bool], None] | None = None,
     ) -> None:
         """
         Send a prompt to the agent and wait for completion (including retries).
@@ -302,77 +555,115 @@ class AgentSession:
         else:
             pass  # single message
 
-        # If streaming, queue via steer/followUp
-        if self._agent.state.is_streaming:
-            if not streaming_behavior:
+        try:
+            # If streaming, queue via steer/followUp
+            if self._agent.state.is_streaming:
+                if not streaming_behavior:
+                    raise RuntimeError(
+                        "Agent is already processing. Specify streaming_behavior ('steer' or 'followUp') to queue."
+                    )
+                if current_text is not None:
+                    user_msg = UserMessage(
+                        role="user",
+                        content=[TextContent(type="text", text=current_text)],
+                        timestamp=int(time.time() * 1000),
+                    )
+                    if streaming_behavior == "followUp":
+                        self._agent.follow_up(user_msg)
+                    else:
+                        self._agent.steer(user_msg)
+                if preflight_result is not None:
+                    preflight_result(True)
+                return
+
+            if current_text is not None and await self._try_execute_extension_command(current_text):
+                if preflight_result is not None:
+                    preflight_result(True)
+                return
+
+            # Reset overflow recovery flag for each new user-initiated turn
+            self._overflow_recovery_attempted = False
+
+            # Flush pending bash messages
+            self._flush_pending_bash_messages()
+
+            # Validate model
+            if not self._agent.state.model:
+                raise RuntimeError("No model selected. Use /login or set an API key environment variable.")
+
+            # Validate API key
+            model = self._agent.state.model
+            api_key = await self._resolve_api_key(model.provider)
+            if not api_key:
                 raise RuntimeError(
-                    "Agent is already processing. Specify streaming_behavior ('steer' or 'followUp') to queue."
+                    f"No API key found for {model.provider}. "
+                    "Use /login or set an API key environment variable."
                 )
-            if current_text is not None:
-                user_msg = UserMessage(
+
+            # Pre-compaction check on last assistant message
+            last_assistant = self._find_last_assistant_message()
+            if last_assistant:
+                await self._check_compaction(last_assistant, skip_aborted=False)
+
+            if current_text is not None and self._extension_runner.has_handlers("input"):
+                input_result = await self._extension_runner.emit_input(
+                    current_text,
+                    current_images,
+                    source or "interactive",
+                )
+                action = input_result.get("action")
+                if action == "handled":
+                    if preflight_result is not None:
+                        preflight_result(True)
+                    return
+                if action == "transform":
+                    current_text = input_result.get("text", current_text)
+                    current_images = input_result.get("images", current_images)
+
+            # Build messages array
+            msgs: list[AgentMessage]
+            if isinstance(message, list):
+                msgs = message
+            elif current_text is not None:
+                content_parts: list[TextContent | ImageContent] = [TextContent(type="text", text=current_text)]
+                if current_images:
+                    content_parts.extend(current_images)
+                msgs = [UserMessage(
                     role="user",
-                    content=[TextContent(type="text", text=current_text)],
+                    content=content_parts,
                     timestamp=int(time.time() * 1000),
+                )]
+            else:
+                msgs = [message]
+
+            # Inject pending next-turn messages
+            if self._pending_next_turn_messages:
+                msgs.extend(self._pending_next_turn_messages)
+                self._pending_next_turn_messages = []
+
+            # Reset system prompt to base
+            self._agent.set_system_prompt(self._base_system_prompt)
+
+            if current_text is not None and self._extension_runner.has_handlers("before_agent_start"):
+                before_result = await self._extension_runner.emit_before_agent_start(
+                    current_text,
+                    current_images,
+                    self._base_system_prompt,
                 )
-                if streaming_behavior == "followUp":
-                    self._agent.follow_up(user_msg)
-                else:
-                    self._agent.steer(user_msg)
-            return
-
-        # Reset overflow recovery flag for each new user-initiated turn
-        self._overflow_recovery_attempted = False
-
-        # Flush pending bash messages
-        self._flush_pending_bash_messages()
-
-        # Validate model
-        if not self._agent.state.model:
-            raise RuntimeError("No model selected. Use /login or set an API key environment variable.")
-
-        # Validate API key
-        model = self._agent.state.model
-        api_key = await self._resolve_api_key(model.provider)
-        if not api_key:
-            raise RuntimeError(
-                f"No API key found for {model.provider}. "
-                "Use /login or set an API key environment variable."
-            )
-
-        # Pre-compaction check on last assistant message
-        last_assistant = self._find_last_assistant_message()
-        if last_assistant:
-            await self._check_compaction(last_assistant, skip_aborted=False)
-
-        # Build messages array
-        msgs: list[AgentMessage]
-        if isinstance(message, list):
-            msgs = message
-        elif current_text is not None:
-            content_parts: list[TextContent | ImageContent] = [TextContent(type="text", text=current_text)]
-            if current_images:
-                content_parts.extend(current_images)
-            msgs = [UserMessage(
-                role="user",
-                content=content_parts,
-                timestamp=int(time.time() * 1000),
-            )]
-        else:
-            msgs = [message]
-
-        # Inject pending next-turn messages
-        if self._pending_next_turn_messages:
-            msgs.extend(self._pending_next_turn_messages)
-            self._pending_next_turn_messages = []
-
-        # Reset system prompt to base
-        self._agent.set_system_prompt(self._base_system_prompt)
+                if isinstance(before_result, dict) and before_result.get("system_prompt"):
+                    self._agent.set_system_prompt(before_result["system_prompt"])
+        except Exception:
+            if preflight_result is not None:
+                preflight_result(False)
+            raise
 
         # Reset retry state
         self._retry_event = asyncio.Event()
         self._retry_success = False
         self._retry_attempt = 0
 
+        if preflight_result is not None:
+            preflight_result(True)
         await self._agent.prompt(msgs)
         await self._wait_for_retry()
 
@@ -392,24 +683,45 @@ class AgentSession:
                 return m
         return None
 
+    async def _try_execute_extension_command(self, text: str) -> bool:
+        if not text.startswith("/"):
+            return False
+        space_index = text.find(" ")
+        command_name = text[1:] if space_index == -1 else text[1:space_index]
+        args = "" if space_index == -1 else text[space_index + 1:]
+        if not self._extension_runner.get_command(command_name):
+            return False
+        await self._extension_runner.execute_command(command_name, args)
+        return True
+
     def record_bash_result(
         self,
-        tool_call_id: str,
-        output: str,
-        exit_code: int,
+        command: str,
+        result: dict[str, Any],
+        exclude_from_context: bool | dict[str, Any] = False,
     ) -> None:
         """
         Record a bash execution result.
         If streaming, queues for later flush; otherwise adds immediately.
         """
-        from pi_ai.types import ToolResultMessage
-        bash_msg = ToolResultMessage(
-            role="toolResult",
-            tool_call_id=tool_call_id,
-            tool_name="bash",
-            content=[TextContent(type="text", text=output)],
-            is_error=exit_code != 0,
+        from .messages import BashExecutionMessage
+
+        if isinstance(exclude_from_context, dict):
+            exclude_from_context = bool(
+                exclude_from_context.get("excludeFromContext")
+                or exclude_from_context.get("exclude_from_context")
+            )
+
+        bash_msg = BashExecutionMessage(
+            role="bashExecution",
+            command=command,
+            output=result.get("output", ""),
+            exit_code=result.get("exit_code", result.get("exitCode")),
+            cancelled=bool(result.get("cancelled", False)),
+            truncated=bool(result.get("truncated", False)),
+            full_output_path=result.get("full_output_path", result.get("fullOutputPath")),
             timestamp=int(time.time() * 1000),
+            exclude_from_context=exclude_from_context,
         )
         if self._agent.state.is_streaming:
             self._pending_bash_messages.append(bash_msg)
@@ -425,6 +737,12 @@ class AgentSession:
         Mirrors switchSession() in TypeScript.
         Returns True if switch succeeded.
         """
+        new_sm = SessionManager.open(session_path)
+        await self._switch_to_session_manager(new_sm)
+        return True
+
+    async def _switch_to_session_manager(self, session_manager: SessionManager) -> None:
+        """Switch this AgentSession to an already-created SessionManager."""
         self._agent.abort()
         await self._agent.wait_for_idle()
 
@@ -432,12 +750,11 @@ class AgentSession:
         self._pending_bash_messages = []
         self._pending_next_turn_messages = []
 
-        new_sm = SessionManager.open(session_path)
-        self._session_manager = new_sm
-        self.session_id = new_sm.get_session_id()
+        self._session_manager = session_manager
+        self.session_id = session_manager.get_session_id()
 
         # Restore context from session
-        context = new_sm.build_context()
+        context = session_manager.build_context()
         self._agent.replace_messages(context.messages)
 
         # Restore model/thinking from session
@@ -450,7 +767,79 @@ class AgentSession:
         if context.thinking_level:
             self._agent.set_thinking_level(context.thinking_level)
 
+        self._extension_runner = self._create_extension_runner()
+        self._bind_extension_context(self._extension_bindings)
+
+    async def new_session(self, options: dict[str, Any] | None = None) -> bool:
+        """
+        Start a new session in-place.
+        Mirrors the Node runtime /new behavior at the session-management layer.
+        """
+        parent_session = None
+        if options:
+            parent_session = options.get("parentSession") or options.get("parent_session")
+        new_sm = SessionManager.create(
+            self.cwd,
+            session_dir=self._session_manager.get_session_dir(),
+            parent_session=parent_session,
+        )
+        if self.model:
+            new_sm.append_model_change(self.model.provider, self.model.id)
+        new_sm.append_thinking_level_change(self.thinking_level)
+        await self._switch_to_session_manager(new_sm)
         return True
+
+    async def clone_session(self) -> dict[str, Any]:
+        """
+        Duplicate the current session at its current file and switch to the clone.
+        """
+        current_file = self._session_manager.get_session_file()
+        if not current_file:
+            await self.new_session()
+            return {"cancelled": False}
+        cloned = SessionManager.fork_from(
+            current_file,
+            self.cwd,
+            self._session_manager.get_session_dir(),
+        )
+        await self._switch_to_session_manager(cloned)
+        return {"cancelled": False}
+
+    async def fork_session(self, entry_id: str) -> dict[str, Any]:
+        """
+        Fork from a user message entry and switch to the fork in-place.
+        Returns the selected user text so callers can place it back in the editor.
+        """
+        entry = self._session_manager.get_entry(entry_id)
+        if not entry:
+            return {"cancelled": True, "selectedText": ""}
+
+        selected_text = ""
+        msg_data = entry.data.get("message", {})
+        if isinstance(msg_data, dict) and msg_data.get("role") == "user":
+            selected_text = self._extract_user_message_text(msg_data.get("content", ""))
+
+        branch_point = entry.parent_id if entry.parent_id else None
+        forked_sm = self._session_manager.branch(branch_point, self.cwd)
+        await self._switch_to_session_manager(forked_sm)
+        return {"cancelled": False, "selectedText": selected_text}
+
+    def get_session_tree_entries(self) -> list[dict[str, Any]]:
+        """Return a flat session-tree listing for RPC/TUI fallback commands."""
+        rows: list[dict[str, Any]] = []
+        for entry in self._session_manager.get_entries():
+            text = ""
+            msg_data = entry.data.get("message", {})
+            if isinstance(msg_data, dict):
+                text = self._extract_user_message_text(msg_data.get("content", ""))
+            rows.append({
+                "entry_id": entry.id,
+                "parent_id": entry.parent_id,
+                "type": entry.type,
+                "label": self._session_manager.get_label(entry.id),
+                "text": text,
+            })
+        return rows
 
     async def navigate_tree(
         self,
@@ -536,12 +925,38 @@ class AgentSession:
         branched._agent.replace_messages(context.messages)
         return branched
 
-    async def steer(self, message: AgentMessage) -> None:
+    def _user_message_from_text(
+        self,
+        message: str,
+        images: list[ImageContent] | None = None,
+    ) -> UserMessage:
+        content_parts: list[TextContent | ImageContent] = [TextContent(type="text", text=message)]
+        if images:
+            content_parts.extend(images)
+        return UserMessage(
+            role="user",
+            content=content_parts,
+            timestamp=int(time.time() * 1000),
+        )
+
+    async def steer(
+        self,
+        message: str | AgentMessage,
+        images: list[ImageContent] | None = None,
+    ) -> None:
         """Queue a steering message."""
+        if isinstance(message, str):
+            message = self._user_message_from_text(message, images)
         self._agent.steer(message)
 
-    async def follow_up(self, message: AgentMessage) -> None:
+    async def follow_up(
+        self,
+        message: str | AgentMessage,
+        images: list[ImageContent] | None = None,
+    ) -> None:
         """Queue a follow-up message."""
+        if isinstance(message, str):
+            message = self._user_message_from_text(message, images)
         self._agent.follow_up(message)
 
     async def abort(self) -> None:
@@ -558,6 +973,10 @@ class AgentSession:
     @property
     def state(self):
         return self._agent.state
+
+    @property
+    def agent(self) -> Agent:
+        return self._agent
 
     @property
     def model(self) -> Model | None:
@@ -580,6 +999,10 @@ class AgentSession:
         return self._retry_attempt > 0
 
     @property
+    def is_bash_running(self) -> bool:
+        return self._bash_cancel_event is not None
+
+    @property
     def retry_attempt(self) -> int:
         return self._retry_attempt
 
@@ -588,8 +1011,59 @@ class AgentSession:
         return self._model_registry
 
     @property
+    def auth_storage(self) -> AuthStorage:
+        return self._auth_storage
+
+    @property
+    def resource_loader(self) -> Any | None:
+        return self._resource_loader
+
+    @property
+    def prompt_templates(self) -> list[Any]:
+        loader = self._resource_loader
+        if loader is None:
+            return []
+        get_prompts = getattr(loader, "get_prompts", None)
+        if not callable(get_prompts):
+            return []
+        result = get_prompts() or {}
+        if isinstance(result, dict):
+            return list(result.get("prompts") or [])
+        return list(getattr(result, "prompts", []) or [])
+
+    @property
     def session_manager(self) -> SessionManager:
         return self._session_manager
+
+    @property
+    def settings_manager(self) -> SettingsManager:
+        return self._settings_manager
+
+    @property
+    def session_file(self) -> str | None:
+        return self._session_manager.get_session_file()
+
+    @property
+    def session_name(self) -> str | None:
+        return self._session_manager.get_session_name()
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        return self._session_manager.get_messages()
+
+    @property
+    def steering_mode(self) -> str:
+        if self._steering_mode_override is not None:
+            return self._steering_mode_override
+        getter = getattr(self._settings_manager, "get_steering_mode", None)
+        return getter() if callable(getter) else "steer"
+
+    @property
+    def follow_up_mode(self) -> str:
+        if self._follow_up_mode_override is not None:
+            return self._follow_up_mode_override
+        getter = getattr(self._settings_manager, "get_follow_up_mode", None)
+        return getter() if callable(getter) else "followUp"
 
     @property
     def system_prompt(self) -> str:
@@ -624,18 +1098,39 @@ class AgentSession:
         """Get names of all registered tools."""
         return [t.name for t in self._all_tools]
 
+    def get_all_tools(self) -> list[dict[str, Any]]:
+        """Get all configured tools with definition metadata."""
+        tools: list[dict[str, Any]] = []
+        for tool in self._all_tools:
+            definition = create_tool_definition_from_agent_tool(tool)
+            tools.append({
+                "name": definition.name,
+                "description": definition.description,
+                "parameters": definition.parameters,
+                "promptGuidelines": definition.prompt_guidelines,
+                "sourceInfo": None,
+            })
+        return tools
+
+    def get_tool_definition(self, name: str) -> Any | None:
+        """Get a registered tool definition by name."""
+        extension_definition = self._extension_runner.get_tool_definition(name)
+        if extension_definition is not None:
+            return extension_definition
+        for tool in self._all_tools:
+            if tool.name == name:
+                return create_tool_definition_from_agent_tool(tool)
+        return None
+
     def set_active_tools_by_name(self, tool_names: list[str]) -> None:
         """
         Set active tools by name. Rebuilds system prompt to reflect new tool set.
         Mirrors setActiveToolsByName() in TypeScript.
         """
-        name_set = set(tool_names)
-        active = [t for t in self._all_tools if t.name in name_set]
+        active = self._tools_for_names(tool_names)
         self._agent.set_tools(active)
         valid_names = [t.name for t in active]
-        self._base_system_prompt = build_system_prompt(
-            self.cwd, selected_tools=valid_names
-        )
+        self._base_system_prompt = self._build_system_prompt(valid_names)
         self._agent.set_system_prompt(self._base_system_prompt)
 
     # ── Model management (2g) ─────────────────────────────────────────────────
@@ -683,6 +1178,10 @@ class AgentSession:
         if model and supports_xhigh(model):
             return list(_THINKING_LEVELS_WITH_XHIGH)
         return list(_THINKING_LEVELS)
+
+    def supports_thinking(self) -> bool:
+        """Return whether the current model supports reasoning/thinking."""
+        return bool(getattr(self.model, "reasoning", False))
 
     def set_thinking_level(self, level: ThinkingLevel) -> None:
         """Set thinking level, clamped to model capabilities. Persists to session."""
@@ -838,6 +1337,74 @@ class AgentSession:
             "is_streaming": self._agent.state.is_streaming,
         }
 
+    async def send_custom_message(
+        self,
+        message: dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        """Send or persist a custom extension message."""
+        opts = options or {}
+        custom_type = message.get("customType") or message.get("custom_type") or "custom"
+        content = message.get("content", "")
+        display = bool(message.get("display", True))
+        details = message.get("details")
+        app_message = CustomMessage(
+            custom_type=custom_type,
+            content=content,
+            display=display,
+            details=details,
+            timestamp=int(time.time() * 1000),
+        )
+
+        deliver_as = opts.get("deliverAs") or opts.get("deliver_as")
+        if deliver_as == "nextTurn":
+            self._pending_next_turn_messages.append(app_message)
+        elif self.is_streaming:
+            if deliver_as == "followUp":
+                self._agent.follow_up(app_message)
+            else:
+                self._agent.steer(app_message)
+        elif opts.get("triggerTurn") or opts.get("trigger_turn"):
+            await self.prompt(app_message)
+        else:
+            self._agent.append_message(app_message)
+            self._session_manager.append_custom_message_entry(
+                custom_type,
+                content,
+                display,
+                details,
+            )
+            self._emit({"type": "message_start", "message": app_message})
+            self._emit({"type": "message_end", "message": app_message})
+
+    async def send_user_message(
+        self,
+        content: str | list[dict[str, Any]],
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a user message through the normal prompt path."""
+        opts = options or {}
+        if isinstance(content, str):
+            text = content
+            images = None
+        else:
+            text_parts: list[str] = []
+            images: list[dict[str, Any]] = []
+            for part in content:
+                if part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                else:
+                    images.append(part)
+            text = "\n".join(text_parts)
+            if not images:
+                images = None
+        await self.prompt(
+            text,
+            images=images,
+            streaming_behavior=opts.get("deliverAs") or opts.get("deliver_as"),
+            source="extension",
+        )
+
     # ── Compaction ────────────────────────────────────────────────────────────
 
     async def compact(self, custom_instructions: str | None = None) -> str:
@@ -977,6 +1544,12 @@ class AgentSession:
     def abort_compaction(self) -> None:
         self._compaction_abort.set()
 
+    def abort_branch_summary(self) -> None:
+        """Cancel in-progress branch summarization when a cancel signal exists."""
+        branch_abort = getattr(self, "_branch_summary_abort", None)
+        if branch_abort is not None and hasattr(branch_abort, "set"):
+            branch_abort.set()
+
     # ── Auto-retry (2b) ───────────────────────────────────────────────────────
 
     def _is_retryable_error(self, msg: AssistantMessage) -> bool:
@@ -1066,6 +1639,10 @@ class AgentSession:
         if self._retry_event:
             self._retry_event.set()
 
+    def abort_retry(self) -> None:
+        """Cancel in-progress retry."""
+        self._abort_retry()
+
     async def _wait_for_retry(self) -> None:
         """Wait for any in-progress retry to complete (mirrors waitForRetry in TS)."""
         if self._retry_attempt == 0:
@@ -1095,6 +1672,35 @@ class AgentSession:
             f.write(html_doc)
         return output_path
 
+    def export_to_jsonl(self, output_path: str | None = None) -> str:
+        """Export the current session branch to JSONL."""
+        if not output_path:
+            output_path = os.path.join(self.cwd, f"session-{int(time.time() * 1000)}.jsonl")
+        output_path = os.path.abspath(os.path.expanduser(output_path))
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        header = dict(self._session_manager.get_header() or {})
+        header.update({
+            "type": "session",
+            "version": header.get("version", 3),
+            "id": self._session_manager.get_session_id(),
+            "timestamp": header.get("timestamp") or int(time.time() * 1000),
+            "cwd": self._session_manager.get_cwd(),
+        })
+
+        lines = [json.dumps(header, ensure_ascii=False)]
+        previous_id: str | None = None
+        for entry in self._session_manager.get_branch():
+            raw = dict(entry.data)
+            raw["parentId"] = previous_id
+            raw.pop("parent_id", None)
+            lines.append(json.dumps(raw, ensure_ascii=False))
+            previous_id = entry.id
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return output_path
+
     def get_last_assistant_text(self) -> str | None:
         """Get text of last assistant message (for /copy command)."""
         for m in reversed(self._agent.state.messages):
@@ -1116,6 +1722,7 @@ class AgentSession:
 
     def dispose(self) -> None:
         """Clean up session resources and event listeners."""
+        self._extension_runner.invalidate()
         self._listeners = []
 
     def set_scoped_models(self, scoped_models: list[dict[str, Model | ThinkingLevel | None]]) -> None:
@@ -1125,13 +1732,19 @@ class AgentSession:
         """
         self._scoped_models = scoped_models
 
+    @property
+    def scoped_models(self) -> list[dict[str, Model | ThinkingLevel | None]]:
+        """Scoped models for cycling. Mirrors scopedModels in TypeScript."""
+        return list(self._scoped_models or [])
+
+    @property
+    def has_pending_bash_messages(self) -> bool:
+        """Whether bash messages are queued for the next prompt."""
+        return bool(self._pending_bash_messages)
+
     def set_auto_compaction_enabled(self, enabled: bool) -> None:
         """Enable or disable auto-compaction."""
-        # SettingsManager doesn't have set_compaction_enabled
-        # This is a read-only property from settings files
-        # In TS version this calls settingsManager.setCompactionEnabled
-        # For now, this is a no-op as settings are file-based
-        pass
+        self._settings_manager.set_compaction_enabled(enabled)
 
     @property
     def auto_compaction_enabled(self) -> bool:
@@ -1140,11 +1753,93 @@ class AgentSession:
 
     def set_auto_retry_enabled(self, enabled: bool) -> None:
         """Enable or disable auto-retry."""
-        # SettingsManager doesn't have set_retry_enabled
-        # This is a read-only property from settings files
-        # In TS version this calls settingsManager.setRetryEnabled
-        # For now, this is a no-op as settings are file-based
-        pass
+        self._settings_manager.set_retry_enabled(enabled)
+
+    def set_steering_mode(self, mode: str) -> None:
+        """Set runtime steering mode for RPC/interactive callers."""
+        self._steering_mode_override = mode
+
+    def set_follow_up_mode(self, mode: str) -> None:
+        """Set runtime follow-up mode for RPC/interactive callers."""
+        self._follow_up_mode_override = mode
+
+    def login_api_key(self, provider: str, api_key: str) -> None:
+        """Persist an API key for a provider."""
+        cleaned_provider = provider.strip()
+        cleaned_key = api_key.strip()
+        if not cleaned_provider:
+            raise ValueError("Provider is required")
+        if not cleaned_key:
+            raise ValueError("API key is required")
+        self._auth_storage.set_api_key(cleaned_provider, cleaned_key)
+
+    def logout_provider(self, provider: str) -> None:
+        """Remove persisted credentials for a provider."""
+        cleaned_provider = provider.strip()
+        if not cleaned_provider:
+            raise ValueError("Provider is required")
+        self._auth_storage.logout(cleaned_provider)
+
+    def get_project_trust(self) -> ProjectTrustDecision:
+        """Return the persisted trust decision for this session cwd."""
+        return ProjectTrustStore().get(self.cwd)
+
+    def set_project_trust(self, trusted: ProjectTrustDecision) -> None:
+        """Persist the project trust decision for this session cwd."""
+        ProjectTrustStore().set(self.cwd, trusted)
+
+    async def share_session(self) -> dict[str, str]:
+        """
+        Share the current session as a secret GitHub gist using the gh CLI.
+
+        Returns a dict with gist_url, gist_id, and share_url.
+        """
+        session_file = self._session_manager.get_session_file()
+        if not session_file or not os.path.exists(session_file):
+            raise RuntimeError("No session file is available to share")
+        gh_path = shutil.which("gh")
+        if not gh_path:
+            raise RuntimeError("GitHub CLI 'gh' is required for /share")
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".jsonl",
+            prefix="pi-session-",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            with open(session_file, encoding="utf-8", errors="replace") as src:
+                tmp.write(src.read())
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                gh_path,
+                "gist",
+                "create",
+                "--public=false",
+                tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                message = stderr.decode("utf-8", errors="replace").strip() or "Unknown error"
+                raise RuntimeError(f"Failed to create gist: {message}")
+            gist_url = stdout.decode("utf-8", errors="replace").strip()
+            gist_id = gist_url.rstrip("/").split("/")[-1] if gist_url else ""
+            if not gist_id:
+                raise RuntimeError("Failed to parse gist ID from gh output")
+            return {
+                "gist_url": gist_url,
+                "gist_id": gist_id,
+                "share_url": get_share_viewer_url(gist_id),
+            }
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     @property
     def auto_retry_enabled(self) -> bool:
@@ -1155,21 +1850,229 @@ class AgentSession:
         """
         Bind extension UI context and handlers.
         Mirrors bindExtensions() in TypeScript.
-        This is a stub for future extension support.
         """
-        # TODO: Implement extension bindings when extension system is added
-        pass
+        self._extension_bindings = dict(bindings)
+        self._bind_extension_context(bindings)
+        command_context_actions = self._default_extension_command_context_actions()
+        command_context_actions.update(
+            bindings.get("commandContextActions")
+            or bindings.get("command_context_actions")
+            or {}
+        )
+        self._extension_runner.bind_command_context_actions(command_context_actions)
+        await self._extension_runner.emit(self._session_start_event)
+        reason = "reload" if self._session_start_event.get("reason") == "reload" else "startup"
+        await self._extend_resources_from_extensions(reason)
+
+    def _bind_extension_context(self, bindings: dict[str, Any]) -> None:
+        shutdown_handler = (
+            bindings.get("shutdownHandler")
+            or bindings.get("shutdown_handler")
+            or (lambda: None)
+        )
+
+        def _compact(options: Any = None) -> Any:
+            custom_instructions = None
+            if isinstance(options, dict):
+                custom_instructions = (
+                    options.get("customInstructions")
+                    or options.get("custom_instructions")
+                )
+            elif isinstance(options, str):
+                custom_instructions = options
+            return self.compact(custom_instructions)
+
+        actions = {
+            "isIdle": lambda: not self._agent.state.is_streaming,
+            "abort": lambda: self.abort(),
+            "hasPendingMessages": self._has_pending_extension_messages,
+            "shutdown": shutdown_handler,
+            "getContextUsage": self.get_context_usage,
+            "compact": _compact,
+            "getSystemPrompt": lambda: self.system_prompt,
+            "getRegisteredCommands": self._extension_runner.get_registered_commands,
+            "getCommandDiagnostics": lambda: [],
+        }
+        values = {
+            "ui": bindings.get("uiContext") or bindings.get("ui_context"),
+            "uiContext": bindings.get("uiContext") or bindings.get("ui_context"),
+            "mode": bindings.get("mode"),
+            "hasUI": lambda: bool(bindings.get("uiContext") or bindings.get("ui_context")),
+            "sessionManager": lambda: self._session_manager,
+            "modelRegistry": lambda: self._model_registry,
+            "model": lambda: self.model,
+            "signal": bindings.get("signal"),
+        }
+        # Bind core actions into the shared extension runtime FIRST. bind_core()
+        # resets the context bindings, so the bind_context_actions() call below
+        # must come after it to restore ui/sessionManager/etc on ctx.
+        core_actions = {
+            "getActiveTools": self.get_active_tool_names,
+            "getAllTools": self.get_all_tools,
+            "getAllToolNames": self.get_all_tool_names,
+            "setActiveTools": self.set_active_tools_by_name,
+            "getCommands": self._get_extension_commands,
+            "appendEntry": (
+                lambda custom_type, data=None: self._session_manager.append_custom_entry(
+                    custom_type, data
+                )
+            ),
+        }
+        self._extension_runner.bind_core(actions=core_actions)
+        self._extension_runner.bind_context_actions(actions=actions, values=values)
+
+    def _get_extension_commands(self) -> list[dict[str, Any]]:
+        """
+        Aggregate all slash commands (extension + prompt + skill) with their
+        source. Backs pi.get_commands(). Mirrors getCommands() in TypeScript.
+        """
+        from pi_coding_agent.core.source_info import source_info_to_dict
+
+        def _attr(obj: Any, name: str, default: Any = "") -> Any:
+            if isinstance(obj, dict):
+                return obj.get(name, default)
+            return getattr(obj, name, default)
+
+        def _source_dict(obj: Any) -> dict[str, Any] | None:
+            si = _attr(obj, "source_info", None) or _attr(obj, "sourceInfo", None)
+            try:
+                return source_info_to_dict(si) if si else None
+            except Exception:
+                return None
+
+        commands: list[dict[str, Any]] = []
+        for cmd in self._extension_runner.get_registered_commands():
+            commands.append({
+                "name": getattr(cmd, "invocation_name", cmd.name),
+                "description": cmd.description,
+                "source": "extension",
+                "sourceInfo": _source_dict(cmd),
+            })
+
+        loader = self._resource_loader
+        if loader is not None:
+            try:
+                for prompt in (loader.get_prompts().get("prompts") or []):
+                    commands.append({
+                        "name": _attr(prompt, "name"),
+                        "description": _attr(prompt, "description"),
+                        "source": "prompt",
+                        "sourceInfo": _source_dict(prompt),
+                    })
+            except Exception:
+                pass
+            try:
+                for skill in (loader.get_skills().get("skills") or []):
+                    commands.append({
+                        "name": f"skill:{_attr(skill, 'name')}",
+                        "description": _attr(skill, "description"),
+                        "source": "skill",
+                        "sourceInfo": _source_dict(skill),
+                    })
+            except Exception:
+                pass
+        return commands
+
+    def _default_extension_command_context_actions(self) -> dict[str, Any]:
+        return {
+            "getSystemPromptOptions": lambda: {},
+            "waitForIdle": lambda: self._agent.wait_for_idle(),
+            "newSession": lambda opts=None: self.new_session(opts),
+            "fork": lambda entry_id, opts=None: self.fork_session(entry_id),
+            "navigateTree": lambda target_id, opts=None: self.navigate_tree(target_id, opts),
+            "switchSession": lambda path, opts=None: self.switch_session(path),
+            "reload": lambda: self.reload(),
+        }
+
+    def _has_pending_extension_messages(self) -> bool:
+        return bool(
+            self._pending_bash_messages
+            or self._pending_next_turn_messages
+            or self.pending_message_count
+        )
+
+    async def _extend_resources_from_extensions(self, reason: str) -> None:
+        if not self._extension_runner.has_handlers("resources_discover"):
+            return
+
+        discovered = await self._extension_runner.emit_resources_discover(self.cwd, reason)
+        skill_paths = discovered.get("skillPaths") or []
+        prompt_paths = discovered.get("promptPaths") or []
+        theme_paths = discovered.get("themePaths") or []
+        if not skill_paths and not prompt_paths and not theme_paths:
+            return
+
+        if self._resource_loader is None:
+            return
+        extend_resources = getattr(self._resource_loader, "extend_resources", None)
+        if not callable(extend_resources):
+            return
+
+        from .resource_loader import ResourceExtensionPaths
+
+        paths = ResourceExtensionPaths(
+            skill_paths=self._build_extension_resource_paths(skill_paths),
+            prompt_paths=self._build_extension_resource_paths(prompt_paths),
+            theme_paths=self._build_extension_resource_paths(theme_paths),
+        )
+        extend_resources(paths)
+        self._base_system_prompt = self._build_system_prompt(self.get_active_tool_names())
+        self._agent.set_system_prompt(self._base_system_prompt)
+
+    def _build_extension_resource_paths(self, entries: list[Any]) -> list[dict[str, Any]]:
+        paths: list[dict[str, Any]] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                path = entry
+                extension_path = None
+            elif isinstance(entry, dict):
+                path = entry.get("path")
+                extension_path = entry.get("extensionPath") or entry.get("extension_path")
+            else:
+                path = getattr(entry, "path", None)
+                extension_path = getattr(entry, "extensionPath", None) or getattr(entry, "extension_path", None)
+            if not isinstance(path, str) or not path:
+                continue
+            metadata = {
+                "source": "extension",
+                "scope": "temporary",
+                "origin": "top-level",
+            }
+            if isinstance(extension_path, str) and extension_path:
+                metadata["baseDir"] = os.path.dirname(extension_path)
+            paths.append({"path": path, "metadata": metadata})
+        return paths
 
     async def reload(self) -> None:
         """
         Reload configuration and resources.
         Mirrors reload() in TypeScript.
         """
-        # Reload settings
-        await self._settings_manager.reload()
-        # Reset API providers if needed
-        # TODO: Add resetApiProviders when available
-        pass
+        previous_flag_values = self._extension_runner.get_flag_values()
+        await self._extension_runner.shutdown("reload")
+        self._extension_runner.invalidate()
+        settings_reload = self._settings_manager.reload()
+        if asyncio.iscoroutine(settings_reload):
+            await settings_reload
+        self._model_registry.reset_registered_providers()
+        if self._resource_loader is not None:
+            reload_fn = getattr(self._resource_loader, "reload", None)
+            if callable(reload_fn):
+                result = reload_fn()
+                if asyncio.iscoroutine(result):
+                    await result
+            self._extension_runner = self._create_extension_runner(previous_flag_values)
+            self._bind_extension_context(self._extension_bindings)
+            if self._extension_bindings:
+                command_context_actions = self._default_extension_command_context_actions()
+                command_context_actions.update(
+                    self._extension_bindings.get("commandContextActions")
+                    or self._extension_bindings.get("command_context_actions")
+                    or {}
+                )
+                self._extension_runner.bind_command_context_actions(command_context_actions)
+                await self._extension_runner.emit({"type": "session_start", "reason": "reload"})
+                await self._extend_resources_from_extensions("reload")
 
     async def execute_bash(
         self,
@@ -1188,59 +2091,32 @@ class AgentSession:
             - truncated: bool
             - full_output_path: str | None
         """
-        from pi_ai.types import ToolResultMessage
+        from .bash_executor import execute_bash as execute_bash_command
         
         # Apply command prefix if configured
         prefix = self._settings_manager.get_shell_command_prefix()
         resolved_command = f"{prefix}\n{command}" if prefix else command
-        
-        # Execute bash command
-        # TODO: Integrate with actual bash executor when available
-        import subprocess
+
+        cancel_event = asyncio.Event()
+        self._bash_cancel_event = cancel_event
         try:
-            proc = subprocess.run(
+            bash_result = await execute_bash_command(
                 resolved_command,
-                shell=True,
-                capture_output=True,
-                text=True,
+                on_chunk=on_chunk,
+                cancel_event=cancel_event,
                 cwd=self.cwd,
-                timeout=300,  # 5 minute timeout
             )
-            output = proc.stdout + proc.stderr
-            exit_code = proc.returncode
-            cancelled = False
-            truncated = False
-            full_output_path = None
-            
-            if on_chunk:
-                on_chunk(output)
-        except subprocess.TimeoutExpired:
-            output = "Command timed out after 5 minutes"
-            exit_code = -1
-            cancelled = True
-            truncated = False
-            full_output_path = None
-        except Exception as e:
-            output = f"Error executing command: {str(e)}"
-            exit_code = -1
-            cancelled = False
-            truncated = False
-            full_output_path = None
-        
-        result = {
-            "output": output,
-            "exit_code": exit_code,
-            "cancelled": cancelled,
-            "truncated": truncated,
-            "full_output_path": full_output_path,
-        }
-        
-        # Record result in session
-        self.record_bash_result(
-            tool_call_id="manual_exec",
-            output=output,
-            exit_code=exit_code,
-        )
+            result = {
+                "output": bash_result.output,
+                "exit_code": bash_result.exit_code,
+                "cancelled": bash_result.cancelled,
+                "truncated": bash_result.truncated,
+                "full_output_path": bash_result.full_output_path,
+            }
+        finally:
+            self._bash_cancel_event = None
+
+        self.record_bash_result(command, result, exclude_from_context=exclude_from_context)
         
         return result
 
@@ -1249,8 +2125,8 @@ class AgentSession:
         Abort current bash execution.
         Mirrors abortBash() in TypeScript.
         """
-        # TODO: Integrate with bash executor abort mechanism
-        pass
+        if self._bash_cancel_event is not None:
+            self._bash_cancel_event.set()
 
     def set_session_name(self, name: str) -> None:
         """
@@ -1298,10 +2174,97 @@ class AgentSession:
         """
         Check if any extensions handle the given event type.
         Mirrors hasExtensionHandlers() in TypeScript.
-        This is a stub for future extension support.
         """
-        # TODO: Implement when extension system is added
-        return False
+        return self._extension_runner.has_handlers(event_type)
+
+    def create_replaced_session_context(self) -> Any:
+        """Create the context shape passed after session replacement."""
+        context = self._extension_runner.create_command_context()
+        setattr(context, "sendMessage", self.send_custom_message)
+        setattr(context, "sendUserMessage", self.send_user_message)
+        return context
+
+    @property
+    def extension_runner(self) -> ExtensionRunner:
+        return self._extension_runner
+
+    # Node/TypeScript public API compatibility aliases.
+    thinkingLevel = thinking_level
+    isStreaming = is_streaming
+    isCompacting = is_compacting
+    isRetrying = is_retrying
+    isBashRunning = is_bash_running
+    retryAttempt = retry_attempt
+    modelRegistry = model_registry
+    authStorage = auth_storage
+    resourceLoader = resource_loader
+    promptTemplates = prompt_templates
+    sessionManager = session_manager
+    settingsManager = settings_manager
+    sessionFile = session_file
+    sessionName = session_name
+    steeringMode = steering_mode
+    followUpMode = follow_up_mode
+    systemPrompt = system_prompt
+    pendingMessageCount = pending_message_count
+    autoCompactionEnabled = auto_compaction_enabled
+    autoRetryEnabled = auto_retry_enabled
+    extensionRunner = extension_runner
+    sessionId = property(lambda self: self.session_id)
+    scopedModels = scoped_models
+    hasPendingBashMessages = has_pending_bash_messages
+
+    followUp = follow_up
+    waitForIdle = wait_for_idle
+    switchSession = switch_session
+    newSession = new_session
+    cloneSession = clone_session
+    forkSession = fork_session
+    getSessionTreeEntries = get_session_tree_entries
+    navigateTree = navigate_tree
+    getSteeringMessages = get_steering_messages
+    getFollowUpMessages = get_follow_up_messages
+    clearQueue = clear_queue
+    getActiveToolNames = get_active_tool_names
+    getAllTools = get_all_tools
+    getToolDefinition = get_tool_definition
+    getAllToolNames = get_all_tool_names
+    setActiveToolsByName = set_active_tools_by_name
+    setModel = set_model
+    cycleModel = cycle_model
+    getAvailableThinkingLevels = get_available_thinking_levels
+    supportsThinking = supports_thinking
+    setThinkingLevel = set_thinking_level
+    cycleThinkingLevel = cycle_thinking_level
+    getSessionStats = get_session_stats
+    getContextUsage = get_context_usage
+    getSessionInfo = get_session_info
+    sendCustomMessage = send_custom_message
+    sendUserMessage = send_user_message
+    abortCompaction = abort_compaction
+    abortBranchSummary = abort_branch_summary
+    abortRetry = abort_retry
+    exportToHtml = export_to_html
+    exportToJsonl = export_to_jsonl
+    getLastAssistantText = get_last_assistant_text
+    setScopedModels = set_scoped_models
+    setAutoCompactionEnabled = set_auto_compaction_enabled
+    setAutoRetryEnabled = set_auto_retry_enabled
+    setSteeringMode = set_steering_mode
+    setFollowUpMode = set_follow_up_mode
+    loginApiKey = login_api_key
+    logoutProvider = logout_provider
+    getProjectTrust = get_project_trust
+    setProjectTrust = set_project_trust
+    shareSession = share_session
+    bindExtensions = bind_extensions
+    executeBash = execute_bash
+    recordBashResult = record_bash_result
+    abortBash = abort_bash
+    setSessionName = set_session_name
+    getUserMessagesForForking = get_user_messages_for_forking
+    createReplacedSessionContext = create_replaced_session_context
+    hasExtensionHandlers = has_extension_handlers
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1324,4 +2287,6 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     """Convert a message to a dict for persistence."""
     if hasattr(msg, "model_dump"):
         return msg.model_dump()
+    if dataclasses.is_dataclass(msg):
+        return dataclasses.asdict(msg)
     return {"role": getattr(msg, "role", "unknown")}
