@@ -20,34 +20,44 @@ Decided by the evidence in §9. If you only read one section, read this.
   prompt **prefix stays byte-stable and the model's prompt cache stays warm**. As the
   frontier advances, turns aging past the tail budget are compressed in **batches**,
   not every turn.
-- **Compression is LOSSLESS and deterministic.** A compressed block → a **TF-IDF
-  keyword cue** (no LLM) **+ a ref to the retained full text**. Binary: full | cue+ref.
-  No multi-tier fidelity ramp.
-- **Recovery is AUTOMATIC and harness-driven — NOT model-driven.** When a later turn's
-  terms match a compressed block's cue, the **harness auto-injects the full text at the
-  tail** (cache-safe append). Do **not** rely on an `expand` tool the model calls:
-  Tier-1 showed the model won't (0/6 calls, even `gpt-5.4-mini` with an explicit
-  instruction to expand — it can't tell it's missing what it can no longer see).
-- **No embeddings in v1.** Lexical keyword-overlap recovery clears **~98%** of real
-  cross-references (§9). Embeddings are a measured, **local-only** upgrade (Ollama),
-  considered only if a Tier-1 judge shows the paraphrase tail is large. Never send
-  customer content to a cloud embedder; Anthropic has no embeddings endpoint anyway.
-- **Flag-gated; lossless ⇒ safe to A/B in prod.** Toggle on/off. Because nothing is
-  destroyed, population A/B (or shadow replay) verifies effectiveness post-hoc. Default
+- **Compression pairs with ATOMIC MEMORY EXTRACTION, not block-stubbing.** As a block
+  ages past the tail budget, **extract atomic memory units** from it (facts, entities,
+  decisions, summaries — Oracle's typed memory) and keep the full text retrievable. The
+  recoverable signal lives in the atomic memories, *not* in a compressed raw chunk. (A
+  keyword cue may stay as an in-context breadcrumb, but it is not the recovery
+  substrate.)
+- **Recovery is AUTOMATIC, harness-driven, and SEMANTIC over atomic memories — NOT
+  model-driven, NOT over raw blocks.** Each turn the harness retrieves the atomic
+  memories most relevant to the prompt (embedding cosine) and injects them at the tail
+  (cache-safe append). Do **not** rely on a model-called `expand` tool: Tier-1 showed
+  the model won't call it (0/6, even `gpt-5.4-mini` instructed to). This is Claire's /
+  Oracle's production pattern.
+- **Embeddings: yes, but LOCAL and only at ATOMIC granularity.** NIAH at 160k tokens
+  (§9) showed semantic retrieval over *coarse 300-word blocks* is **worse** than lexical
+  (the needle is diluted in one vector); over an *atomic* unit it catches the paraphrase
+  query (cos 0.72) that lexical structurally cannot. So embeddings earn their keep
+  exactly where Claire applies them — over small curated units. Run them **locally**
+  (Ollama `nomic-embed-text`); never send customer content to a cloud embedder
+  (Anthropic has no embeddings endpoint regardless).
+- **Flag-gated; lossless ⇒ safe to A/B in prod.** Toggle on/off. Because full text is
+  retained, population A/B (or shadow replay) verifies effectiveness post-hoc. Default
   ON once validated (kill-switch flag retained).
 
 **Seam:** `transform_context()` in `core/agent_session.py` (currently an identity stub).
+**Substrate:** an atomic-memory store + extractor (this is the Claire/Oracle pattern —
+the open design work is how pi-py extracts atomic memories as content ages).
 
-**Open questions (not yet answered):** (1) the paraphrase-recovery tail — how often a
-real recovery need shares *no* terms with the target (needs a Tier-1 LLM judge); (2)
-end-to-end non-inferiority of compressed-context **with auto-recovery wired in** (the
-next eval — the Tier-1 runs so far tested model-driven expand, which we're abandoning).
+**Open questions:** (1) the **extractor** — what atomic units pi-py pulls from aging
+context and how (the curator step); (2) end-to-end non-inferiority of compressed-context
+**with atomic-memory semantic recovery wired in** (every eval so far tested the wrong
+unit — coarse blocks — or the abandoned model-driven path).
 
 **Rejected along the way** (kept below as reasoning, each with its reason): a high/low-
-recency **mode router** (§6 — regimes are emergent, not configured); **per-turn
-relevance re-shaping** and **pivot-triggered** re-shaping (cache-hostile to apply;
-position approximates it); a multi-tier **fidelity ramp** (unvalidated + needed an LLM);
-**model-driven `expand`** (Tier-1: model won't call it in real flow).
+recency **mode router** (§6 — emergent, not configured); **per-turn relevance
+re-shaping** / **pivot-triggered** re-shaping (cache-hostile; position approximates it);
+a multi-tier **fidelity ramp** (unvalidated + needed an LLM); **model-driven `expand`**
+(Tier-1: model won't call it); **recovery over raw compressed blocks** (§9 NIAH: wrong
+granularity — needle diluted; recover atomic memories instead).
 
 ---
 
@@ -469,9 +479,35 @@ as Tier-0 predicted *when recovery doesn't fire*.
 said automatic lexical recovery ≈ 98 %; Tier-1 says model-driven `expand` ≈ 0 % in
 realistic flow. This is precisely Oracle's "retrieval is **programmatic**, not
 agent-triggered" rule (§10): we tested the agent-triggered path, it failed as Oracle
-predicts, and v1 adopts the programmatic path. **Still open:** the Tier-1 runs so far
-tested the *wrong* (model-driven) half; the decisive eval — compressed context with
-**auto-recovery wired in** vs full context — has not been run yet.
+predicts, and v1 adopts the programmatic path.
+
+A first **harness auto-recovery** arm (lexical top-6 over compressed *conversation
+blocks*) tied model-expand at 1/6 — which led to the next test:
+
+### NIAH at scale — recovery is a GRANULARITY problem (`evals/niah_recovery.py`)
+
+Plant a needle, compress its block, and ask whether **lexical** vs **semantic** (local
+`nomic-embed-text`) recovery surfaces it — in a **160k-token** corpus (Moby Dick), above
+the compression floor, with a **literal** and a **paraphrase** query.
+
+| needle representation | cos(paraphrase) | cos(literal) | retrieval result |
+| --- | --- | --- | --- |
+| diluted in a 300-word block | 0.53 | 0.48 | lexical gets literal @ rank 1; **semantic worse (rank 131)**; both miss paraphrase |
+| **atomic** (sentence alone) | **0.72** | **0.89** | semantic recovers it, **including paraphrase** (lexical: 0) |
+
+**The finding: granularity, not lexical-vs-semantic, is the lever.** A short needle
+diluted in a coarse 300-word block can't be represented by one embedding vector, so
+semantic retrieval is *worse* than lexical there. At **atomic** granularity semantic
+catches the paraphrase case lexical structurally cannot.
+
+**This reconciles everything — and explains why Claire's recall works.** Claire embeds
+**atomic curated memories** (facts/entities/summaries), so its granularity is right and
+semantic recall succeeds in production. Every recovery eval here that *failed* did so on
+**coarse raw chunks** — the wrong unit. So the plan corrects: **recovery operates over
+atomic extracted memories, semantically (local embeddings), not over raw compressed
+blocks.** Compression of aged content and atomic-memory *extraction* are the same step.
+**Open:** the extractor (what units, extracted how) and an end-to-end eval at the right
+granularity.
 
 ## 10. Prior work — this design is a recombination, not a new invention
 
