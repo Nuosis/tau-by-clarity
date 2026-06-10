@@ -104,8 +104,14 @@ def _flatten_content(content: Any) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def load_session(path: str) -> list[Block]:
-    """Linearise a v3 session JSONL into ordered Blocks tagged by user turn."""
+def load_session(path: str, per_message_turns: bool = False) -> list[Block]:
+    """Linearise a v3 session JSONL into ordered Blocks tagged by turn.
+
+    Default: a turn advances on each user message (conversational sessions).
+    per_message_turns: a turn advances on *every* message — correct for agent
+    tool-loops (one initial user task, then many assistant/tool rounds) so the
+    accumulation has a real middle to compress.
+    """
     blocks: list[Block] = []
     turn = -1
     with open(path) as fh:
@@ -121,7 +127,7 @@ def load_session(path: str) -> list[Block]:
                 m = e.get("message") or {}
                 role = m.get("role", "?")
                 text = _flatten_content(m.get("content"))
-                if role == "user":
+                if per_message_turns or role == "user":
                     turn += 1
             elif etype in ("compaction", "branch_summary"):
                 role = "summary"
@@ -143,14 +149,28 @@ _NEEDLE_QUERY = "What was the deployment passphrase mentioned earlier?"
 
 
 def inject_needle(blocks: list[Block]) -> tuple[list[Block], str]:
-    """Plant a fact early and a query for it at the end; returns (blocks, token)."""
-    if len(blocks) < 2:
+    """Plant a fact in the COMPRESSIBLE MIDDLE (not the anchor — that would survive
+    trivially) and a query for it at the end. The fact is buried mid-block so the
+    reversible stub's preserved head does not give it away for free; this actually
+    stresses whether the gradient keeps dispersed middle relevance. Returns
+    (blocks, lowercase-token-to-find)."""
+    if len(blocks) < 4:
         return blocks, ""
-    fact = Block(eid="needle-fact", role="user",
-                 text=f"Important for later: {_NEEDLE_FACT}", turn=blocks[0].turn)
+    mid_turn = blocks[len(blocks) // 2].turn
+    filler = "Routine status note; nothing unusual to report here. " * 3
+    fact = Block(eid="needle-fact", role="assistant",
+                 text=f"{filler}{_NEEDLE_FACT} {filler}", turn=mid_turn)
+    # insert right after the first block at mid_turn
+    out: list[Block] = []
+    placed = False
+    for b in blocks:
+        out.append(b)
+        if not placed and b.turn == mid_turn:
+            out.append(fact)
+            placed = True
     last_turn = blocks[-1].turn + 1
-    query = Block(eid="needle-query", role="user", text=_NEEDLE_QUERY, turn=last_turn)
-    return [fact] + blocks + [query], "quokka-77-vermilion"
+    out.append(Block(eid="needle-query", role="user", text=_NEEDLE_QUERY, turn=last_turn))
+    return out, "quokka-77-vermilion"
 
 
 # ─── strategies ───────────────────────────────────────────────────────────────
@@ -249,10 +269,15 @@ class SessionReport:
 
 
 def run_session(path: str, args: argparse.Namespace) -> SessionReport | None:
-    blocks = load_session(path)
+    blocks = load_session(path, per_message_turns=args.per_message_turns)
     needle_tok = ""
+    needle_turn = -1
     if args.needle:
         blocks, needle_tok = inject_needle(blocks)
+        for b in blocks:
+            if b.eid == "needle-fact":
+                needle_turn = b.turn
+                break
     if not blocks:
         return None
     turns = max(b.turn for b in blocks) + 1
@@ -278,7 +303,9 @@ def run_session(path: str, args: argparse.Namespace) -> SessionReport | None:
             cand_prefixes.append(prefix_stability(cand_prev, cs))
         base_prev, cand_prev = bs, cs
 
-        if needle_tok and t > blocks[0].turn:
+        # only count turns AFTER the needle was introduced (before that, neither
+        # context can contain it — counting them would understate both).
+        if needle_tok and t > needle_turn:
             nb_tot += 1
             nc_tot += 1
             nb_hit += int(needle_tok in bs.lower())
@@ -305,6 +332,9 @@ def main() -> int:
                          "(default 128000; use 0 to force the gradient on)")
     ap.add_argument("--needle", action="store_true",
                     help="inject a synthetic early fact + late query (controlled test)")
+    ap.add_argument("--per-message-turns", action="store_true",
+                    help="advance a turn on every message (agent tool-loops), not "
+                         "just user messages (conversations)")
     ap.add_argument("--json", metavar="PATH", help="write full report as JSON")
     args = ap.parse_args()
 

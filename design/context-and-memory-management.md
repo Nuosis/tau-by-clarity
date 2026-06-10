@@ -361,12 +361,49 @@ Status of the first run:
   needle, *less cacheable*) shows up in the numbers. That last fact is the empirical
   basis for the regime split: pay it for slow planning turns, not fast coding turns.
 
-**Honest data gap:** real signal needs sessions with genuine middles. Next data: point
-the same harness at (a) richer local coding sessions for the high-recency regime and
-(b) clarify Langfuse traces for the conversational/low-recency regime. Tiers 1–2
-(cheap-model A/B with a pairwise non-inferiority judge, then production model on the
-contested subset) come after Tier-0 separates the regimes on real data. Token counts
-are char/4 approximations — fine for deltas, not billing.
+**Real-data run (clarify Langfuse, 21 agent traces).** `evals/langfuse_fetch.py`
+pulls the long agent-run traces from the clarity Langfuse ClickHouse (each trace's
+most-accumulated message array → a session fixture) and Tier-0 replays them with
+`--per-message-turns`. Result across 21 production traces (41–200 messages each):
+
+- **33% aggregate token savings** (12.9–56.9% per trace) from compressing the cold
+  middle.
+- **But prefix stability collapses: baseline ~0.89–0.97 → candidate ~0.28 avg
+  (as low as 0.06).** The gradient saves a third of the tokens *while destroying
+  cacheability.*
+
+This is the **regime split confirmed on production data**, not theory: these are
+high-recency agent tool-loops (frequent turns, near-perfect append-only cacheability),
+so the gradient's token win is paid back — and then some — in cache-miss reprocessing.
+Conclusion holds: **for this regime, do NOT run the continuous gradient — keep append +
+rare discrete compaction (barbell).**
+
+**Low-recency regime (Claire chat, 14 sessions, `evals/clarify_chat_fetch.py`).**
+clarify Langfuse stores one trace per session, so the human-dialogue regime lives in
+the clarify Postgres `agent_chat_messages` (voice transcripts are reconstructable from
+`agent_events` `stt.final`/`agent.response` but noisy; chat is clean). These are genuine
+multi-turn dialogues (up to 170 turns) with **topic pivots and cross-conversation
+recall** ("return to NBNA — report what you recall"). Tier-0 result:
+
+- **Only ~14% aggregate token savings** — *less* than the agent loops. Human turns are
+  short and information-dense; there is little bulky cruft to compress. Cache stability
+  drops here too (baseline ~0.53–0.95 → candidate ~0.20–0.56).
+
+**The critical finding (mid-conversation needle).** With the needle correctly planted in
+the *compressible middle* (not the anchor): **baseline preserves it 100%; the gradient
+preserves it only 24–41%.** The naive score-and-stub gradient **drops dispersed middle
+relevance 60–76% of the time** — precisely the thing the low-recency regime exists to
+protect. So Tier-0's verdict on the gradient is *negative in both regimes as currently
+specced*: cache-destroying in the high-recency regime, and lossy-on-recall in the
+low-recency regime.
+
+This sharpens the design rather than refuting it: the fidelity gradient is **only safe
+paired with reversible expand** (§7/MemGPT) — the demoted block must be retrievable and
+the model (or a query-time re-score) must pull it back when the prompt turns relevant.
+Tier-0 measures only the *static working set*, so it cannot see the expand path; proving
+the gradient net-positive therefore **requires Tier-1** (cheap-model A/B with a pairwise
+non-inferiority judge + an expand tool), then production model on the contested subset.
+Token counts are char/4 approximations — fine for deltas, not billing.
 
 ## 10. Prior work — this design is a recombination, not a new invention
 
