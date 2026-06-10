@@ -543,6 +543,36 @@ blocks.** Compression of aged content and atomic-memory *extraction* are the sam
 **Open:** the extractor (what units, extracted how) and an end-to-end eval at the right
 granularity.
 
+### Coding-agent recall — VERIFIED end-to-end (`evals/coding_recall_ab.py`)
+
+The decisive test, in the actual target domain. Plant a coding fact (`config/net.py:
+MAX_RECONNECT_ATTEMPTS = 7741`) as its **own atomic unit** in a **real `devin_agent`
+trace**, compress the middle, recover via **hybrid `max(lexical, local-semantic)`**,
+and have the model answer. Two traces (55k & 12k tok), literal + paraphrase queries:
+
+| arm | result |
+| --- | --- |
+| full context (verbatim) | **fails both traces** — needle present but lost-in-the-middle |
+| no-recovery (middle stubbed) | **fails both** — needle absent |
+| **hybrid recall (lean context)** | **correct in 3/4** query-arms; needle retrieved **#1 of 25–29** in all 4 |
+
+**This verifies recall for coding** — not theorized: atomic-unit + hybrid recall
+retrieves the fact at rank 1 (literal *and* paraphrase) and the model answers from a
+**lean** recovered context, beating both dump-everything and drop-the-fact. Two
+preconditions proved **load-bearing** (and they're why earlier proxies failed):
+
+1. **Atomic granularity** — the fact is its own unit, not diluted in a chunk (rank 1,
+   not 131).
+2. **Lean recovered context** — recovered atomic facts at the tail, *not* head+tail+all-
+   stubs (which re-creates lost-in-the-middle; that was the bug, not recall). This is
+   why the **curator** that produces small atomic units is load-bearing, not optional.
+
+**Honest residue:** the one miss (trace-1 paraphrase) had the needle retrieved #1 but
+answer-synthesis lost it among semantic distractors — a *precision* issue, not
+retrieval, and narrower for coding (recall keys are mostly exact tokens — IDs, paths,
+identifiers — where literal recovery is clean). **Still not run:** the low-recency
+stitched-papers regime (the contrasting half of the matrix).
+
 ## 10. Prior work — this design is a recombination, not a new invention
 
 Two layers in the literature; keep them distinct:
