@@ -283,17 +283,33 @@ append); long low-recency dialogue compresses an aging middle in batches.
 > complexity and zero cache risk. Revisit only if evals show position leaving value on
 > the table.
 
-### The break-even floor
+### The break-even floor → a MEASURED, model-calibrated target
 
-Below a size floor, compute and act on nothing — there is nothing worth reclaiming
-and the cache cost dominates. Above it, the real gate is a break-even:
+Below a size floor, compute and act on nothing — nothing worth reclaiming, cache cost
+dominates. Above it, the cost gate is a break-even (act when `tokens-reclaimed ×
+cost-per-turn × turns-remaining > cache-reprocessing cost at that edit point`;
+per-location — editing the middle reprocesses everything after, the tail little).
 
-> act when (tokens reclaimed × cost-per-turn-to-carry × turns-remaining)
-> > (cache-reprocessing cost of editing at that point).
+But the floor is not arbitrary, and **`~128k` was a placeholder.** The §9 coding eval
+showed gpt-5.4-mini **fails to recall a verbatim fact buried in 55k tokens of dense
+content** (lost-in-the-middle / context rot). That gives the floor a *principled,
+measured* definition:
 
-Keep a cheap constant (~128k) only as a "don't bother computing below this"
-shortcut — a floor, not a rule. The gate is **per-location**: editing the middle
-reprocesses everything after it; editing near the tail reprocesses little.
+> **floor = target = the model's measured "reliable working-set size"** — the largest
+> context in which it still recalls a worst-depth needle at ≥ ~95%. Compress to keep
+> the working set at or below it.
+
+Consequences:
+- **Model-specific.** Each model/tier has its own reliable size (Context Rot, §10,
+  measured 18 models — they vary widely). Calibrate per model; recalibrate on switch.
+- **Couples context-management to model selection.** A model with weak middle-recall
+  needs *more aggressive* compression — "which model" and "how hard to compress" are one
+  decision. A weak-recall model can be *more expensive* to run well than a stronger one.
+- **Calibrate via a NIAH sweep** (the §9 `niah_recovery` harness, extended): size **×
+  depth**, realistic dense distractors, N needles/size, threshold on accuracy (not
+  first-failure). The number is a heuristic *upper bound* — it measures recall, not
+  multi-fact reasoning, which may degrade earlier. **Not yet run** — this is the next
+  calibration eval.
 
 ### Measuring relevance (per-block score, cheapest first)
 
