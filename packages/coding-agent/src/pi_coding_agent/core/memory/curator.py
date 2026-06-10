@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal
 
 from .models import MemoryType, SemanticMemory
 from .store import MemoryStore
 
-LlmFn = Callable[[str, str], str]
+LlmFn = Callable[[str, str], str]               # sync (system, user) -> json text
+AsyncLlmFn = Callable[[str, str], Awaitable[str]]  # async variant for the live loop
 
 # evidence the curator is ALLOWED to ground a durable memory in. Assistant output is
 # deliberately excluded — the agent's own prose is not evidence for owner memory.
@@ -73,29 +74,71 @@ def _extract_json(text: str) -> dict:
 
 
 class Curator:
-    def __init__(self, llm_fn: LlmFn, store: MemoryStore, *, provenance: str = "curator",
+    def __init__(self, llm_fn: LlmFn | None = None, store: MemoryStore = None, *,
+                 allm_fn: AsyncLlmFn | None = None, provenance: str = "curator",
                  min_confidence: float = 0.05, verify: bool = True) -> None:
         self.llm_fn = llm_fn
+        self.allm_fn = allm_fn
         self.store = store
         self.provenance = provenance
         self.min_confidence = min_confidence
         self.verify = verify
 
+    # ── sync path (tests) ─────────────────────────────────────────────────────
+
     def curate(self, evidence: list[Evidence]) -> list[CommitDecision]:
+        eligible, ev_by_id, packet = self._prep(evidence)
+        decisions = self._parse_and_guard(
+            self.llm_fn(SYSTEM_EXTRACT, f"EVIDENCE:\n{packet}"), eligible)
+        for d in decisions:
+            if d.verdict == "auto_commit" and self.verify:
+                self._apply_verify(d, self.llm_fn(SYSTEM_VERIFY,
+                                                  self._verify_prompt(d, ev_by_id)))
+        return decisions
+
+    # ── async path (live session, via stream_simple) ─────────────────────────
+
+    async def acurate(self, evidence: list[Evidence]) -> list[CommitDecision]:
+        eligible, ev_by_id, packet = self._prep(evidence)
+        decisions = self._parse_and_guard(
+            await self.allm_fn(SYSTEM_EXTRACT, f"EVIDENCE:\n{packet}"), eligible)
+        for d in decisions:
+            if d.verdict == "auto_commit" and self.verify:
+                self._apply_verify(d, await self.allm_fn(
+                    SYSTEM_VERIFY, self._verify_prompt(d, ev_by_id)))
+        return decisions
+
+    async def acurate_and_commit(self, evidence: list[Evidence]) -> list[str]:
+        return self.commit(await self.acurate(evidence))
+
+    # ── shared helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _prep(evidence: list[Evidence]):
         eligible = {e.id for e in evidence if e.kind in ELIGIBLE_KINDS}
         ev_by_id = {e.id: e for e in evidence}
         packet = "\n".join(f"[{e.id}] ({e.kind}) {e.text}" for e in evidence)
-        raw = self.llm_fn(SYSTEM_EXTRACT, f"EVIDENCE:\n{packet}")
-        decisions: list[CommitDecision] = []
+        return eligible, ev_by_id, packet
+
+    def _parse_and_guard(self, raw: str, eligible: set[str]) -> list[CommitDecision]:
+        out: list[CommitDecision] = []
         for d in _extract_json(raw).get("decisions", []):
             dec = self._coerce(d)
             if dec is None:
                 continue
-            dec = self._apply_guards(dec, eligible)
-            if dec.verdict == "auto_commit" and self.verify:
-                dec = self._verify_grounding(dec, ev_by_id)
-            decisions.append(dec)
-        return decisions
+            out.append(self._apply_guards(dec, eligible))
+        return out
+
+    @staticmethod
+    def _verify_prompt(d: CommitDecision, ev_by_id: dict[str, Evidence]) -> str:
+        cited = "\n".join(f"[{sid}] {ev_by_id[sid].text}" for sid in d.source_ids
+                          if sid in ev_by_id)
+        return f"CLAIM: {d.title} — {d.content}\n\nEVIDENCE:\n{cited}"
+
+    def _apply_verify(self, d: CommitDecision, raw: str) -> None:
+        if not _extract_json(raw).get("supported", False):
+            d.verdict = "needs_review"
+            d.rationale = f"verify: unsupported; {d.rationale}"
 
     def commit(self, decisions: list[CommitDecision]) -> list[str]:
         """Write auto_commit → active; needs_review → stored inactive (audit); reject → drop."""
@@ -148,13 +191,4 @@ class Curator:
         if reason:
             d.verdict = "reject"
             d.rationale = f"guard: {reason}; {d.rationale}"
-        return d
-
-    def _verify_grounding(self, d: CommitDecision, ev_by_id: dict[str, Evidence]) -> CommitDecision:
-        cited = "\n".join(f"[{sid}] {ev_by_id[sid].text}" for sid in d.source_ids
-                          if sid in ev_by_id)
-        raw = self.llm_fn(SYSTEM_VERIFY, f"CLAIM: {d.title} — {d.content}\n\nEVIDENCE:\n{cited}")
-        if not _extract_json(raw).get("supported", False):
-            d.verdict = "needs_review"
-            d.rationale = f"verify: unsupported; {d.rationale}"
         return d

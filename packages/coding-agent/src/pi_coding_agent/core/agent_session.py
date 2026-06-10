@@ -187,11 +187,14 @@ class AgentSession:
         try:
             from .memory.integration import MemoryIntegration, memory_enabled
             if memory_enabled():
-                self._memory = MemoryIntegration(os.getcwd())
+                model_name = getattr(getattr(self._agent.state, "model", None), "id", None)
+                self._memory = MemoryIntegration(
+                    os.getcwd(), allm_fn=self._memory_acomplete, model=model_name)
                 self._memory_store = self._memory.store
                 self._memory_scope = self._memory.scope
         except Exception:
             self._memory = None  # never let memory wiring break session construction
+        self._memory_cursor = 0  # index of last message curated into memory
 
     # ── Tool construction ─────────────────────────────────────────────────────
 
@@ -524,7 +527,52 @@ class AgentSession:
             did_retry = await self._handle_retryable_error(msg)
             if did_retry:
                 return
+        # Memory write path: curate this turn's new messages into the store (P5).
+        await self._curate_turn()
         await self._check_compaction(msg)
+
+    # ── Memory: live write path (curation) ───────────────────────────────────
+
+    async def _memory_acomplete(self, system: str, user: str) -> str:
+        """One-shot model call for the curator, via the session's model."""
+        from pi_ai import complete_simple
+        from pi_ai.types import Context, UserMessage
+        model = self._agent.state.model
+        if model is None:
+            return ""
+        ctx = Context(system_prompt=system,
+                      messages=[UserMessage(content=user, timestamp=0)])
+        result = await complete_simple(model, ctx)
+        parts = []
+        for block in getattr(result, "content", []) or []:
+            if getattr(block, "type", "") == "text":
+                parts.append(getattr(block, "text", ""))
+        return "\n".join(p for p in parts if p)
+
+    async def _curate_turn(self) -> None:
+        """Extract atomic memories from messages added since the last curation."""
+        if self._memory is None:
+            return
+        from .memory.curator import Evidence
+        msgs = self._agent.state.messages
+        start = self._memory_cursor
+        self._memory_cursor = len(msgs)
+        kinds = {"user": "user_turn", "toolResult": "tool_result",
+                 "assistant": "assistant_output"}
+        evidence: list[Evidence] = []
+        for i, m in enumerate(msgs[start:], start=start):
+            kind = kinds.get(getattr(m, "role", ""))
+            if not kind:
+                continue
+            text = _message_text(m)
+            if text:
+                evidence.append(Evidence(f"m{i}", kind, text[:4000]))
+        if not any(e.kind in ("user_turn", "tool_result") for e in evidence):
+            return
+        try:
+            await self._memory.arecord_turn(evidence)
+        except Exception:
+            pass  # curation must never break the turn
 
     def _emit(self, event: dict | Any) -> None:
         """Emit a synthetic session event to all listeners."""
@@ -1502,7 +1550,14 @@ class AgentSession:
             await self._run_auto_compaction("threshold", will_retry=False)
 
     async def _run_auto_compaction(self, reason: str, will_retry: bool) -> None:
-        """Run auto-compaction with events (mirrors _runAutoCompaction in TS)."""
+        """Run auto-compaction with events (mirrors _runAutoCompaction in TS).
+
+        Memory-backed compaction (P5): when memory is enabled, curate any un-curated
+        messages into the store FIRST, so atomic facts survive the lossy summary and
+        recall (§9) can re-inject them. The native summarization still shrinks the
+        transcript; the store makes it lossless."""
+        if self._memory is not None:
+            await self._curate_turn()
         self._compaction_running = True
         self._emit({"type": "auto_compaction_start", "reason": reason})
         try:
@@ -2306,3 +2361,17 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     if dataclasses.is_dataclass(msg):
         return dataclasses.asdict(msg)
     return {"role": getattr(msg, "role", "unknown")}
+
+
+def _message_text(msg: Any) -> str:
+    """Flatten an AgentMessage to plain text for memory evidence (text/tool blocks)."""
+    content = getattr(msg, "content", None)
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for b in content or []:
+        if isinstance(b, dict):
+            parts.append(b.get("text") or b.get("thinking") or "")
+        else:
+            parts.append(getattr(b, "text", "") or getattr(b, "thinking", "") or "")
+    return "\n".join(p for p in parts if p)

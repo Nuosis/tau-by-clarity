@@ -99,3 +99,37 @@ def test_no_direct_active_write_for_needs_review(tmp_path):
     c.curate_and_commit(_ev())
     assert s.search("c") == []                    # needs_review not active in recall
     s.close()
+
+
+class AsyncStubLlm:
+    def __init__(self, decisions, supported=True):
+        self.decisions = decisions
+        self.supported = supported
+
+    async def __call__(self, system: str, user: str) -> str:
+        if "Verify" in system:
+            return json.dumps({"supported": self.supported})
+        return json.dumps({"decisions": self.decisions})
+
+
+async def test_acurate_and_commit(tmp_path):
+    """Live write path: async curator extracts + commits (used by the running session)."""
+    s = _store(tmp_path)
+    c = Curator(store=s, allm_fn=AsyncStubLlm([{
+        "title": "reconnect", "content": "MAX_RECONNECT_ATTEMPTS is 7741",
+        "memory_type": "file_api", "key": "fileapi:max_reconnect",
+        "source_ids": ["e1"], "verdict": "auto_commit", "confidence": 0.9}]))
+    written = await c.acurate_and_commit(_ev())
+    assert len(written) == 1
+    assert "7741" in s.search("MAX_RECONNECT_ATTEMPTS")[0].memory.content
+    s.close()
+
+
+async def test_acurate_assistant_ineligible(tmp_path):
+    s = _store(tmp_path)
+    c = Curator(store=s, allm_fn=AsyncStubLlm([{
+        "title": "x", "content": "y", "memory_type": "decision", "key": "decision:x",
+        "source_ids": ["e2"], "verdict": "auto_commit", "confidence": 0.9}]))  # e2=assistant
+    decs = await c.acurate(_ev())
+    assert decs[0].verdict == "reject"
+    s.close()
