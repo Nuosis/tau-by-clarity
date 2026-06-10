@@ -15,6 +15,8 @@ from .models import (
     ScopeType,
     SemanticMemory,
 )
+from .curator import CommitDecision, Curator, Evidence
+from .recall import build_recall_block, latest_user_query
 from .store import MemoryStore
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "MemoryType", "ScopeType", "MemoryStatus", "EmbeddingProvider",
     "OllamaEmbeddingProvider", "DeterministicEmbeddingProvider",
     "embedding_provider_from_env", "cosine",
+    "Curator", "Evidence", "CommitDecision",
+    "build_recall_block", "latest_user_query",
 ]
