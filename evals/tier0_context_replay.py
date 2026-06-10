@@ -2,7 +2,7 @@
 """
 Tier-0 offline context-replay harness.
 
-Companion to docs/context-and-memory-management.md (§9). Proves — or kills — the
+Companion to design/context-and-memory-management.md (§9). Proves — or kills — the
 relevance-shaped context-management model WITHOUT a single LLM call.
 
 For each user turn in a real session it reassembles the context two ways:
