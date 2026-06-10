@@ -60,7 +60,15 @@ def main() -> int:
     ap.add_argument("--topk", type=int, default=8)
     ap.add_argument("--model", default="MiniMax-M3")
     ap.add_argument("--base-url", default="https://api.minimax.io/v1")
+    ap.add_argument("--needle"); ap.add_argument("--q-literal")
+    ap.add_argument("--q-paraphrase"); ap.add_argument("--answer")
     args = ap.parse_args()
+
+    global NEEDLE, Q_LITERAL, Q_PARAPHRASE, ANSWER
+    NEEDLE = args.needle or NEEDLE
+    Q_LITERAL = args.q_literal or Q_LITERAL
+    Q_PARAPHRASE = args.q_paraphrase or Q_PARAPHRASE
+    ANSWER = args.answer or ANSWER
 
     var = "MINIMAX_API_KEY" if "minimax" in args.base_url else "OPENAI_API_KEY"
     key = ""
@@ -98,18 +106,16 @@ def main() -> int:
             parts = [f"<{b.role}> {b.text}" if b.eid not in comp
                      else stub(b, cues.get(b.eid, set())) for b in blocks]
             return "\n".join(parts), False
-        # hybrid = LEAN recall context. Recovered units are ATOMIC (cap to ~60 words,
-        # simulating curator-extracted facts) and placed LAST (recency). The needle is
-        # its own short unit, so capping leaves it intact.
-        def atomize(t: str, n: int = 60) -> str:
-            w = t.split()
-            return " ".join(w[:n]) + ("…" if len(w) > n else "")
+        # hybrid = breadcrumb stubs KEPT (head/tail verbatim, middle stubbed) PLUS
+        # recovered top-k full text appended at the tail. Never evict to zero — the
+        # stub is the safety net (carries distinctive tokens) and recovery adds the
+        # full text for paraphrase/semantic hits.
         top = [eid for _, eid in hybrid_ranked(query, comp_blocks, cues, embs)][:args.topk]
-        tail = [b for b in blocks if b.eid not in comp][-2:]
+        parts = [f"<{b.role}> {b.text}" if b.eid not in comp
+                 else stub(b, cues.get(b.eid, set())) for b in blocks]
         rec = [b for b in comp_blocks if b.eid in top]
-        parts = [f"<{b.role}> {atomize(b.text)}" for b in tail]
-        parts.append("\n## Relevant retrieved memories:\n"
-                     + "\n".join(f"- {atomize(b.text)}" for b in rec))
+        parts.append("\n## Relevant retrieved memories (full text):\n"
+                     + "\n".join(f"- {b.text}" for b in rec))
         return "\n".join(parts), ("needle" in top)
 
     def ask(ctx: str, q: str) -> str:
