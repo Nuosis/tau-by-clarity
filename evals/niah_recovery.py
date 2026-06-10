@@ -79,6 +79,8 @@ def main() -> int:
     ap.add_argument("corpus")
     ap.add_argument("--max-tokens", type=int, default=160000,
                     help="cap corpus (keeps full-context LLM arm within window)")
+    ap.add_argument("--words-per", type=int, default=300,
+                    help="words per block; small (~40) = ATOMIC granularity")
     ap.add_argument("--depth", type=float, default=0.5, help="needle depth (0..1)")
     ap.add_argument("--head-tok", type=int, default=20000)
     ap.add_argument("--tail-tok", type=int, default=20000)
@@ -89,7 +91,7 @@ def main() -> int:
     args = ap.parse_args()
 
     raw = open(args.corpus, encoding="utf-8", errors="replace").read()
-    blocks = chunk(raw)
+    blocks = chunk(raw, args.words_per)
     # cap to budget
     acc, kept = 0, []
     for b in blocks:
