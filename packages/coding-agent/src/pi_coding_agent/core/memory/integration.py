@@ -1,10 +1,12 @@
 """
 Memory integration (P5) — bundle store + recall + curator + compression for a session.
 
-Flag-gated (PI_MEMORY_ENABLED=1). When enabled, AgentSession attaches the store so the
-P1 recall hook fires and (when an llm_fn is wired) the curator records turns. The live
-compaction *replacement* and its parity are validated end-to-end by P6 (deep-swe); until
-then memory recall augments and the flag defaults off (kill-switch retained).
+Flag-gated (PI_MEMORY_ENABLED=1, default off, kill-switch retained). When enabled,
+AgentSession: attaches the store (recall read-path fires in _transform_context); curates
+each turn's evidence into the store via the async curator (_curate_turn in
+_post_turn_checks); and curates-before-compacting so facts survive the lossy summary and
+recall re-injects them. All three paths are unit- + live-session-tested. End-to-end
+task-success (does it beat a simple harness) is the separate P6 deep-swe acceptance run.
 """
 from __future__ import annotations
 
