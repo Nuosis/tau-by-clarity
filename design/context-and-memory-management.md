@@ -130,209 +130,168 @@ Two refinements that keep us off both poles:
   noise and return conclusions. Lean context through tool design, without a harness
   retriever and without touching the cacheable prefix.
 
-## 6. Route by signal: the recency-relevance meter
+> §§4–5 frame this as two *modes* (cache vs lean) chosen by a router. §6 supersedes
+> that: there is one relevance metric and the modes are emergent, not configured.
+> Read §§4–5 as the reasoning that led there, not the conclusion.
 
-Recency-relevance is **measurable from data we already have** — the model tells us
-what was relevant every turn; we just read the signal.
+## 6. The one metric: relevance to the current prompt (shape is emergent)
 
-### Signals, cheapest first
+The earlier drafts of this doc reached for a *mode router* — detect "high vs low
+recency", switch between a barbell strategy and a fidelity-gradient strategy. That
+was the wrong altitude. There is one metric and one policy; the rest is emergent.
 
-**Tier 1 — free, no extra LLM calls:**
+**The metric is relevance of each block to the current prompt.** Not position, not
+recency — those are at most modifiers. Recency only ever mattered as a *proxy* for
+relevance; measure relevance directly and the proxy retires.
 
-- **Tool-read reach.** When the model reads a file (or expands an old block), how
-  far back does it reach? Reaching into early turns / old artifacts = low
-  recency-relevance. Staying on recently-touched files = high. The model literally
-  pointing at where the needle is — the best free signal.
-- **Back-reference distance.** Per turn, distance (turns/tokens) from now to the
-  oldest thing the turn depended on (re-touched file paths, reappearing
-  entities/IDs, tool-call targets). Rising oldest-dependency distance = dispersing
-  relevance.
-- **Session shape.** Length, turn count, branch/revisit activity. Crude but free.
-- **Compaction-recall miss (the killer signal for pi-py).** If the model reaches
-  for something already compacted away, recency mode just dropped what it needed.
-  A direct, ground-truth meter reading.
+### The policy: two stages
 
-**Tier 2 — costs something; use only to *confirm* a flip:**
+1. **Eligibility.** A block is eligible to compress when it is **low-relevance to
+   the current prompt** *and* total context is over the floor (§7). High-relevance
+   blocks are **never eligible** — full fidelity, wherever they sit.
+2. **Aggressiveness.** Among *eligible* blocks, the further back a block sits, the
+   lower the fidelity you take it to (verbatim → light → heavy → breadcrumb).
 
-- Embedding similarity between the current turn and old turns: if the
-  highest-similarity content is consistently old, relevance is dispersed. Cheap
-  embedding pass, not a full call.
-- A tiny LLM judge ("did this turn depend on anything older than the last N
-  turns?"). Accurate but costs a call — run it to confirm a flip the cheap signals
-  already flagged, not every turn.
+That's it. High relevance is protected absolutely; low relevance is demoted, harder
+with age.
 
-### The sharp edge: a latched switch with hysteresis, not a continuous knob
+### Shape is an output, not an input
 
-Two failure modes the naive version hits:
+You never choose "barbell" or "wedge". You score by relevance, protect the relevant,
+demote the rest by age — and *whatever silhouette falls out, falls out*:
 
-1. **Flapping.** A continuous meter that flips mode turn-to-turn is
-   self-defeating: *the cost of flipping is the cache invalidation we're trying to
-   avoid.* A jittery meter causes the harm it measures. Use a **latched state with
-   hysteresis**: high threshold to *enter* lean mode, a lower threshold to *leave*
-   it, plus a minimum dwell time. Flip rarely and deliberately.
-2. **The truest signal reads true only after the damage.** "Reached for compacted
-   content" tells us recency was wrong *after* we already dropped the needle. So
-   the meter can't be purely reactive: let the **early** signals (read-reach,
-   back-ref distance) trigger the flip *before* compaction fires — switch to
-   reversible-summary / curated mode when the session starts smelling like
-   archaeology, so we stop doing lossy drops before we lose the needle. The
-   compaction-recall-miss count then becomes the **eval** signal ("did the meter
-   flip in time?"), not the primary trigger.
+- Relevance clustered at task-start + recent (the usual case) → a **barbell** emerges.
+- Relevance genuinely dispersed → something **lumpier** emerges.
+- Relevance smoothly decaying with age → a **wedge / long hair** emerges.
 
-### Shape
+The wedge-vs-barbell debate dissolves: they were silhouettes of one policy, not
+rival strategies. Likewise the **regime router dissolves** — there is no
+"high/low-recency mode" to detect and switch. High-recency sessions have relevance
+concentrated recent, so little is eligible and the context looks like plain append;
+low-recency sessions have scattered relevance, so the demotion bites the irrelevant
+middle. **The regime is emergent behaviour of the one rule, not a configured mode.**
 
-```
-start in CACHE mode (append + threshold compaction + JIT reads)   ← right default
-  │
-  │  flip to LEAN only after early signals (read-reach / back-ref
-  │  distance) cross a HIGH threshold for K turns
-  ▼
-LEAN mode (stable prefix + curated tail + reversible summaries;
-           stop lossy compaction)
-  │
-  │  leave only after sustained low signal + minimum dwell time
-  ▼
-back to CACHE mode
-```
+## 7. Why it's safe, and what it costs: eviction + recall = paging
 
-One-directional defaulting (cache is home), latched transitions, hysteresis on
-both edges. The meter's output is a **mode decision**, not a continuously dialed
-knob — the cost asymmetry of switching forces us to commit and stay until the
-evidence pays for one more switch.
+Relevance-scored demotion is exactly an **OS paging policy**: relevance is the
+eviction policy (which pages leave RAM), and **recall is the disk** — demoted content
+still lives in the cold store and is paged back when needed. This reframing carries
+three load-bearing consequences.
 
-## 7. Refinement: a relevance-shaped fidelity gradient
+### The losslessness comes from recall, not from clever compression
 
-The latched two-mode switch (§6) is the conservative version. The fuller design
-drives one continuous knob — a per-region *fidelity* level — from one measurement, a
-relevance profile over the transcript. No arbitrary size cutoff and no binary
-keep/trim; the regime (§6) only decides whether that gradient is applied
-continuously or as rare discrete trims.
+"Compress the right stuff losslessly" is true *only as good as recall is.* The
+compression decides what to evict from the hot working set; **recall is what makes
+eviction non-destructive.** Tier-0 (§9) proved the contrapositive empirically:
+relevance-demotion *without* a recall layer drops a dispersed mid-conversation needle
+60–76 % of the time. So the policy is inseparable from recall — never ship the
+eviction half alone.
 
-### No arbitrary cutoff — a break-even gate, assessed continuously
+### Relevance is time-varying — so don't evict to zero, leave a breadcrumb
 
-Drop the idea of a fixed 128k threshold as a *rule*. **Assessing** relevance needs
-no threshold — the cheap signals are free and the middle's decay is self-evident
-every turn. But **assessing is not acting.** Acting (trim/compress) mutates the
-prefix → invalidates the cache → reprocessing. So the gate is a break-even:
+A block can be low-relevance *now* and become the needle 30 turns later (the "return
+to NBNA" pivot: irrelevant during the invoicing turns, critical at the pivot). The
+policy *will* correctly demote it now, and you are safe **only because recall
+resurrects it** at the pivot. Two rules follow:
 
-> Act when (tokens reclaimed × cost-per-turn-to-carry × turns-remaining)
+- **Demote to a breadcrumb, not to nothing.** The lowest fidelity tier is a
+  relevance-tagged stub ("…NBNA migration constraint here…"), not deletion. That
+  residue is the **retrieval cue** that tells recall to fire; evict to nothing and
+  recall fires blind on the prompt alone.
+- **Protect-high only helps for relevance you can see *now*.** Future-needles look
+  irrelevant today, so "high-relevance is never touched" does not save them — recall
+  does. Budget for recall accordingly; it is the safety net, not an enhancement.
+
+### The cache discipline: score continuously, re-shape only at pivots
+
+Scoring is free and continuous. **Re-shaping (recompressing) is not** — it mutates
+the prefix, invalidates the cache, and forces reprocessing. So the rule is:
+
+> recompute the compressed set only at **relevance discontinuities** — user-prompt
+> **pivots** — and at floor crossings. Between pivots, hold the shape **stable** so
+> the cache stays warm.
+
+This is the elegant part: it **bounds cache cost in both regimes for free.**
+High-recency / coding — relevance barely moves turn to turn, so you almost never
+re-shape → looks like append, cache hot. Low-recency — pivots are *rare by
+definition* (few, slow turns), so you re-shape seldom, one cache break per pivot.
+The same mechanism is cache-cheap in both regimes, which is *why* the explicit mode
+router was unnecessary.
+
+The pivot is also free to detect and doubly useful: compare the new prompt's
+similarity to the recent frontier vs. to older regions. New prompt closer to
+something 40 turns back than to the last 5 → relevance just jumped, *and* you have
+identified which buried region to resurrect. One measurement yields both "re-shape
+now" and "here's what to page back in."
+
+### The break-even floor
+
+Below a size floor, compute and act on nothing — there is nothing worth reclaiming
+and the cache cost dominates. Above it, the real gate is a break-even:
+
+> act when (tokens reclaimed × cost-per-turn-to-carry × turns-remaining)
 > > (cache-reprocessing cost of editing at that point).
 
-This is principled, not arbitrary, and it *reproduces* a soft threshold on its own:
-early in a session there's nothing worth reclaiming and the cache cost dominates, so
-the test fails and nothing happens. Two consequences:
+Keep a cheap constant (~128k) only as a "don't bother computing below this"
+shortcut — a floor, not a rule. The gate is **per-location**: editing the middle
+reprocesses everything after it; editing near the tail reprocesses little.
 
-- **Decouple the loops.** Assessment runs continuously and free; action is gated by
-  cost. Keep a cheap constant floor (~128k) only as a "don't bother computing
-  break-even below this" shortcut — a floor, not a rule.
-- **The gate is per-location.** Trimming the middle reprocesses everything after it
-  (expensive); trimming near the tail reprocesses little (cheap). Break-even is not
-  one number — it's cheaper to act the closer to the tail the cut is.
+### Measuring relevance (per-block score, cheapest first)
 
-### Relevance is a profile, and the score sets *fidelity*, not survival
-
-"Scan from the front, keep the relevant prefix, compact the rest" assumes relevance
-is a contiguous block at the head. It isn't. And keep/trim is too blunt — a **binary**
-decision (verbatim | gone) is what produces a barbell with a hole in the middle.
-
-Generalize to a **graduated, reversible fidelity gradient**. The relevance score
-picks a *fidelity level*, not survival:
-
-- frontier → **verbatim**
-- aging near-mid → **light compression** (keep structure, drop verbosity)
-- far-mid → **heavy summary**
-- deep / cold → **ref code only** (ID + one line)
-
-Everything stays referenceable; nothing is lost; a buried region that becomes
-relevant is one `expand` away. The gap disappears — a continuous strand thinning
-toward the back ("long hair") instead of a barbell.
-
-**Fidelity is a U, not a monotonic decay.** Highest at both the **anchor** (original
-task/spec/constraints/decisions — small, almost always relevant) and the
-**frontier** (recent turns, where exact code/tool-output/user-words live and where
-lossy summary does the most damage, *and* which is cheap to keep because it's small).
-Compression thins toward the **cold middle** — the back-slope behind the frontier —
-never the live edge. So: keep the frontier verbatim; let regions compress only as
-they *age into* the middle.
-
-### Two shapes = the two regimes (same meter chooses)
-
-The fidelity gradient and the barbell are not competitors. They are the two regimes
-from §6, because **continuous re-compression is cache-hostile**: re-representing each
-turn at lower fidelity as it ages mutates the prefix *every turn*, so the cache never
-warms.
-
-- **Cache mode (fast/cheap turns, coding):** verbatim append + *occasional discrete*
-  compaction. The gradient's smooth savings aren't worth thrashing the cache when
-  turns are frequent and cheap. → **barbell, trimmed rarely.**
-- **Lean mode (slow/expensive turns, research/planning):** few calls, cache barely
-  matters. → **continuous fidelity gradient ("long hair").**
-
-Long hair *is* the lean-mode representation; barbell-trimmed-rarely *is* the
-cache-mode representation. The §6/§7 recency meter is what picks between them.
-
-### Measuring where relevance drops off (per-block score, cheapest first)
+The relevance score blends, in rising cost (the Generative Agents formula is the
+starting point — §10):
 
 1. **Last-reference recency (free).** When was this block last touched — read,
-   re-mentioned, depended on? Not referenced in N turns and not in the anchor set =
-   decaying. This *is* "relevance dropping off," measured per block.
+   re-mentioned, depended on? Untouched for N turns and not in the protected set =
+   decaying.
 2. **Size-to-reference ratio (free).** Big and never referenced again = prime
-   compress target. Verbose tool outputs score worst here — correctly.
-3. **Embedding similarity to the active frontier (cheap).** Each old block vs.
-   (last turn or two + current memory query). Low + old = compress harder. Catches
-   the buried-region-becomes-relevant case.
+   demote target. Verbose tool outputs score worst — correctly.
+3. **Lexical / embedding similarity to the current prompt (cheap).** The direct
+   relevance signal; also what flags a buried region the new prompt points back to.
 
-Below the floor, compute nothing. Above it, score every region, set each region's
-fidelity from its score, and act only where break-even is met — each demoted region
-leaves a retrievable ref behind.
+### Recall placement — the standing cache trap
 
-### The trigger is the user prompt
-
-Don't sample continuously. **Re-evaluate the relevance profile at each user turn** —
-the only moment relevance can discontinuously jump. A pivot is detectable right
-there: compare the new prompt's similarity to the recent frontier vs. to older
-regions. New prompt closer to something 40 turns back than to the last 5 turns →
-recency collapsed, *and* you've identified which buried region to resurrect. One
-measurement yields both "trim aggressively" and "here's what to keep." This is why
-"let a long coding session ride, then hard-prune the instant the user pivots" works:
-the pivot *is* the prompt, and the prompt *is* the new relevance query.
-
-### Cache trap to bake in now
-
-"Memory recall + writes every turn" quietly fights the cache **unless the recall
-block lives at the tail.** Inject fresh recall after the system prompt but before
-the transcript and you invalidate the whole transcript cache every turn — full
-prefill in the exact zone you wanted free. Rule: **stable prefix = system prompt +
-transcript; churning tail = memory recall + new turn.** Recall goes at the bottom.
+Recall injection fights the cache **unless it lives at the tail.** Inject fresh
+recall after the system prompt but before the transcript and you invalidate the
+whole transcript cache every turn. Rule: **stable prefix = system prompt +
+(stable-between-pivots) transcript; churning tail = recall + new turn.** Recall goes
+at the bottom.
 
 ## 8. Where this plugs into pi-py
 
-- **`transform_context()`** (`core/agent_session.py`, currently the identity stub)
-  is the seam. Context assembly becomes a **pluggable strategy** selected here.
-  - **Default (cache mode):** current behavior + *occasional discrete* compaction —
-    a stable verbatim prefix, trimmed rarely (barbell). Keep it; resist making it
-    cleverer.
-  - **Opt-in (lean mode):** the continuous fidelity gradient (§7) — per-region
-    verbatim → light → heavy → ref, all reversible (keep the original retrievable, à
-    la the Oracle pattern — *not* pi's current lossy compaction), plus tool-output
-    offloading. Cache-hostile by design, which is fine here: few, expensive turns.
-- **Reversible summaries** are a concrete upgrade over today's lossy compaction
-  even before routing exists: store summary + retrievable original + a
-  `summary_id`, and let the model expand on demand.
+There is **one** strategy (§6/§7), not a mode switch. It needs three seams:
 
-## 9. What to build first — measure before you route
+- **`transform_context()`** (`core/agent_session.py`, currently the identity stub) —
+  the assembly seam. On each turn it: (1) detects a pivot (prompt-vs-frontier-vs-old
+  similarity); (2) if a pivot or floor crossing, re-scores blocks by relevance and
+  re-shapes (protect high, breadcrumb-demote low, harder by age); (3) otherwise holds
+  the prior shape so the prefix stays cache-warm; (4) appends recall + new turn at the
+  **tail**.
+- **A recall layer** — the non-negotiable other half. Demotion is only lossless
+  because demoted content is retrievable: cold store + similarity recall + an
+  **`expand(ref)`** tool the model can call on a breadcrumb. Build this *with* the
+  eviction, never after.
+- **Reversible store** — every demotion keeps the original retrievable by id (à la the
+  Oracle pattern, *not* pi's current lossy compaction). This is a standalone upgrade
+  over today's compaction and is worth landing first, before any relevance scoring.
+
+What this is **not**: a "cache mode vs lean mode" toggle. The barbell/append behaviour
+in coding and the dispersed-demotion behaviour in long dialogue both *emerge* from the
+single policy — nothing selects them.
+
+## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
 
-1. Instrument **read-reach** and the **compaction-recall-miss counter**. Log them.
-2. Run across real sessions and just *look* at the two numbers.
-3. Verify coding sessions cluster high-recency and planning/research sessions
-   cluster dispersed — i.e. the meter actually separates the two regimes.
+1. Instrument **relevance-to-prompt** per block and the **recall-miss counter** (model
+   reaches for demoted content). Log them.
+2. Run across real sessions and just *look* at the numbers.
+3. Confirm the policy demotes the right blocks (low-relevance, aging) and that recall
+   would have to fire to keep the rest lossless.
 
-Only if the signal separates cleanly do we wire it to the latched flip off
-`transform_context`. The meter earns the right to drive the switch after the logs
-prove it discriminates — observe the signal is real before letting it change
-behavior.
+Only once the eviction *and* recall halves are validated together do we wire the
+policy into `transform_context`. Eviction earns the right to change behaviour after the
+logs prove recall catches what it drops — observe the signal is real first.
 
 ### Tier-0 harness (built) — `evals/tier0_context_replay.py`
 
@@ -450,11 +409,14 @@ Two layers in the literature; keep them distinct:
 
 ### Net
 
-Barbell / gradient / anchor / scorer are each independently validated. The
-**less-charted** part — and what the evals (§9, §11) must earn — is the **regime
-router**: a recency meter choosing barbell vs gradient *on cache economics*. No prior
-work does exactly that adaptive, cache-aware switch. That is the contribution and the
-risk.
+The pieces are each independently validated — relevance scoring (Generative Agents),
+the U-shape (Lost in the Middle), eviction+recall paging (MemGPT), graduated
+compression (LLMLingua). The **less-charted** synthesis — and what the evals (§9, §11)
+must earn — is the **cache discipline**: relevance-to-prompt as the single eviction
+metric, recomputed **only at pivots** so per-prompt scoring stays cache-affordable, with
+shape and regime left **emergent** rather than configured. No prior work pairs
+relevance-eviction with pivot-gated re-shaping this way. That is the contribution and
+the risk.
 
 References: Lost in the Middle `arxiv.org/abs/2307.03172` · Context Rot
 `research.trychroma.com/context-rot` · Generative Agents `arxiv.org/abs/2304.03442`
