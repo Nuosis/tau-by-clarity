@@ -482,9 +482,13 @@ default off until its gate passes.
   (`--n-tasks 10 --sample-seed 0`) baseline vs memory-augmented on M3 → fast pass@1
   estimate; full 113 once the micro delta looks right.
 
-**Open decisions before P0:** gitignore-vs-commit the store (§8); the curator's atomic
-taxonomy. **Process:** building this is substantial code — work on an authorized branch
-only (no branch without explicit go-ahead).
+**Curator atomic taxonomy (DECIDED):** decisions · constraints · file/API facts ·
+task-state · error→fix · preferences. (Canonical-keyed where the unit has identity,
+e.g. `decision:db_choice`, `fileapi:config/net.py`; superseded on change.)
+
+**Open decision before P0:** gitignore-vs-commit the store (§8). **Process:** building
+this is substantial code — work on an authorized branch only (no branch without explicit
+go-ahead).
 ## 9. What to build first — measure before you ship
 
 The cheapest end-to-end slice that proves the idea, changing **no** behavior:
