@@ -1,6 +1,10 @@
 # Context & Memory Management — Design Thinking
 
 Status: design + offline/Tier-1 evidence in hand; **not yet wired into `pi-py`**.
+Direction (decided): **replace pi-py's native compaction with a proper memory system
+modeled on Claire's production implementation** (atomic extraction + hybrid local
+recall — see §8 "Reference architecture"). Still validating the compression policy that
+feeds it.
 Scope: how `pi-py` assembles per-call context today, and the planned **"active
 compression"** strategy for managing it.
 
@@ -338,6 +342,36 @@ One strategy (the TL;DR plan), three seams:
 What this is **not**: a "cache mode vs lean mode" toggle, and **not** model-driven
 expand. The append-like behaviour in coding and the middle-compression in long dialogue
 both *emerge* from position-compression — nothing selects them.
+
+### Reference architecture (ADOPT): Claire's memory system replaces pi-py compaction
+
+**Decision:** pi-py's native compaction is **replaced** by a proper memory system
+**modeled on Claire's production implementation** — canonical
+`/Users/marcusswift/python/clarify_voice`, doc `docs/agent-memory-system.md`. Claire is
+the existence proof the pattern works; pi-py adapts it for a **local, single-user coding
+agent**. Build against this map, not from scratch:
+
+| Claire (canonical) | role | pi-py adaptation |
+| --- | --- | --- |
+| `agent_semantic_memory` / `SemanticMemoryRow` — pgvector(1536) + HNSW cosine, typed (preference/workflow/entity/knowledge/toolbox), scope keys, `key` dedup, `active`, audit metadata (`agent_memory/db_models.py`) | atomic durable memories | SQLite + **LOCAL** embeddings (Ollama `nomic-embed-text`, 768-d); same typed rows; scope simplifies to project/session/cwd (no tenant/workspace/user) |
+| `agent_conversation_memory` / `agent_summary_memory` / `agent_tool_log_memory` — exact turns; summaries (full text retained via `summary_id`); offloaded tool outputs | transcript + compaction substrate | adopt all three — **this is what replaces native compaction**: summarize-and-retain (not discard), offload verbose tool dumps |
+| `TierMemoryCuratorAgent` (`voice_harness/memory_commit.py`) — LLM curator, post-turn + post-session: evidence packet → atomic candidates → commit decision (auto/review/reject + confidence) → **second grounding-verification pass** + structural guards (`source_event_ids` must be real); **assistant output is NOT eligible evidence** | the **extractor / writer-of-record** (our open "extractor" question) | same LLM-curator pattern; extract coding atoms (decisions, constraints, file/API facts, tool-result facts); local tier model |
+| retrieval: **hybrid `max(lexical, vector cosine)`**, scope-filtered, top-5 (+top-8 preferences), `min_score≈0.05`, ~1200-tok budget (`agent_memory/postgres_manager.py`, `context.py`) | recall into context | **adopt hybrid as-is** |
+| three writer paths: programmatic curator; agent `memory.propose` (audit only); **NO direct agent write** | safety boundary | keep verbatim — model proposes, curator commits; never let the agent write durable memory directly |
+| three reader paths: passive auto-injection (per turn, budgeted); agent `memory.lookup_scoped` (on-demand, scope-gated); procedural advisory | recall surfaces | passive auto-injection at the `transform_context` seam + a scope-gated lookup tool |
+
+**What Claire confirms from our evals:**
+- **Granularity** — Claire embeds *atomic curated units* (title + content), never raw
+  chunks → no dilution. Exactly the §9 NIAH lesson, in production.
+- **Hybrid retrieval `max(lexical, vector)`** settles our lexical-vs-semantic question:
+  **use both** — lexical catches rare-term/literal/IDs, vector catches paraphrase.
+- **Programmatic, not model-driven** — the curator writes; the agent only *proposes*.
+  Matches the Tier-1 "model won't self-recover" result.
+
+**Status:** the *memory architecture* is settled (adopt Claire). Still being validated
+(don't block on it): the **compression/position policy** that feeds it (§§6–9) and an
+end-to-end non-inferiority eval at atomic granularity. We are using the docs + Claire as
+the model while that validation continues.
 
 ## 9. What to build first — measure before you ship
 
