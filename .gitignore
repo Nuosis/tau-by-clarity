@@ -35,7 +35,8 @@ htmlcov/
 *.bak
 
 # Archives (don't push to remote)
-docs/
+docs/*
+!docs/context-and-memory-management.md
 docs/archive/
 .archive_*/
 
