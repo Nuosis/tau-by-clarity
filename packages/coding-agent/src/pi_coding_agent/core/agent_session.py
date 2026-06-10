@@ -177,6 +177,22 @@ class AgentSession:
         self._scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
         self._bind_extension_context({})
 
+        # ── Project-local memory (P5) — flag-gated, default off ───────────────
+        # When PI_MEMORY_ENABLED=1, attach the project-local store so the recall hook
+        # in _transform_context fires. Live auto-curation + compaction replacement are
+        # validated end-to-end by P6; default-off keeps existing behaviour unchanged.
+        self._memory = None
+        self._memory_store = None
+        self._memory_scope = None
+        try:
+            from .memory.integration import MemoryIntegration, memory_enabled
+            if memory_enabled():
+                self._memory = MemoryIntegration(os.getcwd())
+                self._memory_store = self._memory.store
+                self._memory_scope = self._memory.scope
+        except Exception:
+            self._memory = None  # never let memory wiring break session construction
+
     # ── Tool construction ─────────────────────────────────────────────────────
 
     def _build_tools(self) -> list[AgentTool]:
