@@ -45,3 +45,6 @@ tests/
 # Eval fixtures derived from production (real customer/business data — never commit)
 evals/fixtures/langfuse/
 evals/fixtures/clarify_chat/
+
+# Downloaded corpora (public-domain, reproducible via curl)
+evals/fixtures/corpus/
