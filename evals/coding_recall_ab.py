@@ -58,15 +58,17 @@ def main() -> int:
     ap.add_argument("--head-tok", type=int, default=8000)
     ap.add_argument("--tail-tok", type=int, default=8000)
     ap.add_argument("--topk", type=int, default=8)
-    ap.add_argument("--model", default="gpt-5.4-mini")
+    ap.add_argument("--model", default="MiniMax-M3")
+    ap.add_argument("--base-url", default="https://api.minimax.io/v1")
     args = ap.parse_args()
 
+    var = "MINIMAX_API_KEY" if "minimax" in args.base_url else "OPENAI_API_KEY"
     key = ""
     for line in Path(".env").read_text().splitlines():
-        if line.startswith("OPENAI_API_KEY=") and line.split("=", 1)[1].strip():
+        if line.startswith(var + "=") and line.split("=", 1)[1].strip():
             key = line.split("=", 1)[1].strip()
     import openai
-    client = openai.OpenAI(base_url="https://api.openai.com/v1", api_key=key)
+    client = openai.OpenAI(base_url=args.base_url, api_key=key, timeout=600)
 
     blocks = load_session(args.trace, per_message_turns=True)
     ni = max(1, min(len(blocks) - 2, int(len(blocks) * args.depth)))
