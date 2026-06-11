@@ -1,0 +1,80 @@
+"""Interactive theme utilities."""
+
+from .theme import (
+    Theme,
+    get_available_themes,
+    get_available_themes_with_paths,
+    get_default_theme,
+    get_editor_theme,
+    get_language_from_path,
+    get_markdown_theme,
+    get_select_list_theme,
+    get_settings_list_theme,
+    get_theme,
+    get_theme_by_name,
+    highlight_code,
+    init_theme,
+    load_theme_from_path,
+    set_registered_themes,
+    set_theme,
+    set_theme_instance,
+    getAvailableThemes,
+    getAvailableThemesWithPaths,
+    getDefaultTheme,
+    getEditorTheme,
+    getLanguageFromPath,
+    getMarkdownTheme,
+    getSelectListTheme,
+    getSettingsListTheme,
+    getThemeByName,
+    highlightCode,
+    initTheme,
+    loadThemeFromPath,
+    setRegisteredThemes,
+    setTheme,
+    setThemeInstance,
+)
+
+
+class _ThemeProxy:
+    def __getattr__(self, name):
+        return getattr(get_theme(), name)
+
+
+theme = _ThemeProxy()
+
+__all__ = [
+    "Theme",
+    "get_available_themes",
+    "get_available_themes_with_paths",
+    "get_default_theme",
+    "get_editor_theme",
+    "get_language_from_path",
+    "get_markdown_theme",
+    "get_select_list_theme",
+    "get_settings_list_theme",
+    "get_theme",
+    "get_theme_by_name",
+    "highlight_code",
+    "init_theme",
+    "load_theme_from_path",
+    "set_registered_themes",
+    "set_theme",
+    "set_theme_instance",
+    "getAvailableThemes",
+    "getAvailableThemesWithPaths",
+    "getDefaultTheme",
+    "getEditorTheme",
+    "getLanguageFromPath",
+    "getMarkdownTheme",
+    "getSelectListTheme",
+    "getSettingsListTheme",
+    "getThemeByName",
+    "highlightCode",
+    "initTheme",
+    "loadThemeFromPath",
+    "setRegisteredThemes",
+    "setTheme",
+    "setThemeInstance",
+    "theme",
+]

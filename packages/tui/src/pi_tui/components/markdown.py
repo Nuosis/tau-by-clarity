@@ -70,7 +70,12 @@ class Markdown:
     def _create_parser(self) -> Any:
         try:
             import mistune
-            return mistune.create_markdown(renderer=None)  # AST renderer
+            # AST renderer + table plugin (GFM tables). strikethrough/url are
+            # cheap, commonly used extras.
+            return mistune.create_markdown(
+                renderer=None,
+                plugins=["table", "strikethrough", "url"],
+            )
         except ImportError:
             return None
 
@@ -391,7 +396,9 @@ class Markdown:
                 ordered = token.get("attrs", {}).get("ordered", False)
                 start = token.get("attrs", {}).get("start", 1) or 1
                 lines.extend(self._render_list(token.get("children", []), ordered, start, parent_depth + 1))
-            elif t in ("paragraph", "text"):
+            elif t in ("paragraph", "text", "block_text"):
+                # mistune 3.x wraps tight list-item content in `block_text`; its
+                # children are the inline tokens.
                 children = token.get("children")
                 if children:
                     lines.append(self._render_children(children))
@@ -434,9 +441,10 @@ class Markdown:
         if not head_token:
             return lines
 
-        header_rows = head_token.get("children", [])
+        # mistune 3.x: table_head children ARE the cells; table_body children
+        # are table_row tokens whose children are the cells.
+        all_header_cells = head_token.get("children", [])
         body_rows = body_token.get("children", []) if body_token else []
-        all_header_cells = [cell for row in header_rows for cell in row.get("children", [])]
         num_cols = len(all_header_cells)
 
         if num_cols == 0:
@@ -507,10 +515,8 @@ class Markdown:
         top_cells = ["─" * w for w in col_widths]
         lines.append("┌─" + "─┬─".join(top_cells) + "─┐")
 
-        # Header
-        for header_row in header_rows:
-            header_cells = header_row.get("children", [])
-            lines.extend(render_row_lines(header_cells, col_widths, bold=True))
+        # Header (table_head children are the cells directly)
+        lines.extend(render_row_lines(all_header_cells, col_widths, bold=True))
 
         # Separator
         sep_cells = ["─" * w for w in col_widths]

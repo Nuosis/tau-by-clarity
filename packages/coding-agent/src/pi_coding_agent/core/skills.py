@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from pi_coding_agent.core.diagnostics import ResourceCollision, ResourceDiagnostic
+from pi_coding_agent.core.source_info import SourceInfo, create_synthetic_source_info
 from pi_coding_agent.utils.frontmatter import parse_frontmatter
 
 MAX_NAME_LENGTH = 64
@@ -30,6 +31,7 @@ class Skill:
     file_path: str
     base_dir: str
     source: str
+    source_info: SourceInfo | None = None
     disable_model_invocation: bool = False
 
 
@@ -130,6 +132,7 @@ def _load_skill_from_file(
             file_path=file_path,
             base_dir=skill_dir,
             source=source,
+            source_info=create_skill_source_info(file_path, skill_dir, source),
             disable_model_invocation=bool(frontmatter.get("disable-model-invocation", False)),
         )
         return skill, diagnostics
@@ -138,6 +141,16 @@ def _load_skill_from_file(
             ResourceDiagnostic(type="warning", message=str(exc), path=file_path)
         )
         return None, diagnostics
+
+
+def create_skill_source_info(file_path: str, base_dir: str, source: str) -> SourceInfo:
+    if source == "user":
+        return create_synthetic_source_info(file_path, source="local", scope="user", base_dir=base_dir)
+    if source == "project":
+        return create_synthetic_source_info(file_path, source="local", scope="project", base_dir=base_dir)
+    if source == "path":
+        return create_synthetic_source_info(file_path, source="local", base_dir=base_dir)
+    return create_synthetic_source_info(file_path, source=source, base_dir=base_dir)
 
 
 def _load_skills_from_dir_internal(

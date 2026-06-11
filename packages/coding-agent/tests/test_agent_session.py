@@ -58,7 +58,8 @@ def session_dir():
 
 
 @pytest.fixture
-def agent_session(session_dir):
+def agent_session(session_dir, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     model = get_model("anthropic", "claude-3-5-sonnet-20241022")
     settings = Settings(auto_compact=False)
     # Use new factory API: create a per-session manager
@@ -113,10 +114,10 @@ async def test_agent_session_subscribe_events(agent_session):
 
 @pytest.mark.asyncio
 async def test_agent_session_set_model(agent_session):
-    new_model = get_model("openai", "gpt-4o")
+    new_model = get_model("openai", "gpt-5.4-nano")
     # set_model is now async (validates API key); use _agent.set_model for unit tests
     agent_session._agent.set_model(new_model)
-    assert agent_session.state.model.id == "gpt-4o"
+    assert agent_session.state.model.id == "gpt-5.4-nano"
 
 
 @pytest.mark.asyncio
@@ -383,7 +384,7 @@ class TestModelCycling:
         """Cycling forward through multiple models."""
         from pi_ai import get_model as gm
         m1 = gm("anthropic", "claude-3-5-sonnet-20241022")
-        m2 = gm("openai", "gpt-4o")
+        m2 = gm("openai", "gpt-5.4-nano")
 
         async def fake_get_available():
             return [m1, m2]
@@ -404,7 +405,7 @@ class TestModelCycling:
     async def test_set_model_raises_without_api_key(self, agent_session, monkeypatch):
         """set_model raises if no API key is configured for the provider."""
         monkeypatch.setattr(agent_session._model_registry, "get_api_key", lambda p: None)
-        new_model = get_model("openai", "gpt-4o")
+        new_model = get_model("openai", "gpt-5.4-nano")
         with pytest.raises(RuntimeError, match="No API key"):
             await agent_session.set_model(new_model)
 

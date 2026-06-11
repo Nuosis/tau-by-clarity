@@ -75,6 +75,9 @@ class Settings:
     """
     # Core
     last_changelog_version: str | None = None
+    # Optional per-instance agent name. When set, the TUI labels assistant turns
+    # "<name>:" instead of the generic "Assistant:".
+    name: str | None = None
     default_provider: str | None = None
     default_model: str | None = None
     default_thinking_level: str | None = None  # off|minimal|low|medium|high|xhigh
@@ -103,6 +106,7 @@ class Settings:
     thinking_budgets: dict[str, Any] | None = None
     markdown: dict[str, Any] | None = None
     warnings: dict[str, Any] | None = None
+    session_vars: dict[str, str] | None = None
 
     # Array fields
     packages: list[Any] | None = None
@@ -111,6 +115,7 @@ class Settings:
     prompts: list[str] | None = None
     themes: list[str] | None = None
     enabled_models: list[str] | None = None
+    tools: list[str] | None = None
 
     # Project-local memory (off by default; kill-switch). See
     # design/context-and-memory-management.md. Env PI_MEMORY_ENABLED=1 also forces on.
@@ -224,6 +229,61 @@ def deep_merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[
     return result
 
 
+def _strip_json_trailing_commas(content: str) -> str:
+    """Remove JSON object/array trailing commas without touching string values."""
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    while i < len(content):
+        ch = content[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == ",":
+            j = i + 1
+            while j < len(content) and content[j] in " \t\r\n":
+                j += 1
+            if j < len(content) and content[j] in "}]":
+                i += 1
+                continue
+
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_settings_json(content: str) -> dict[str, Any]:
+    raw = json.loads(content)
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def _loads_settings_json_lenient(content: str) -> dict[str, Any]:
+    try:
+        return _loads_settings_json(content)
+    except json.JSONDecodeError:
+        stripped = _strip_json_trailing_commas(content)
+        if stripped == content:
+            raise
+        return _loads_settings_json(stripped)
+
+
 # ─── Settings migration ───────────────────────────────────────────────────────
 
 def migrate_settings(raw: dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +341,7 @@ class SettingsManager:
         storage: SettingsStorage | None = None,
         project_trusted: bool = True,
         inherit_global: bool = True,
+        keep_agent_resources: bool = False,
     ) -> None:
         from pi_coding_agent.config import CONFIG_DIR_NAME
 
@@ -294,6 +355,7 @@ class SettingsManager:
         self._project_trusted = project_trusted
         # When False, the global settings file is NOT merged (project-local only).
         self._inherit_global = inherit_global
+        self._keep_agent_resources = keep_agent_resources
         self._global_raw: dict[str, Any] = {}
         self._project_raw: dict[str, Any] = {}
         self._merged: dict[str, Any] = {}
@@ -317,13 +379,16 @@ class SettingsManager:
         """
         from pi_coding_agent.config import get_agent_dir
 
-        project_trusted = (options or {}).get("projectTrusted", (options or {}).get("project_trusted", True))
+        opts = options or {}
+        project_trusted = opts.get("projectTrusted", opts.get("project_trusted", True))
+        keep_agent_resources = bool(opts.get("keepAgentResources", opts.get("keep_agent_resources", False)))
         storage = FileSettingsStorage(cwd or os.getcwd(), agent_dir or get_agent_dir())
         mgr = cls(
             project_root=cwd,
             storage=storage,
             project_trusted=bool(project_trusted),
             inherit_global=inherit_global,
+            keep_agent_resources=keep_agent_resources,
         )
         mgr.load()
         return mgr
@@ -378,7 +443,7 @@ class SettingsManager:
                 if self._project_trusted
                 else {}
             )
-        if not self._inherit_global:
+        if not self._inherit_global and not self._keep_agent_resources:
             self._global_raw = {
                 k: v for k, v in self._global_raw.items() if k not in _GLOBAL_RESOURCE_KEYS
             }
@@ -393,8 +458,8 @@ class SettingsManager:
             content = content_holder["content"]
             if not content:
                 return {}
-            raw = json.loads(content)
-            return migrate_settings(raw) if isinstance(raw, dict) else {}
+            raw = _loads_settings_json_lenient(content)
+            return migrate_settings(raw)
         except Exception as e:
             self._errors.append({"scope": scope, "error": str(e)})
             return dict(previous or {})
@@ -410,9 +475,7 @@ class SettingsManager:
             return {}
         try:
             with open(path, encoding="utf-8") as f:
-                raw = json.load(f)
-            if not isinstance(raw, dict):
-                return {}
+                raw = _loads_settings_json_lenient(f.read())
             return migrate_settings(raw)
         except (json.JSONDecodeError, OSError) as e:
             self._errors.append({"scope": scope, "error": str(e)})
@@ -571,6 +634,12 @@ class SettingsManager:
         self._ensure_loaded()
         return self._merged.get("defaultThinkingLevel") or self._merged.get("default_thinking_level")
 
+    def get_agent_name(self) -> str | None:
+        """Optional per-instance agent name (used as the assistant turn label)."""
+        self._ensure_loaded()
+        val = self._merged.get("name")
+        return val if isinstance(val, str) and val.strip() else None
+
     def get_theme(self) -> str | None:
         self._ensure_loaded()
         return self._merged.get("theme")
@@ -703,6 +772,13 @@ class SettingsManager:
         self._ensure_loaded()
         val = self._merged.get("extensions") or []
         return list(val) if isinstance(val, list) else []
+
+    def get_tools(self) -> list[str] | None:
+        self._ensure_loaded()
+        val = self._merged.get("tools")
+        if isinstance(val, list):
+            return [str(item) for item in val if isinstance(item, str)]
+        return None
 
     def get_skills(self) -> list[str]:
         self._ensure_loaded()

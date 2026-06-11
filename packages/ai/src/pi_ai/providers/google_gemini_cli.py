@@ -17,6 +17,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from pi_ai.models import calculate_cost
+from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.providers.google_shared import (
     convert_messages,
     convert_tools,
@@ -154,8 +155,7 @@ def stream_google_gemini_cli(
             contents = convert_messages(model, context)
             request_body = _build_request_body(model, context, opts, contents, project_id)
 
-            if opts.get("on_payload"):
-                opts["on_payload"](request_body)
+            request_body = await apply_on_payload(request_body, model, opts.get("on_payload"))
 
             model_id_for_url = model.id.replace(".", "-")
 
@@ -186,6 +186,10 @@ def stream_google_gemini_cli(
                                 retry_count += 1
                                 continue
                             raise RuntimeError(f"HTTP {response.status_code}: {error_text}")
+                        if opts.get("on_response"):
+                            result = opts["on_response"](response, model)
+                            if hasattr(result, "__await__"):
+                                await result
 
                         current_block: dict[str, Any] | None = None
                         blocks = output["content"]

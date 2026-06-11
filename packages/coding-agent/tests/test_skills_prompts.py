@@ -37,6 +37,11 @@ class TestSkills:
             assert len(result.skills) == 1
             assert result.skills[0].name == "my-skill"
             assert result.skills[0].description == "A test skill"
+            assert result.skills[0].source_info is not None
+            assert result.skills[0].source_info.path.endswith("SKILL.md")
+            assert result.skills[0].source_info.source == "local"
+            assert result.skills[0].source_info.scope == "user"
+            assert result.skills[0].source_info.base_dir.endswith("my-skill")
 
     def test_load_skills_empty_dir(self):
         from pi_coding_agent.core.skills import load_skills_from_dir
@@ -103,6 +108,11 @@ class TestPromptTemplates:
             assert len(result) == 1
             assert result[0].name == "my-template"
             assert "A test template" in result[0].description
+            assert result[0].source_info is not None
+            assert result[0].source_info.path.endswith("my-template.md")
+            assert result[0].source_info.source == "local"
+            assert result[0].source_info.scope == "temporary"
+            assert result[0].source_info.base_dir == tmpdir
 
     def test_substitute_args_positional(self):
         from pi_coding_agent.core.prompt_templates import substitute_args

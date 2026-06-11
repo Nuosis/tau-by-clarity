@@ -20,6 +20,7 @@ from pi_ai.providers.openai_responses_shared import (
     convert_responses_tools,
     process_responses_stream,
 )
+from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.providers.simple_options import build_base_options, clamp_reasoning
 from pi_ai.utils.event_stream import EventStream
 
@@ -66,8 +67,7 @@ def stream_openai_responses(
             client = _create_client(model, context, api_key, opts.get("headers"))
             params = _build_params(model, context, opts)
 
-            if opts.get("on_payload"):
-                opts["on_payload"](params)
+            params = await apply_on_payload(params, model, opts.get("on_payload"))
 
             openai_stream = client.responses.create(
                 **params,

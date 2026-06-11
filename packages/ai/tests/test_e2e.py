@@ -204,7 +204,7 @@ class TestProviderRegistration:
 
     def test_model_has_required_fields(self):
         """Test all required Model fields are present."""
-        model = get_model("openai", "gpt-4o")
+        model = get_model("openai", "gpt-5.4-nano")
         assert hasattr(model, "provider")
         assert hasattr(model, "id")
         assert hasattr(model, "context_window")

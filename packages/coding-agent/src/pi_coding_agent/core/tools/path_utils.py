@@ -64,8 +64,24 @@ def resolve_to_cwd(path: str, cwd: str) -> str:
     """
     expanded = expand_path(path)
     if os.path.isabs(expanded):
-        return expanded
-    return os.path.normpath(os.path.join(cwd, expanded))
+        resolved = expanded
+    else:
+        resolved = os.path.normpath(os.path.join(cwd, expanded))
+    return _assert_within_project_root(resolved)
+
+
+def _assert_within_project_root(path: str) -> str:
+    project_root = os.environ.get("PI_PROJECT_ROOT")
+    if not project_root:
+        return path
+    root = os.path.realpath(project_root)
+    resolved = os.path.realpath(path)
+    if resolved == root or resolved.startswith(root + os.sep):
+        return path
+    raise ValueError(
+        f"Path is outside the allowed project root: {path} "
+        f"(project root: {project_root})"
+    )
 
 
 def resolve_read_path(path: str, cwd: str) -> str:

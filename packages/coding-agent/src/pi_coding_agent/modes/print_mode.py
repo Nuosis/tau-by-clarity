@@ -19,7 +19,14 @@ from pi_agent.types import (
     AgentEventToolEnd,
     AgentEventToolStart,
 )
-from pi_ai.types import AssistantMessage, ImageContent, TextContent, ToolCall, ToolResultMessage
+from pi_ai.types import (
+    AssistantMessage,
+    ImageContent,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    ToolResultMessage,
+)
 
 from ..core.agent_session import AgentSession
 
@@ -32,15 +39,19 @@ class PrintModeOptions:
         messages: list[str] | None = None,
         initial_message: str | None = None,
         initial_images: list[Any] | None = None,  # list[ImageContent]
+        initialMessage: str | None = None,
+        initialImages: list[Any] | None = None,
     ) -> None:
         self.mode = mode
         self.messages = messages or []
-        self.initial_message = initial_message
-        self.initial_images = initial_images or []
+        self.initial_message = initial_message if initial_message is not None else initialMessage
+        self.initial_images = initial_images if initial_images is not None else (initialImages or [])
+        self.initialMessage = self.initial_message
+        self.initialImages = self.initial_images
 
 
 async def run_print_mode(
-    session: AgentSession,
+    session: AgentSession | Any,
     prompt: str | None = None,
     show_thinking: bool = False,
     json_output: bool = False,
@@ -60,6 +71,10 @@ async def run_print_mode(
 
     Returns exit code (0 = success, 1 = error).
     """
+    runtime_host = session if hasattr(session, "session") else None
+    if runtime_host is not None:
+        session = runtime_host.session
+
     # Build options object (backwards-compat with old positional API)
     if options is None:
         options = PrintModeOptions(
@@ -131,6 +146,10 @@ async def run_print_mode(
 
     finally:
         unsub()
+        if runtime_host is not None and hasattr(runtime_host, "dispose"):
+            maybe = runtime_host.dispose()
+            if asyncio.iscoroutine(maybe):
+                await maybe
         # Explicit stdout flush (mirrors TS process.stdout.write("", resolve))
         sys.stdout.flush()
 
@@ -169,50 +188,128 @@ def _format_args(args: Any) -> str:
     return ", ".join(parts)
 
 
+def _serialize(obj: Any) -> Any:
+    """Best-effort JSON-serializable view of any value (Pydantic-aware)."""
+    if obj is None:
+        return None
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json")
+    if isinstance(obj, list):
+        return [_serialize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _serialize(v) for k, v in obj.items()}
+    return obj
+
+
+def _content_blocks(content: Any) -> list[dict[str, Any]]:
+    """Serialize a message's content blocks (text, thinking, toolCall, image)."""
+    out: list[dict[str, Any]] = []
+    for b in content or []:
+        if isinstance(b, TextContent):
+            out.append({"type": "text", "text": b.text})
+        elif isinstance(b, ThinkingContent):
+            out.append({"type": "thinking", "thinking": b.thinking})
+        elif isinstance(b, ToolCall):
+            out.append({
+                "type": "toolCall",
+                "id": getattr(b, "id", ""),
+                "name": getattr(b, "name", ""),
+                "arguments": getattr(b, "arguments", None) or getattr(b, "args", None),
+            })
+        elif isinstance(b, ImageContent):
+            out.append({"type": "image", "mimeType": b.mime_type})
+        else:
+            out.append(_serialize(b))
+    return out
+
+
+def _message_to_dict(msg: Any) -> dict[str, Any]:
+    """Serialize an assistant/tool message to a JSON dict."""
+    if isinstance(msg, AssistantMessage):
+        d: dict[str, Any] = {"role": "assistant", "content": _content_blocks(msg.content)}
+        for attr, key in (("api", "api"), ("provider", "provider"), ("model", "model")):
+            val = getattr(msg, attr, None)
+            if val:
+                d[key] = val
+        stop = getattr(msg, "stop_reason", None) or getattr(msg, "stopReason", None)
+        if stop:
+            d["stopReason"] = stop
+        error_message = (
+            getattr(msg, "error_message", None)
+            or getattr(msg, "errorMessage", None)
+        )
+        if error_message:
+            d["errorMessage"] = error_message
+        usage = getattr(msg, "usage", None)
+        if usage:
+            d["usage"] = {
+                "input": getattr(usage, "input", 0),
+                "output": getattr(usage, "output", 0),
+            }
+        return d
+    if isinstance(msg, ToolResultMessage):
+        return {
+            "role": "tool_result",
+            "toolCallId": msg.tool_call_id,
+            "content": _content_blocks(msg.content),
+            "isError": msg.is_error,
+        }
+    role = getattr(msg, "role", "")
+    return {"role": role, "content": _content_blocks(getattr(msg, "content", []))}
+
+
 def _event_to_dict(event: AgentEvent) -> dict[str, Any]:
-    """Convert an agent event to a JSON-serializable dict."""
+    """Convert an agent event to a JSON-serializable dict.
+
+    Mirrors the Node print-mode JSON stream: message_start/_update/_end carry the
+    (partial) message, and message_update additionally carries the streaming
+    delta (assistantMessageEvent) so headless consumers see live progress.
+    """
     base: dict[str, Any] = {"type": event.type}
 
     if event.type == "message_end":
-        msg = event.message
-        if isinstance(msg, AssistantMessage):
-            base["role"] = "assistant"
-            base["content"] = [
-                {"type": "text", "text": b.text}
-                for b in msg.content
-                if isinstance(b, TextContent)
-            ]
-            stop = getattr(msg, "stop_reason", None) or getattr(msg, "stopReason", None)
-            if stop:
-                base["stopReason"] = stop
-            usage = msg.usage
-            if usage:
-                base["usage"] = {
-                    "input": getattr(usage, "input", 0),
-                    "output": getattr(usage, "output", 0),
-                }
-        elif isinstance(msg, ToolResultMessage):
-            base["role"] = "tool_result"
-            base["toolCallId"] = msg.tool_call_id
-            base["content"] = [
-                {"type": "text", "text": b.text}
-                for b in msg.content
-                if isinstance(b, TextContent)
-            ]
-            base["isError"] = msg.is_error
+        base.update(_message_to_dict(event.message))
 
     elif event.type == "message_start":
-        base["role"] = getattr(event, "role", "")
+        msg = getattr(event, "message", None)
+        if msg is not None:
+            base["message"] = _message_to_dict(msg)
+            base["role"] = base["message"].get("role", "")
+        else:
+            base["role"] = getattr(event, "role", "")
+
+    elif event.type == "message_update":
+        base["assistantMessageEvent"] = _serialize(
+            getattr(event, "assistant_message_event", None)
+        )
+        msg = getattr(event, "message", None)
+        if msg is not None:
+            base["message"] = _message_to_dict(msg)
 
     elif event.type == "tool_execution_start":
         base["toolName"] = getattr(event, "tool_name", "")
-        args = getattr(event, "args", {})
-        base["args"] = args
+        base["args"] = getattr(event, "args", {})
+
+    elif event.type == "tool_execution_update":
+        base["toolCallId"] = getattr(event, "tool_call_id", "")
+        base["toolName"] = getattr(event, "tool_name", "")
+        base["args"] = getattr(event, "args", None)
+        base["partialResult"] = _serialize(getattr(event, "partial_result", None))
 
     elif event.type == "tool_execution_end":
         base["toolCallId"] = getattr(event, "tool_call_id", "")
         base["toolName"] = getattr(event, "tool_name", "")
+        base["result"] = _serialize(getattr(event, "result", None))
         base["isError"] = getattr(event, "is_error", False)
+
+    elif event.type == "run_state":
+        base["state"] = getattr(event, "state", "")
+        base["phase"] = getattr(event, "phase", None)
+        base["reason"] = getattr(event, "reason", None)
+        base["toolCallId"] = getattr(event, "tool_call_id", None)
+        base["toolName"] = getattr(event, "tool_name", None)
+        base["terminal"] = getattr(event, "terminal", False)
+        base["details"] = _serialize(getattr(event, "details", {}))
 
     elif event.type == "agent_end":
         reason = getattr(event, "reason", "") or getattr(event, "stop_reason", "")

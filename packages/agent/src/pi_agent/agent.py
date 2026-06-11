@@ -60,9 +60,20 @@ class AgentOptions:
         session_id: str | None = None,
         get_api_key: Callable | None = None,
         on_payload: Callable[[Any, Model], Any | None] | None = None,
+        on_response: Callable[[Any, Model], Any | None] | None = None,
         thinking_budgets: ThinkingBudgets | None = None,
         transport: Transport = "sse",
         max_retry_delay_ms: int | None = None,
+        toolExecution: str = "parallel",
+        tool_execution: str | None = None,
+        prepareNextTurn: Callable | None = None,
+        prepare_next_turn: Callable | None = None,
+        shouldStopAfterTurn: Callable | None = None,
+        should_stop_after_turn: Callable | None = None,
+        beforeToolCall: Callable | None = None,
+        afterToolCall: Callable | None = None,
+        before_tool_call: Callable | None = None,
+        after_tool_call: Callable | None = None,
     ):
         self.initial_state = initial_state
         self.convert_to_llm = convert_to_llm
@@ -73,9 +84,15 @@ class AgentOptions:
         self.session_id = session_id
         self.get_api_key = get_api_key
         self.on_payload = on_payload
+        self.on_response = on_response
         self.thinking_budgets = thinking_budgets
         self.transport = transport
         self.max_retry_delay_ms = max_retry_delay_ms
+        self.toolExecution = tool_execution or toolExecution
+        self.prepareNextTurn = prepareNextTurn or prepare_next_turn
+        self.shouldStopAfterTurn = shouldStopAfterTurn or should_stop_after_turn
+        self.beforeToolCall = beforeToolCall or before_tool_call
+        self.afterToolCall = afterToolCall or after_tool_call
 
     @classmethod
     def from_dict(cls, opts_dict: dict[str, Any]) -> "AgentOptions":
@@ -122,9 +139,15 @@ class Agent:
         self._session_id: str | None = opts.session_id
         self.get_api_key = opts.get_api_key
         self._on_payload = opts.on_payload
+        self._on_response = opts.on_response
         self._thinking_budgets: ThinkingBudgets | None = opts.thinking_budgets
         self._transport: Transport = opts.transport
         self._max_retry_delay_ms: int | None = opts.max_retry_delay_ms
+        self.toolExecution: str = opts.toolExecution
+        self.prepareNextTurn = opts.prepareNextTurn
+        self.shouldStopAfterTurn = opts.shouldStopAfterTurn
+        self.beforeToolCall = opts.beforeToolCall
+        self.afterToolCall = opts.afterToolCall
 
         self._listeners: set[Callable[[AgentEvent], None]] = set()
         self._cancel_event: asyncio.Event | None = None
@@ -391,8 +414,14 @@ class Agent:
             transform_context=self._transform_context,
             get_api_key=self.get_api_key,
             on_payload=self._on_payload,
+            on_response=self._on_response,
             get_steering_messages=get_steering,
             get_follow_up_messages=self._async_dequeue_follow_up,
+            prepare_next_turn=self.prepareNextTurn,
+            should_stop_after_turn=self.shouldStopAfterTurn,
+            toolExecution=self.toolExecution,
+            before_tool_call=self.beforeToolCall,
+            after_tool_call=self.afterToolCall,
         )
 
         partial: AgentMessage | None = None

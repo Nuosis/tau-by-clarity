@@ -13,10 +13,11 @@ def test_get_model_anthropic():
 
 
 def test_get_model_openai():
-    model = get_model("openai", "gpt-4o")
-    assert model.id == "gpt-4o"
+    model = get_model("openai", "gpt-5.4-nano")
+    assert model.id == "gpt-5.4-nano"
     assert model.provider == "openai"
     assert model.api == "openai-responses"
+    assert model.context_window == 400_000
 
 
 def test_get_model_google():
@@ -40,7 +41,47 @@ def test_get_providers():
 
 def test_get_models_all():
     models = get_models()
-    assert len(models) >= 700
+    assert len(models) >= 650
+
+
+def test_current_openai_registry_models():
+    expected = {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
+    assert {m.id for m in get_models("openai")} == expected
+    assert {m.id for m in get_models("azure-openai-responses")} == expected
+    assert {m.id for m in get_models("openai-codex")} == expected
+
+
+def test_old_direct_openai_model_names_are_removed():
+    old_ids = [
+        "gpt-4",
+        "gpt-4-turbo",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-5",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.3-codex",
+        "o1",
+        "o3",
+        "o4-mini",
+    ]
+    for provider in ("openai", "azure-openai-responses", "openai-codex"):
+        for model_id in old_ids:
+            assert get_model(provider, model_id) is None
+
+
+def test_minimax_m3_registered():
+    model = get_model("minimax", "MiniMax-M3")
+    assert model.id == "MiniMax-M3"
+    assert model.provider == "minimax"
+    # Aligned to the Node reference: MiniMax-M3 uses the Anthropic-compatible
+    # endpoint (matches pi-mono-node-reference models.generated.ts).
+    assert model.api == "anthropic-messages"
+    assert model.base_url == "https://api.minimax.io/anthropic"
+    assert model.context_window == 1_048_576
+    assert model.input == ["text", "image"]
+
+    assert get_model("minimax-cn", "MiniMax-M3") is None
 
 
 def test_get_models_by_provider():
@@ -65,8 +106,8 @@ def test_supports_xhigh_false():
 def test_supports_xhigh_true():
     from pi_ai.types import Model, ModelCost
     model = Model(
-        id="gpt-5.2",
-        name="GPT-5.2",
+        id="gpt-5.4-nano",
+        name="GPT-5.5",
         api="openai-responses",
         provider="openai",
         base_url="https://api.openai.com/v1",

@@ -150,6 +150,46 @@ class TestTUIBasic:
         handle.hide()
         tui.hide_overlay()
 
+    def test_input_listeners_can_transform_consume_and_unsubscribe(self):
+        class Recorder:
+            focused = False
+
+            def __init__(self):
+                self.inputs = []
+
+            def render(self, width):
+                return ["recorder"]
+
+            def invalidate(self):
+                pass
+
+            def handle_input(self, data):
+                self.inputs.append(data)
+
+        tui, terminal = self._make_tui()
+        recorder = Recorder()
+        tui.add_child(recorder)
+        tui.set_focus(recorder)
+        seen = []
+
+        def listener(data):
+            seen.append(data)
+            if data == "consume":
+                return {"consume": True}
+            if data == "a":
+                return {"data": "b"}
+            return None
+
+        unsubscribe = tui.add_input_listener(listener)
+
+        tui._handle_input("a")
+        tui._handle_input("consume")
+        unsubscribe()
+        tui._handle_input("c")
+
+        assert seen == ["a", "consume"]
+        assert recorder.inputs == ["b", "c"]
+
 
 @pytest.mark.asyncio
 async def test_start_captures_running_event_loop():

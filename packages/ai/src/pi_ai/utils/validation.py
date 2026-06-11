@@ -128,6 +128,12 @@ def validate_tool_arguments(tool: Tool, tool_call: ToolCall) -> dict[str, Any]:
         # Format error messages similar to AJV
         errors = []
         for error in validator.iter_errors(coerced_args):
+            if error.validator == "required" and isinstance(error.instance, dict):
+                required = error.validator_value if isinstance(error.validator_value, list) else []
+                missing = [field for field in required if field not in error.instance]
+                if missing:
+                    errors.extend(f"  - {field}: Missing required parameter" for field in missing)
+                    continue
             path = ".".join(str(p) for p in error.path) if error.path else "root"
             errors.append(f"  - {path}: {error.message}")
         

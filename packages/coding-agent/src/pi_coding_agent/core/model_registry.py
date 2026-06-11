@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pi_coding_agent.config import CONFIG_DIR_NAME
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -204,7 +205,7 @@ class ModelRegistry:
         self._auth_storage = auth_storage
         if models_json_path is None:
             models_json_path = os.path.join(
-                os.path.expanduser("~"), ".pi", "agent", "models.json"
+                os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "models.json"
             )
         self._models_json_path = models_json_path
         self._models: list[Model] = []
@@ -395,6 +396,9 @@ class ModelRegistry:
             if not api:
                 continue
             default_cost = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+            provider_headers = _resolve_headers(prov_config.headers) or {}
+            model_headers = _resolve_headers(model_def.get("headers")) or {}
+            merged_headers = {**provider_headers, **model_headers} or None
             try:
                 m = Model(
                     id=model_def["id"],
@@ -407,7 +411,7 @@ class ModelRegistry:
                     context_window=model_def.get("contextWindow", 128000),
                     max_tokens=model_def.get("maxTokens", 16384),
                     base_url=prov_config.base_url,
-                    headers=prov_config.headers,
+                    headers=merged_headers,
                     compat=model_def.get("compat"),
                 )
                 # Check if it replaces an existing entry
@@ -491,6 +495,10 @@ class ModelRegistry:
         from pi_ai.env_api_keys import get_env_api_key
         return get_env_api_key(provider)
 
+    async def get_api_key_for_provider(self, provider: str) -> str | None:
+        """Resolve API key for a provider. Mirrors getApiKeyForProvider()."""
+        return self.get_api_key(provider)
+
     def resolve_headers(self, model: Model) -> dict[str, str] | None:
         """
         Resolve headers for a model, interpolating env vars and shell commands.
@@ -500,13 +508,89 @@ class ModelRegistry:
             return None
         return _resolve_headers(model.headers)
 
+    async def get_api_key_and_headers(self, model: Model) -> dict[str, Any]:
+        """Return Node-style request auth for a model."""
+        try:
+            api_key = self.get_api_key(model.provider)
+            headers = dict(model.headers or {})
+            resolved_headers = _resolve_headers(headers) if headers else None
+            if resolved_headers is not None:
+                headers = resolved_headers
+
+            provider_config = self._registered_providers.get(model.provider)
+            if provider_config:
+                provider_headers = _resolve_headers(provider_config.headers) or {}
+                headers = {**headers, **provider_headers}
+                if provider_config.auth_header:
+                    if not api_key:
+                        return {"ok": False, "error": f'No API key found for "{model.provider}"'}
+                    headers["Authorization"] = f"Bearer {api_key}"
+
+            return {
+                "ok": True,
+                "apiKey": api_key,
+                "headers": headers or None,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def has_configured_auth(self, model: Model | str) -> bool:
+        """Fast auth availability check. Mirrors hasConfiguredAuth()."""
+        provider = model if isinstance(model, str) else model.provider
+        return self._has_env_auth(provider) or bool(self.get_api_key(provider))
+
+    def get_provider_auth_status(self, provider: str) -> dict[str, Any]:
+        """Return auth status including models.json/runtime provider API keys."""
+        if self._auth_storage and hasattr(self._auth_storage, "get_auth_status"):
+            status = self._auth_storage.get_auth_status(provider)
+            if status.get("source"):
+                return status
+        else:
+            status = {"configured": False}
+
+        provider_key = self._custom_provider_api_keys.get(provider)
+        if not provider_key:
+            return status
+
+        stripped = provider_key.strip()
+        if stripped.startswith("$(") and stripped.endswith(")"):
+            return {"configured": True, "source": "models_json_command"}
+        env_match = re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$", stripped)
+        if env_match:
+            env_name = env_match.group(1)
+            return (
+                {"configured": True, "source": "environment", "label": env_name}
+                if os.environ.get(env_name)
+                else {"configured": False}
+            )
+        return {"configured": True, "source": "models_json_key"}
+
+    def get_provider_display_name(self, provider: str) -> str:
+        """Get display name for a provider."""
+        registered = self._registered_providers.get(provider)
+        if registered and registered.name:
+            return registered.name
+        if self._auth_storage and hasattr(self._auth_storage, "get_oauth_providers"):
+            for oauth_provider in self._auth_storage.get_oauth_providers():
+                if getattr(oauth_provider, "id", None) == provider and getattr(oauth_provider, "name", None):
+                    return oauth_provider.name
+        from pi_coding_agent.core.provider_display_names import get_provider_display_name
+        return get_provider_display_name(provider)
+
+    def is_using_oauth(self, model: Model) -> bool:
+        """Check if a model is using OAuth credentials."""
+        if self._auth_storage and hasattr(self._auth_storage, "is_using_oauth"):
+            return bool(self._auth_storage.is_using_oauth(model.provider))
+        cred = self._auth_storage.get(model.provider) if self._auth_storage and hasattr(self._auth_storage, "get") else None
+        return bool(cred and cred.get("type") == "oauth")
+
     def register_provider(self, name: str, config: dict[str, Any]) -> None:
         """
         Register a provider from an extension.
         Mirrors registerProvider() in TypeScript.
         """
         prov = ProviderConfig(
-            name=name,
+            name=config.get("name") or name,
             base_url=config.get("baseUrl"),
             api_key=config.get("apiKey"),
             api=config.get("api"),
@@ -523,6 +607,17 @@ class ModelRegistry:
         # Re-merge with new provider
         new_models = self._apply_provider_config_to_models(self._models, name, prov)
         self._models = new_models
+
+    def unregister_provider(self, name: str) -> None:
+        """Remove a runtime-registered provider and rebuild available models."""
+        self._registered_providers.pop(name, None)
+        self._custom_provider_api_keys.pop(name, None)
+        self._load_models()
+
+    def reset_registered_providers(self) -> None:
+        """Clear runtime provider registrations and rebuild available models."""
+        self._registered_providers.clear()
+        self._load_models()
 
     def register_model(self, model: Model) -> None:
         """Register an individual extra model."""
@@ -567,12 +662,13 @@ class ModelRegistry:
                     return m
 
         # Auto-select default based on which providers have API keys configured.
-        # Prefer Google (Gemini) when GEMINI_API_KEY / GOOGLE_API_KEY is present,
-        # then Anthropic, then OpenAI, then whatever is available.
+        # Prefer OpenAI (gpt-5.5) when OPENAI_API_KEY is present, then Anthropic,
+        # then Google, then whatever is available. gpt-5.5 is the default when no
+        # global default model is set.
         _default_preference = [
-            ("google", "gemini-2.0-flash"),
+            ("openai", "gpt-5.5"),
             ("anthropic", "claude-3-5-sonnet-20241022"),
-            ("openai", "gpt-4o"),
+            ("google", "gemini-2.5-pro"),
         ]
         for prov, mid in _default_preference:
             if self._has_env_auth(prov):
@@ -580,7 +676,26 @@ class ModelRegistry:
                 if m:
                     return m
 
-        # Last resort: first available model
+        # Last resort: default to OpenAI gpt-5.5 (never a non-deterministic
+        # first-in-catalog pick). If that model isn't in the catalog, fall back
+        # to whatever is available.
+        m = self.find("openai", "gpt-5.5")
+        if m:
+            return m
         if self._models:
             return self._models[0]
         raise RuntimeError("No models available")
+
+    getAll = get_all
+    getAvailable = get_available
+    getError = get_error
+    getApiKey = get_api_key
+    getApiKeyForProvider = get_api_key_for_provider
+    getApiKeyAndHeaders = get_api_key_and_headers
+    hasConfiguredAuth = has_configured_auth
+    getProviderAuthStatus = get_provider_auth_status
+    getProviderDisplayName = get_provider_display_name
+    isUsingOAuth = is_using_oauth
+    registerProvider = register_provider
+    unregisterProvider = unregister_provider
+    resetApiProviders = reset_registered_providers

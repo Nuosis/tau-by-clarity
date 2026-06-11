@@ -13,6 +13,7 @@ dependencies = [
     "aiofiles>=24.0.0",
     "pyyaml>=6.0.0",
     "python-dotenv>=1.0.0",
+    "pygments>=2.17.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,7 @@ dev = [
 
 [project.scripts]
 pi = "pi_coding_agent.main:main"
+pi-py = "pi_coding_agent.main:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from pi_coding_agent.config import CONFIG_DIR_NAME
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -337,14 +338,16 @@ class SessionManager:
 
     @staticmethod
     def _default_sessions_dir() -> str:
-        return os.path.join(os.path.expanduser("~"), ".pi", "agent", "sessions")
+        return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "sessions")
 
     @staticmethod
     def _resolve_sessions_dir(cwd: str, session_dir: str | None = None) -> str:
         if session_dir:
-            return os.path.abspath(session_dir)
+            resolved = os.path.abspath(session_dir)
+            os.makedirs(resolved, exist_ok=True)
+            return resolved
         safe = f"--{cwd.lstrip('/').lstrip(os.sep).replace('/', '-').replace(os.sep, '-').replace(':', '-')}--"
-        base = os.path.join(os.path.expanduser("~"), ".pi", "agent", "sessions", safe)
+        base = os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "sessions", safe)
         os.makedirs(base, exist_ok=True)
         return base
 
@@ -406,18 +409,19 @@ class SessionManager:
         cwd: str,
         session_dir: str | None = None,
         parent_session: str | None = None,
+        session_id: str | None = None,
     ) -> "SessionManager":
         """Create a new session."""
         sessions_dir = cls._resolve_sessions_dir(cwd, session_dir)
-        session_id = str(uuid.uuid4())
-        session_file = os.path.join(sessions_dir, f"{session_id}.jsonl")
+        resolved_session_id = session_id or str(uuid.uuid4())
+        session_file = os.path.join(sessions_dir, f"{resolved_session_id}.jsonl")
         mgr = cls(session_file=session_file, cwd=cwd)
 
         from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc).isoformat()
         header: dict[str, Any] = {
             "type": "session",
-            "id": session_id,
+            "id": resolved_session_id,
             "version": CURRENT_SESSION_VERSION,
             "timestamp": timestamp,
             "cwd": cwd,
@@ -433,7 +437,7 @@ class SessionManager:
     def in_memory(cls, cwd: str | None = None) -> "SessionManager":
         """Create an in-memory session (uses temp sessions dir)."""
         actual_cwd = cwd or os.getcwd()
-        tmp = os.path.join(os.path.expanduser("~"), ".pi", "agent", "sessions", "in-memory")
+        tmp = os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "sessions", "in-memory")
         os.makedirs(tmp, exist_ok=True)
         return cls.create(actual_cwd, session_dir=tmp)
 
@@ -495,7 +499,7 @@ class SessionManager:
         on_progress: Callable[[int, int], None] | None = None,
     ) -> list[SessionInfo]:
         """List all sessions across the global sessions directory."""
-        roots = [os.path.join(os.path.expanduser("~"), ".pi", "agent", "sessions")]
+        roots = [os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "sessions")]
         seen: set[str] = set()
         out: list[SessionInfo] = []
         for root in roots:

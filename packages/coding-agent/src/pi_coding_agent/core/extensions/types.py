@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
+from pi_coding_agent.core.source_info import SourceInfo, create_synthetic_source_info
+
 
 # ============================================================================
 # Manifest
@@ -31,6 +33,9 @@ class ToolDefinition:
     label: str = ""
     description: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
+    prepare_arguments: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    execution_mode: str | None = None
+    execution_policy: dict[str, Any] | None = None
     execute: Callable | None = None
     render_call: Callable | None = None
     render_result: Callable | None = None
@@ -61,6 +66,7 @@ class RegisteredCommand:
     handler: Callable[..., Any] | None = None
     get_argument_completions: Callable[[str], list[Any] | None] | None = None
     extension_path: str = ""
+    source_info: SourceInfo | None = None
 
 
 @dataclass
@@ -76,10 +82,14 @@ class ExtensionFlag:
 @dataclass
 class ExtensionShortcut:
     """A keyboard shortcut registered by an extension."""
-    key: str
+    shortcut: str
     description: str = ""
     handler: Callable[..., Any] | None = None
     extension_path: str = ""
+
+    @property
+    def key(self) -> str:
+        return self.shortcut
 
 
 # ============================================================================
@@ -190,6 +200,11 @@ class ToolCallEvent:
 class ToolCallEventResult:
     block: bool = False
     reason: str | None = None
+    # Optional: rewrite the tool-call arguments before execution. When a handler
+    # returns "arguments" (or "input"), the runtime uses it in place of the
+    # original args (e.g. a PII filter reapplying real values for tokens).
+    arguments: dict[str, Any] | None = None
+    input: dict[str, Any] | None = None
 
 
 @dataclass
@@ -274,11 +289,164 @@ class Extension:
     commands: dict[str, RegisteredCommand] = field(default_factory=dict)
     flags: dict[str, ExtensionFlag] = field(default_factory=dict)
     shortcuts: dict[str, ExtensionShortcut] = field(default_factory=dict)
+    source_info: SourceInfo | None = None
 
 
 # ============================================================================
 # Extension API
 # ============================================================================
+
+class ExtensionUIContext:
+    """UI methods exposed on ctx.ui for extensions."""
+
+    async def select(self, title: str, options: list[str], opts: Any = None) -> str | None:
+        return None
+
+    async def confirm(self, title: str, message: str, opts: Any = None) -> bool:
+        return False
+
+    async def input(self, title: str, placeholder: str | None = None, opts: Any = None) -> str | None:
+        return None
+
+    def notify(self, message: str, notify_type: str | None = None) -> None:
+        return None
+
+    def on_terminal_input(self, handler: Any) -> Callable[[], None]:
+        return lambda: None
+
+    def set_status(self, key: str, text: str | None) -> None:
+        return None
+
+    def set_working_message(self, message: str | None = None) -> None:
+        return None
+
+    def set_working_visible(self, visible: bool) -> None:
+        return None
+
+    def set_working_indicator(self, options: Any = None) -> None:
+        return None
+
+    def set_hidden_thinking_label(self, label: str | None = None) -> None:
+        return None
+
+    def set_widget(self, key: str, content: Any, options: Any = None) -> None:
+        return None
+
+    def set_footer(self, factory: Any) -> None:
+        return None
+
+    def set_header(self, factory: Any) -> None:
+        return None
+
+    def set_title(self, title: str) -> None:
+        return None
+
+    async def custom(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+    def paste_to_editor(self, text: str) -> None:
+        self.set_editor_text(text)
+
+    def set_editor_text(self, text: str) -> None:
+        return None
+
+    def get_editor_text(self) -> str:
+        return ""
+
+    async def editor(self, title: str, prefill: str | None = None) -> str | None:
+        return None
+
+    def add_autocomplete_provider(self, factory: Any) -> None:
+        return None
+
+    def set_editor_component(self, factory: Any = None) -> None:
+        return None
+
+    def get_editor_component(self) -> Any:
+        return None
+
+    @property
+    def theme(self) -> Any:
+        return {}
+
+    def get_all_themes(self) -> list[Any]:
+        return []
+
+    def get_theme(self, name: str) -> Any:
+        return None
+
+    def set_theme(self, theme_val: Any) -> dict[str, Any]:
+        return {"success": False, "error": "Theme switching not supported"}
+
+    def get_tools_expanded(self) -> bool:
+        return False
+
+    def set_tools_expanded(self, expanded: bool) -> None:
+        return None
+
+    def onTerminalInput(self, handler: Any) -> Callable[[], None]:
+        return self.on_terminal_input(handler)
+
+    def setStatus(self, key: str, text: str | None) -> None:
+        return self.set_status(key, text)
+
+    def setWorkingMessage(self, message: str | None = None) -> None:
+        return self.set_working_message(message)
+
+    def setWorkingVisible(self, visible: bool) -> None:
+        return self.set_working_visible(visible)
+
+    def setWorkingIndicator(self, options: Any = None) -> None:
+        return self.set_working_indicator(options)
+
+    def setHiddenThinkingLabel(self, label: str | None = None) -> None:
+        return self.set_hidden_thinking_label(label)
+
+    def setWidget(self, key: str, content: Any, options: Any = None) -> None:
+        return self.set_widget(key, content, options)
+
+    def setFooter(self, factory: Any) -> None:
+        return self.set_footer(factory)
+
+    def setHeader(self, factory: Any) -> None:
+        return self.set_header(factory)
+
+    def setTitle(self, title: str) -> None:
+        return self.set_title(title)
+
+    def pasteToEditor(self, text: str) -> None:
+        return self.paste_to_editor(text)
+
+    def setEditorText(self, text: str) -> None:
+        return self.set_editor_text(text)
+
+    def getEditorText(self) -> str:
+        return self.get_editor_text()
+
+    def addAutocompleteProvider(self, factory: Any) -> None:
+        return self.add_autocomplete_provider(factory)
+
+    def setEditorComponent(self, factory: Any = None) -> None:
+        return self.set_editor_component(factory)
+
+    def getEditorComponent(self) -> Any:
+        return self.get_editor_component()
+
+    def getAllThemes(self) -> list[Any]:
+        return self.get_all_themes()
+
+    def getTheme(self, name: str) -> Any:
+        return self.get_theme(name)
+
+    def setTheme(self, theme_val: Any) -> dict[str, Any]:
+        return self.set_theme(theme_val)
+
+    def getToolsExpanded(self) -> bool:
+        return self.get_tools_expanded()
+
+    def setToolsExpanded(self, expanded: bool) -> None:
+        return self.set_tools_expanded(expanded)
+
 
 class ExtensionContext:
     """Context passed to extension handlers."""
@@ -289,11 +457,23 @@ class ExtensionContext:
         session_id: str = "",
         model: Any = None,
         messages: list[Any] | None = None,
+        stale_message_getter: Callable[[], str | None] | None = None,
     ) -> None:
+        self._stale_message_getter = stale_message_getter
         self.cwd = cwd
         self.session_id = session_id
         self.model = model
         self.messages = messages or []
+
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith("_") or name in {"__class__", "__dict__", "__setattr__", "__getattribute__"}:
+            return object.__getattribute__(self, name)
+        getter = object.__getattribute__(self, "_stale_message_getter")
+        if getter is not None:
+            message = getter()
+            if message:
+                raise RuntimeError(message)
+        return object.__getattribute__(self, name)
 
 
 class ExtensionAPI:
@@ -302,8 +482,9 @@ class ExtensionAPI:
     Mirrors the pi object passed to extension factories in TS.
     """
 
-    def __init__(self, extension: Extension) -> None:
+    def __init__(self, extension: Extension, runtime: dict[str, Any] | None = None) -> None:
         self._extension = extension
+        self._runtime = runtime if runtime is not None else {"flagValues": {}}
 
     def on(self, event_type: str, handler: HandlerFn) -> None:
         """Register an event handler."""
@@ -331,23 +512,38 @@ class ExtensionAPI:
             execute=execute,
             prompt_snippet=prompt_snippet,
             prompt_guidelines=prompt_guidelines,
+            execution_mode=kwargs.get("execution_mode", kwargs.get("executionMode")),
+            execution_policy=kwargs.get("execution_policy", kwargs.get("executionPolicy")),
         )
 
     def register_command(
         self,
         name: str,
-        description: str = "",
+        description: str | dict[str, Any] = "",
         handler: Callable[..., Any] | None = None,
         get_argument_completions: Callable[[str], list[Any] | None] | None = None,
     ) -> None:
         """Register a slash command."""
+        if isinstance(description, dict):
+            options = description
+            description = str(options.get("description") or "")
+            handler = options.get("handler", handler)
+            get_argument_completions = (
+                options.get("getArgumentCompletions")
+                or options.get("get_argument_completions")
+                or get_argument_completions
+            )
         self._extension.commands[name] = RegisteredCommand(
             name=name,
             description=description,
             handler=handler,
             get_argument_completions=get_argument_completions,
             extension_path=self._extension.path,
+            source_info=self._extension.source_info
+            or create_synthetic_source_info(self._extension.path, source="local"),
         )
+
+    registerCommand = register_command
 
     def register_message_renderer(
         self,
@@ -360,11 +556,16 @@ class ExtensionAPI:
     def register_flag(
         self,
         name: str,
-        description: str = "",
+        description: str | dict[str, Any] = "",
         type: str = "boolean",
         default: bool | str | None = False,
     ) -> None:
         """Register a feature flag."""
+        if isinstance(description, dict):
+            options = description
+            description = str(options.get("description") or "")
+            type = str(options.get("type") or type)
+            default = options.get("default", default)
         self._extension.flags[name] = ExtensionFlag(
             name=name,
             description=description,
@@ -372,20 +573,101 @@ class ExtensionAPI:
             default=default,
             extension_path=self._extension.path,
         )
+        flag_values = self._runtime.setdefault("flagValues", {})
+        if default is not None and name not in flag_values:
+            flag_values[name] = default
+
+    def get_flag(self, name: str) -> bool | str | None:
+        """Get an extension flag value for a flag registered by this extension."""
+        if name not in self._extension.flags:
+            return None
+        return self._runtime.get("flagValues", {}).get(name)
+
+    def register_provider(self, name: str, config: dict[str, Any]) -> None:
+        """Queue a model provider registration from this extension."""
+        self._runtime.setdefault("pendingProviderRegistrations", []).append(
+            {
+                "name": name,
+                "config": config,
+                "extensionPath": self._extension.path,
+            }
+        )
+
+    def unregister_provider(self, name: str) -> None:
+        """Remove a pending provider registration by name."""
+        pending = self._runtime.setdefault("pendingProviderRegistrations", [])
+        self._runtime["pendingProviderRegistrations"] = [
+            item for item in pending if item.get("name") != name
+        ]
+
+    registerFlag = register_flag
+    getFlag = get_flag
+    registerProvider = register_provider
+    unregisterProvider = unregister_provider
 
     def register_shortcut(
         self,
         key: str,
-        description: str = "",
+        description: str | dict[str, Any] = "",
         handler: Callable | None = None,
     ) -> None:
         """Register a keyboard shortcut."""
+        if isinstance(description, dict):
+            options = description
+            description = str(options.get("description") or "")
+            handler = options.get("handler", handler)
         self._extension.shortcuts[key] = ExtensionShortcut(
-            key=key,
+            shortcut=key,
             description=description,
             handler=handler,
             extension_path=self._extension.path,
         )
+
+    registerShortcut = register_shortcut
+
+    # ── Core session/tool/command queries ─────────────────────────────────────
+    # These delegate to callables injected by ExtensionRunner.bind_core(). They
+    # return empty / no-op values before the core is bound (e.g. when called at
+    # factory time, before the agent session is ready). Mirrors the runtime-
+    # delegated methods on the TS ExtensionAPI (getCommands/getAllTools/…).
+
+    def get_active_tools(self) -> list[str]:
+        """Names of the tools currently active for the agent."""
+        action = self._runtime.get("getActiveTools")
+        return list(action()) if callable(action) else []
+
+    def get_all_tools(self) -> list[dict[str, Any]]:
+        """All registered tools (built-in + extension) with metadata."""
+        action = self._runtime.get("getAllTools")
+        return list(action()) if callable(action) else []
+
+    def get_all_tool_names(self) -> list[str]:
+        """Names of all registered tools, whether active or not."""
+        action = self._runtime.get("getAllToolNames")
+        return list(action()) if callable(action) else []
+
+    def set_active_tools(self, tool_names: list[str]) -> None:
+        """Replace the active tool set by name (rebuilds the system prompt)."""
+        action = self._runtime.get("setActiveTools")
+        if callable(action):
+            action(list(tool_names))
+
+    def get_commands(self) -> list[dict[str, Any]]:
+        """All slash commands (extension + prompt + skill) with their source."""
+        action = self._runtime.get("getCommands")
+        return list(action()) if callable(action) else []
+
+    def append_entry(self, custom_type: str, data: Any = None) -> str:
+        """Append a custom entry to the session (extension state, not LLM context)."""
+        action = self._runtime.get("appendEntry")
+        return action(custom_type, data) if callable(action) else ""
+
+    getActiveTools = get_active_tools
+    getAllTools = get_all_tools
+    getAllToolNames = get_all_tool_names
+    setActiveTools = set_active_tools
+    getCommands = get_commands
+    appendEntry = append_entry
 
 
 ExtensionFactory = Callable[[ExtensionAPI], None | Awaitable[None]]

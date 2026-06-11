@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pi_agent.types import AgentTool, ThinkingLevel
 from pi_ai.types import Model
@@ -23,6 +23,10 @@ from .settings_manager import Settings, SettingsManager
 class ResourceLoader(Protocol):
     """Protocol for resource loaders."""
     def get_extensions(self) -> dict[str, Any] | None: ...
+    def get_skills(self) -> dict[str, Any]: ...
+    def get_agents_files(self) -> dict[str, Any]: ...
+    def get_system_prompt(self) -> str | None: ...
+    def get_append_system_prompt(self) -> list[str]: ...
     async def reload(self) -> None: ...
 
 
@@ -49,8 +53,12 @@ class CreateAgentSessionOptions:
     # Models available for cycling (Ctrl+P in interactive mode)
     scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
     
-    # Built-in tools to use. Default: codingTools [read, bash, edit, write]
-    tools: list[AgentTool] | None = None
+    # Optional allowlist of tool names. Legacy AgentTool lists are also accepted.
+    tools: list[str] | list[AgentTool] | None = None
+    # Optional denylist of tool names to disable after the allowlist/default.
+    exclude_tools: list[str] | None = None
+    # Optional default tool suppression mode. True is treated as "all".
+    no_tools: Literal["all", "builtin"] | bool | None = None
     # Custom tools to register (in addition to built-in tools)
     custom_tools: list[ToolDefinition] | None = None
     
@@ -62,6 +70,10 @@ class CreateAgentSessionOptions:
     
     # Settings manager
     settings_manager: SettingsManager | None = None
+    # Per-session variables substituted into prompt text, e.g. {ACTIVE_PATH}.
+    session_vars: dict[str, str] | None = None
+    # Session start event metadata for extension runtime startup.
+    session_start_event: dict[str, Any] | None = None
 
 
 @dataclass
@@ -165,12 +177,42 @@ async def create_agent_session(
     if not model or not getattr(model, "reasoning", False):
         thinking_level = "off"
     
-    settings = Settings(
-        thinking_level=thinking_level,
-        model_id=model.id if model else None,
-        provider=model.provider if model else None,
-    )
+    settings = settings_manager.get()
+    settings.thinking_level = thinking_level
+    settings.model_id = model.id if model else None
+    settings.provider = model.provider if model else None
+    if options.session_vars:
+        merged_session_vars = dict(settings.session_vars or {})
+        merged_session_vars.update({str(k): str(v) for k, v in options.session_vars.items()})
+        settings.session_vars = merged_session_vars
+
+    configured_tools = options.tools
+    tools_from_settings = False
+    if configured_tools is None and not options.no_tools:
+        get_tools = getattr(settings_manager, "get_tools", None)
+        configured_tools = get_tools() if callable(get_tools) else None
+        tools_from_settings = configured_tools is not None
     
+    initial_active_tool_names = _resolve_initial_active_tool_names(
+        tools=configured_tools,
+        no_tools=options.no_tools,
+        exclude_tools=options.exclude_tools,
+    )
+
+    custom_tool_names = _extract_tool_names(options.custom_tools)
+    if custom_tool_names and (configured_tools is None or tools_from_settings) and not options.no_tools:
+        initial_active_tool_names.extend(
+            name for name in custom_tool_names if name not in initial_active_tool_names
+        )
+    extension_tool_names = _extract_extension_tool_names(resource_loader)
+    if extension_tool_names and (configured_tools is None or tools_from_settings) and not options.no_tools:
+        excluded = set(options.exclude_tools or [])
+        initial_active_tool_names.extend(
+            name
+            for name in extension_tool_names
+            if name not in excluded and name not in initial_active_tool_names
+        )
+
     # Create session with all options
     session = AgentSession(
         cwd=cwd,
@@ -180,16 +222,15 @@ async def create_agent_session(
         auth_storage=auth_storage,
         model_registry=model_registry,
         settings_manager=settings_manager,
+        resource_loader=resource_loader,
+        custom_tools=options.custom_tools,
+        initial_active_tool_names=initial_active_tool_names,
+        session_start_event=options.session_start_event,
     )
     
     # Apply scoped models if provided
     if options.scoped_models:
         session.set_scoped_models(options.scoped_models)
-    
-    # Apply custom tools if provided
-    if options.tools is not None:
-        tool_names = [t.name for t in options.tools]
-        session.set_active_tools_by_name(tool_names)
     
     extensions_result = resource_loader.get_extensions() if hasattr(resource_loader, "get_extensions") else None
     
@@ -198,3 +239,106 @@ async def create_agent_session(
         extensions_result=extensions_result,
         model_fallback_message=model_fallback_message,
     )
+
+
+def _extract_tool_names(tools: Any) -> list[str]:
+    names: list[str] = []
+    for tool in tools or []:
+        if isinstance(tool, str):
+            names.append(tool)
+        else:
+            name = getattr(tool, "name", None)
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def _extract_extension_tool_names(resource_loader: Any) -> list[str]:
+    get_extensions = getattr(resource_loader, "get_extensions", None)
+    if not callable(get_extensions):
+        return []
+    result = get_extensions() or {}
+    extensions = result.get("extensions") if isinstance(result, dict) else getattr(result, "extensions", [])
+    names: list[str] = []
+    for extension in extensions or []:
+        tools = getattr(extension, "tools", {}) or {}
+        tool_values = tools.values() if isinstance(tools, dict) else tools
+        for tool in tool_values or []:
+            name = getattr(tool, "name", None)
+            if isinstance(name, str) and name not in names:
+                names.append(name)
+    return names
+
+
+def _resolve_initial_active_tool_names(
+    *,
+    tools: list[str] | list[AgentTool] | None,
+    no_tools: Literal["all", "builtin"] | bool | None,
+    exclude_tools: list[str] | None,
+) -> list[str]:
+    default_active = ["read", "bash", "edit", "write"]
+    if tools is not None:
+        active = _extract_tool_names(tools)
+    elif no_tools:
+        active = []
+    else:
+        active = list(default_active)
+
+    excluded = set(exclude_tools or [])
+    return [name for name in active if name not in excluded]
+
+
+from .agent_session_services import (  # noqa: E402
+    AgentSessionRuntimeDiagnostic,
+    AgentSessionServices,
+    CreateAgentSessionFromServicesOptions,
+    CreateAgentSessionServicesOptions,
+    create_agent_session_from_services,
+    create_agent_session_services,
+)
+from .agent_session_runtime import (  # noqa: E402
+    AgentSessionRuntime,
+    CreateAgentSessionRuntimeFactory,
+    CreateAgentSessionRuntimeResult,
+    SessionImportFileNotFoundError,
+    create_agent_session_runtime,
+)
+from .tools import (  # noqa: E402
+    create_all_tools,
+    create_bash_tool_definition,
+    create_bash_tool,
+    create_coding_tools,
+    create_edit_tool_definition,
+    create_edit_tool,
+    create_find_tool_definition,
+    create_find_tool,
+    create_grep_tool_definition,
+    create_grep_tool,
+    create_ls_tool_definition,
+    create_ls_tool,
+    create_read_tool_definition,
+    create_read_only_tools,
+    create_read_tool,
+    create_write_tool_definition,
+    create_write_tool,
+    with_file_mutation_queue,
+)
+
+createAllTools = create_all_tools
+createBashToolDefinition = create_bash_tool_definition
+createBashTool = create_bash_tool
+createCodingTools = create_coding_tools
+createEditToolDefinition = create_edit_tool_definition
+createEditTool = create_edit_tool
+createFindToolDefinition = create_find_tool_definition
+createFindTool = create_find_tool
+createGrepToolDefinition = create_grep_tool_definition
+createGrepTool = create_grep_tool
+createLsToolDefinition = create_ls_tool_definition
+createLsTool = create_ls_tool
+createReadToolDefinition = create_read_tool_definition
+createReadOnlyTools = create_read_only_tools
+createReadTool = create_read_tool
+createWriteToolDefinition = create_write_tool_definition
+createWriteTool = create_write_tool
+withFileMutationQueue = with_file_mutation_queue

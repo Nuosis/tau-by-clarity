@@ -19,6 +19,8 @@ from typing import Any, AsyncGenerator
 
 import anthropic as _anthropic
 
+from pi_ai.providers.payload_utils import apply_on_payload
+
 from ..types import (
     AssistantMessage,
     AssistantMessageEvent,
@@ -491,14 +493,7 @@ async def stream_simple(
     block_index_map: dict[int, int] = {}  # anthropic index → content_blocks index
     tool_arg_buffers: dict[int, str] = {}
 
-    # Apply on_payload callback (mirrors TS: const nextParams = await options?.onPayload?.(params, model))
-    if opts.get("on_payload"):
-        modified = opts["on_payload"](params, model)
-        # Support async callbacks
-        if hasattr(modified, "__await__"):
-            modified = await modified
-        if modified is not None:
-            params = modified
+    params = await apply_on_payload(params, model, opts.get("on_payload"))
 
     yield EventStart(type="start", partial=partial)
 
@@ -608,7 +603,11 @@ async def stream_simple(
                                 thinking_signature=sig + delta.signature,
                             )
 
-                elif event_type == "ContentBlockStopEvent":
+                elif event_type in (
+                    "ParsedContentBlockStopEvent",
+                    "RawContentBlockStopEvent",
+                    "ContentBlockStopEvent",
+                ):
                     ant_idx = event.index
                     cb_idx = block_index_map.get(ant_idx, -1)
                     if cb_idx < 0 or cb_idx >= len(content_blocks):

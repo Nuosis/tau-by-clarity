@@ -34,6 +34,7 @@ def build_system_prompt(
     append_system_prompt: str | None = None,
     context_files: list[dict[str, str]] | None = None,   # [{"path": ..., "content": ...}]
     skills: list[dict[str, str]] | None = None,          # [{"name": ..., "content": ...}]
+    session_vars: dict[str, str] | None = None,
     # Legacy positional-style aliases kept for back-compat
     base_prompt: str | None = None,
 ) -> str:
@@ -84,17 +85,17 @@ def build_system_prompt(
                 prompt += f"## {cf['path']}\n\n{cf['content']}\n\n"
 
         # Append skills (only if read tool is available)
-        has_read = not selected_tools or "read" in selected_tools
+        has_read = selected_tools is None or "read" in selected_tools
         if has_read and _skills:
             prompt += _format_skills(selected_tools, _skills)
 
         prompt += f"\nCurrent date and time: {date_time}"
         prompt += f"\nCurrent working directory: {resolved_cwd}"
-        return prompt
+        return _apply_session_vars(prompt, session_vars)
 
     # ── Default prompt ────────────────────────────────────────────────────────
-    tools = [t for t in (selected_tools or ["read", "bash", "edit", "write"])
-             if t in TOOL_DESCRIPTIONS]
+    requested_tools = ["read", "bash", "edit", "write"] if selected_tools is None else selected_tools
+    tools = [t for t in requested_tools if t in TOOL_DESCRIPTIONS]
     tools_list = (
         "\n".join(f"- {t}: {TOOL_DESCRIPTIONS[t]}" for t in tools)
         if tools else "(none)"
@@ -182,10 +183,22 @@ def build_system_prompt(
     prompt += f"\nCurrent date and time: {date_time}"
     prompt += f"\nCurrent working directory: {resolved_cwd}"
 
-    return prompt
+    return _apply_session_vars(prompt, session_vars)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _apply_session_vars(text: str, session_vars: dict[str, str] | None) -> str:
+    if not session_vars:
+        return text
+    result = text
+    for key, value in session_vars.items():
+        key_s = str(key)
+        value_s = str(value)
+        result = result.replace("{" + key_s + "}", value_s)
+        result = result.replace("${" + key_s + "}", value_s)
+    return result
+
 
 def _find_file(cwd: str, filename: str) -> str | None:
     """Search for filename in cwd and parent directories."""

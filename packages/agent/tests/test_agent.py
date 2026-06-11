@@ -148,9 +148,9 @@ async def test_agent_clear_messages(agent):
 @pytest.mark.asyncio
 async def test_agent_set_model(agent):
     from pi_ai import get_model
-    new_model = get_model("openai", "gpt-4o")
+    new_model = get_model("openai", "gpt-5.4-nano")
     agent.set_model(new_model)
-    assert agent.state.model.id == "gpt-4o"
+    assert agent.state.model.id == "gpt-5.4-nano"
 
 
 @pytest.mark.asyncio

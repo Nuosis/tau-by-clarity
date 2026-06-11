@@ -154,6 +154,105 @@ class TestExtensionLoader:
         from pi_coding_agent.core.extensions.loader import create_extension_runtime
         runtime = create_extension_runtime()
         assert runtime is not None
+        assert runtime["flagValues"] == {}
+
+    @pytest.mark.asyncio
+    async def test_extension_api_registers_and_reads_flag_values(self):
+        from pi_coding_agent.core.event_bus import EventBus
+        from pi_coding_agent.core.extensions.loader import (
+            create_extension_runtime,
+            load_extension_from_path,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ext_path = os.path.join(tmpdir, "flags_extension.py")
+            self._write_extension(
+                ext_path,
+                """
+def extension_factory(api):
+    api.registerFlag("mode", {"type": "string", "default": "extension-default"})
+    if api.getFlag("mode") != "cli-value":
+        raise RuntimeError(f"flag was {api.getFlag('mode')}")
+""",
+            )
+            runtime = create_extension_runtime()
+            runtime["flagValues"]["mode"] = "cli-value"
+            event_bus = EventBus()
+
+            ext = await load_extension_from_path(ext_path, tmpdir, event_bus, runtime)
+
+            assert ext.flags["mode"].name == "mode"
+            assert runtime["flagValues"]["mode"] == "cli-value"
+
+    @pytest.mark.asyncio
+    async def test_extension_api_queues_provider_registration(self):
+        from pi_coding_agent.core.event_bus import EventBus
+        from pi_coding_agent.core.extensions.loader import (
+            create_extension_runtime,
+            load_extension_from_path,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ext_path = os.path.join(tmpdir, "provider_extension.py")
+            self._write_extension(
+                ext_path,
+                """
+def extension_factory(api):
+    api.registerProvider("runtime-ai", {
+        "api": "openai-completions",
+        "baseUrl": "https://runtime.example/v1",
+        "models": [{"id": "runtime-model"}],
+    })
+""",
+            )
+            runtime = create_extension_runtime()
+            event_bus = EventBus()
+
+            await load_extension_from_path(ext_path, tmpdir, event_bus, runtime)
+
+            assert runtime["pendingProviderRegistrations"] == [
+                {
+                    "name": "runtime-ai",
+                    "config": {
+                        "api": "openai-completions",
+                        "baseUrl": "https://runtime.example/v1",
+                        "models": [{"id": "runtime-model"}],
+                    },
+                    "extensionPath": ext_path,
+                }
+            ]
+
+    @pytest.mark.asyncio
+    async def test_extension_api_registers_node_style_command_options(self):
+        from pi_coding_agent.core.event_bus import EventBus
+        from pi_coding_agent.core.extensions.loader import (
+            create_extension_runtime,
+            load_extension_from_path,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ext_path = os.path.join(tmpdir, "command_extension.py")
+            self._write_extension(
+                ext_path,
+                """
+def extension_factory(api):
+    def complete(prefix):
+        return [{"label": f"item:{prefix}"}]
+    def handler(args, ctx):
+        return args
+    api.registerCommand("open", {
+        "description": "Open an item",
+        "handler": handler,
+        "getArgumentCompletions": complete,
+    })
+""",
+            )
+            runtime = create_extension_runtime()
+            event_bus = EventBus()
+
+            ext = await load_extension_from_path(ext_path, tmpdir, event_bus, runtime)
+            command = ext.commands["open"]
+
+            assert command.description == "Open an item"
+            assert command.handler("abc", object()) == "abc"
+            assert command.get_argument_completions("ab") == [{"label": "item:ab"}]
 
 
 # ============================================================================

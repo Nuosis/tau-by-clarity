@@ -89,6 +89,8 @@ class TextChunk:
 @dataclass
 class EditorTheme:
     border_color: Callable[[str], str] = lambda x: x  # noqa: E731
+    # Optional background fill applied to every rendered line (borders + input).
+    bg_color: Callable[[str], str] | None = None
     select_list: SelectListTheme = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -172,6 +174,7 @@ class Editor:
         self._last_width = 80
         self._scroll_offset = 0
         self.border_color: Callable[[str], str] = theme.border_color
+        self.bg_color: Callable[[str], str] | None = getattr(theme, "bg_color", None)
 
         self._autocomplete_provider: AutocompleteProvider | None = None
         self._autocomplete_list: SelectList | None = None
@@ -328,14 +331,16 @@ class Editor:
                 after = display_text[ll.cursor_pos:]
                 marker = CURSOR_MARKER if emit_cursor_marker else ""
 
+                # Reset inverse with \x1b[27m (not \x1b[0m) so a background fill
+                # set on the whole line survives past the cursor.
                 if after:
                     after_graphemes = segmenter(after)
                     first_g = after_graphemes[0] if after_graphemes else ""
                     rest_after = after[len(first_g):]
-                    cursor = f"\x1b[7m{first_g}\x1b[0m"
+                    cursor = f"\x1b[7m{first_g}\x1b[27m"
                     display_text = before + marker + cursor + rest_after
                 else:
-                    cursor = "\x1b[7m \x1b[0m"
+                    cursor = "\x1b[7m \x1b[27m"
                     display_text = before + marker + cursor
                     line_vis_w += 1
                     if line_vis_w > content_width and padding_x > 0:
@@ -360,6 +365,11 @@ class Editor:
                 lw = visible_width(ln)
                 lpad = " " * max(0, content_width - lw)
                 result.append(f"{left_pad}{ln}{lpad}{right_pad}")
+
+        # Optional background fill — lines are already padded to ~full width, so
+        # we just wrap each with the bg function (which sets/clears the bg SGR).
+        if self.bg_color is not None:
+            result = [self.bg_color(ln) for ln in result]
 
         return result
 

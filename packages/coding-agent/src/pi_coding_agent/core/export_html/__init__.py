@@ -8,8 +8,12 @@ from __future__ import annotations
 import html
 import json
 import os
+import base64
 from dataclasses import dataclass
 from typing import Any
+
+from .ansi_to_html import ansi_lines_to_html, ansi_to_html
+from .tool_renderer import RenderedToolHtml, ToolHtmlRenderer, create_tool_html_renderer
 
 # Default theme colors (dark theme, matching pi-tui defaults)
 DEFAULT_THEME_COLORS = {
@@ -29,6 +33,7 @@ DEFAULT_THEME_COLORS = {
 class ExportOptions:
     output_path: str | None = None
     theme_name: str | None = None
+    tool_renderer: Any | None = None
 
 
 def _parse_color(color: str) -> tuple[int, int, int] | None:
@@ -158,12 +163,81 @@ def _render_message_html(entry: dict[str, Any]) -> str:
     return ""
 
 
-def _build_html(entries: list[dict[str, Any]], session_id: str, theme_name: str | None) -> str:
+TEMPLATE_RENDERED_TOOLS = {"bash", "read", "write", "edit", "ls"}
+
+
+def _pre_render_custom_tools(entries: list[dict[str, Any]], tool_renderer: Any) -> dict[str, dict[str, str | None]] | None:
+    rendered_tools: dict[str, dict[str, str | None]] = {}
+    for entry in entries:
+        if entry.get("type") != "message":
+            continue
+        msg = entry.get("message") or {}
+        if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+            for block in msg["content"]:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "toolCall" and block.get("name") not in TEMPLATE_RENDERED_TOOLS:
+                    call_html = tool_renderer.render_call(block.get("id"), block.get("name"), block.get("arguments"))
+                    if call_html:
+                        rendered_tools.setdefault(block.get("id"), {})["callHtml"] = call_html
+        if msg.get("role") == "toolResult" and msg.get("toolCallId"):
+            tool_name = msg.get("toolName") or ""
+            tool_call_id = msg.get("toolCallId")
+            existing = rendered_tools.get(tool_call_id)
+            if existing is not None or tool_name not in TEMPLATE_RENDERED_TOOLS:
+                result_html = tool_renderer.render_result(
+                    tool_call_id,
+                    tool_name,
+                    msg.get("content") or [],
+                    msg.get("details"),
+                    bool(msg.get("isError", False)),
+                )
+                if result_html:
+                    target = rendered_tools.setdefault(tool_call_id, {})
+                    target["resultHtmlCollapsed"] = result_html.get("collapsed")
+                    target["resultHtmlExpanded"] = result_html.get("expanded")
+    return rendered_tools or None
+
+
+def _session_data_payload(
+    entries: list[dict[str, Any]],
+    session_id: str,
+    *,
+    header: dict[str, Any] | None = None,
+    leaf_id: str | None = None,
+    system_prompt: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    rendered_tools: dict[str, dict[str, str | None]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "header": header or {"id": session_id},
+        "entries": entries,
+        "leafId": leaf_id,
+        "systemPrompt": system_prompt,
+        "tools": tools,
+        "renderedTools": rendered_tools,
+    }
+
+
+def _encode_session_data(session_data: dict[str, Any]) -> str:
+    raw = json.dumps(session_data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _build_html(
+    entries: list[dict[str, Any]],
+    session_id: str,
+    theme_name: str | None,
+    *,
+    session_data: dict[str, Any] | None = None,
+) -> str:
     """Build complete HTML document from session entries."""
     css_vars = _generate_css_vars(theme_name)
     messages_html = "\n".join(
         r for e in entries if (r := _render_message_html(e))
     )
+
+    encoded_session_data = _encode_session_data(session_data or _session_data_payload(entries, session_id))
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -202,16 +276,23 @@ def _build_html(entries: list[dict[str, Any]], session_id: str, theme_name: str 
 <body>
 <div class="session-container">
   <div class="session-header">Session ID: {html.escape(session_id)}</div>
+  <script type="application/json" id="session-data-base64">{encoded_session_data}</script>
   {messages_html}
 </div>
 </body>
 </html>"""
 
 
+def _coerce_export_options(options: ExportOptions | str | None) -> ExportOptions:
+    if isinstance(options, str):
+        return ExportOptions(output_path=options)
+    return options or ExportOptions()
+
+
 async def export_session_to_html(
     session_manager: Any,
     session_id: str | None = None,
-    options: ExportOptions | None = None,
+    options: ExportOptions | str | None = None,
 ) -> str:
     """
     Export a session to an HTML file.
@@ -219,21 +300,38 @@ async def export_session_to_html(
 
     Returns the output file path.
     """
-    opts = options or ExportOptions()
+    opts = _coerce_export_options(options)
 
     # Load entries from session manager
     entries: list[dict[str, Any]] = []
     sid = session_id or (session_manager.get_session_id() if hasattr(session_manager, "get_session_id") else "unknown")
 
+    header = None
+    leaf_id = None
+    if hasattr(session_manager, "get_header"):
+        header = session_manager.get_header()
+    elif hasattr(session_manager, "getHeader"):
+        header = session_manager.getHeader()
+    if hasattr(session_manager, "get_leaf_id"):
+        leaf_id = session_manager.get_leaf_id()
+    elif hasattr(session_manager, "getLeafId"):
+        leaf_id = session_manager.getLeafId()
+
     if hasattr(session_manager, "get_entries"):
         raw_entries = session_manager.get_entries()
-        for e in raw_entries:
-            if hasattr(e, "__dict__"):
-                entries.append(e.__dict__)
-            elif isinstance(e, dict):
-                entries.append(e)
+    elif hasattr(session_manager, "getEntries"):
+        raw_entries = session_manager.getEntries()
+    else:
+        raw_entries = []
+    for e in raw_entries:
+        if hasattr(e, "__dict__"):
+            entries.append(e.__dict__)
+        elif isinstance(e, dict):
+            entries.append(e)
 
-    html_content = _build_html(entries, sid, opts.theme_name)
+    rendered_tools = _pre_render_custom_tools(entries, opts.tool_renderer) if opts.tool_renderer else None
+    session_data = _session_data_payload(entries, sid, header=header, leaf_id=leaf_id, rendered_tools=rendered_tools)
+    html_content = _build_html(entries, sid, opts.theme_name, session_data=session_data)
 
     output_path = opts.output_path
     if output_path is None:
@@ -272,7 +370,8 @@ async def export_from_file(
                 except json.JSONDecodeError:
                     pass
 
-    html_content = _build_html(entries, session_id, theme_name)
+    session_data = _session_data_payload(entries, session_id)
+    html_content = _build_html(entries, session_id, theme_name, session_data=session_data)
 
     if output_path is None:
         base = os.path.splitext(session_file_path)[0]
@@ -282,3 +381,16 @@ async def export_from_file(
         f.write(html_content)
 
     return output_path
+
+
+__all__ = [
+    "ExportOptions",
+    "RenderedToolHtml",
+    "TEMPLATE_RENDERED_TOOLS",
+    "ToolHtmlRenderer",
+    "ansi_lines_to_html",
+    "ansi_to_html",
+    "create_tool_html_renderer",
+    "export_from_file",
+    "export_session_to_html",
+]

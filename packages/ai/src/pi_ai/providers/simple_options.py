@@ -40,6 +40,7 @@ def build_base_options(
         session_id=options.session_id if options else None,
         headers=options.headers if options else None,
         on_payload=options.on_payload if options else None,
+        on_response=options.on_response if options else None,
         max_retry_delay_ms=options.max_retry_delay_ms if options else None,
         metadata=options.metadata if options else None,
     )

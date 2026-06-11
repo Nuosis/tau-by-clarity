@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +64,14 @@ class ResolvedPaths:
 
 
 @dataclass
+class ConfiguredPackage:
+    source: str
+    scope: Literal["user", "project"]
+    filtered: bool
+    installed_path: str | None = None
+
+
+@dataclass
 class ProgressEvent:
     type: Literal["start", "progress", "complete", "error"]
     action: Literal["install", "remove", "update", "clone", "pull"]
@@ -98,8 +107,12 @@ class _PiManifest:
     themes: list[str] = field(default_factory=list)
 
 
-def _is_pattern(s: str) -> bool:
-    return s.startswith("!") or s.startswith("+") or s.startswith("-") or "*" in s or "?" in s
+def _is_override_pattern(s: str) -> bool:
+    return s.startswith("!") or s.startswith("+") or s.startswith("-")
+
+
+def _is_glob_pattern(s: str) -> bool:
+    return "*" in s or "?" in s
 
 
 def _collect_files(dir_path: str, pattern: str) -> list[str]:
@@ -146,6 +159,32 @@ def _collect_resource_files(dir_path: str, resource_type: ResourceType) -> list[
     return _collect_files(dir_path, _FILE_PATTERNS[resource_type])
 
 
+def _find_git_repo_root(start_dir: str) -> str | None:
+    current = os.path.realpath(os.path.abspath(os.path.expanduser(start_dir)))
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _collect_ancestor_agents_skill_dirs(start_dir: str) -> list[str]:
+    skill_dirs: list[str] = []
+    current = os.path.realpath(os.path.abspath(os.path.expanduser(start_dir)))
+    git_root = _find_git_repo_root(current)
+    while True:
+        skill_dirs.append(os.path.join(current, ".agents", "skills"))
+        if git_root and current == git_root:
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return skill_dirs
+
+
 def _apply_patterns(all_paths: list[str], patterns: list[str], base_dir: str) -> set[str]:
     includes: list[str] = []
     excludes: list[str] = []
@@ -180,6 +219,17 @@ def _apply_patterns(all_paths: list[str], patterns: list[str], base_dir: str) ->
     if force_excludes:
         result = [p for p in result if not _matches(p, force_excludes)]
     return set(result)
+
+
+def _split_patterns(entries: list[str]) -> tuple[list[str], list[str]]:
+    plain: list[str] = []
+    patterns: list[str] = []
+    for entry in entries:
+        if _is_override_pattern(entry):
+            patterns.append(entry)
+        else:
+            plain.append(entry)
+    return plain, patterns
 
 
 class DefaultPackageManager:
@@ -349,16 +399,45 @@ class DefaultPackageManager:
             project_settings = self._settings_manager.get_project_settings()
 
             all_packages: list[tuple[Any, SourceScope]] = []
-            for pkg in global_settings.get("packages", []):
-                all_packages.append((pkg, "user"))
             for pkg in project_settings.get("packages", []):
                 all_packages.append((pkg, "project"))
+            for pkg in global_settings.get("packages", []):
+                all_packages.append((pkg, "user"))
 
-            for pkg, scope in all_packages:
+            for pkg, scope in self._dedupe_packages(all_packages):
                 source_str = pkg if isinstance(pkg, str) else pkg.get("source", "")
+                package_filter = pkg if isinstance(pkg, dict) else None
                 await self._resolve_source_to_accumulator(
-                    source_str, scope, accumulator, on_missing
+                    source_str, scope, accumulator, on_missing, package_filter
                 )
+
+            global_base_dir = self._agent_dir
+            project_base_dir = os.path.join(self._cwd, self._config_dir_name)
+            for rt in RESOURCE_TYPES:
+                project_entries = project_settings.get(rt, []) or []
+                global_entries = global_settings.get(rt, []) or []
+                self._resolve_local_entries(
+                    project_entries,
+                    rt,
+                    accumulator[rt],
+                    PathMetadata(source="local", scope="project", origin="top-level", base_dir=project_base_dir),
+                    project_base_dir,
+                )
+                self._resolve_local_entries(
+                    global_entries,
+                    rt,
+                    accumulator[rt],
+                    PathMetadata(source="local", scope="user", origin="top-level", base_dir=global_base_dir),
+                    global_base_dir,
+                )
+
+            self._add_auto_discovered_resources(
+                accumulator,
+                global_settings,
+                project_settings,
+                global_base_dir,
+                project_base_dir,
+            )
 
         return self._to_resolved_paths(accumulator)
 
@@ -382,6 +461,7 @@ class DefaultPackageManager:
         scope: SourceScope,
         accumulator: dict,
         on_missing: Callable | None = None,
+        package_filter: dict[str, list[str]] | None = None,
     ) -> None:
         parsed = self._parse_source(source_str)
         metadata = PathMetadata(source=source_str, scope=scope, origin="package")
@@ -395,7 +475,9 @@ class DefaultPackageManager:
                     self._add_to_accumulator(accumulator["extensions"], resolved, metadata, True)
                 elif os.path.isdir(resolved):
                     metadata.base_dir = resolved
-                    self._collect_package_resources(resolved, accumulator, metadata)
+                    collected = self._collect_package_resources(resolved, accumulator, metadata, package_filter)
+                    if not collected:
+                        self._add_to_accumulator(accumulator["extensions"], resolved, metadata, True)
             return
 
         if isinstance(parsed, _NpmSource):
@@ -409,7 +491,7 @@ class DefaultPackageManager:
                         raise RuntimeError(f"Missing source: {source_str}")
                 await self._install_npm(parsed, scope, scope == "temporary")
             metadata.base_dir = install_path
-            self._collect_package_resources(install_path, accumulator, metadata)
+            self._collect_package_resources(install_path, accumulator, metadata, package_filter)
             return
 
         if isinstance(parsed, GitSource):
@@ -423,14 +505,24 @@ class DefaultPackageManager:
                         raise RuntimeError(f"Missing source: {source_str}")
                 await self._install_git(parsed, scope)
             metadata.base_dir = install_path
-            self._collect_package_resources(install_path, accumulator, metadata)
+            self._collect_package_resources(install_path, accumulator, metadata, package_filter)
 
     def _collect_package_resources(
         self,
         package_root: str,
         accumulator: dict,
         metadata: PathMetadata,
+        package_filter: dict[str, list[str]] | None = None,
     ) -> bool:
+        if package_filter is not None:
+            for rt in RESOURCE_TYPES:
+                patterns = package_filter.get(rt)
+                if patterns is None:
+                    self._collect_default_resources(package_root, rt, accumulator[rt], metadata)
+                else:
+                    self._apply_package_filter(package_root, patterns, rt, accumulator[rt], metadata)
+            return True
+
         manifest = self._read_pi_manifest(package_root)
         if manifest:
             for rt in RESOURCE_TYPES:
@@ -448,6 +540,197 @@ class DefaultPackageManager:
                 has_any = True
         return has_any
 
+    def _collect_default_resources(
+        self,
+        package_root: str,
+        resource_type: ResourceType,
+        target: dict,
+        metadata: PathMetadata,
+    ) -> None:
+        manifest = self._read_pi_manifest(package_root)
+        entries = getattr(manifest, resource_type, None) if manifest else None
+        if entries is not None:
+            self._add_manifest_entries(entries, package_root, resource_type, target, metadata)
+            return
+        d = os.path.join(package_root, resource_type)
+        if os.path.isdir(d):
+            for f in _collect_resource_files(d, resource_type):
+                self._add_to_accumulator(target, f, metadata, True)
+
+    def _collect_files_from_paths(
+        self,
+        entries: list[str],
+        root: str,
+        resource_type: ResourceType,
+    ) -> list[str]:
+        files: list[str] = []
+        for entry in entries:
+            resolved = os.path.abspath(os.path.join(root, entry))
+            if os.path.isfile(resolved):
+                files.append(resolved)
+            elif os.path.isdir(resolved):
+                files.extend(_collect_resource_files(resolved, resource_type))
+            elif _is_glob_pattern(entry):
+                import glob
+
+                for match in glob.glob(os.path.join(root, entry), recursive=True):
+                    if os.path.isfile(match):
+                        files.append(os.path.abspath(match))
+                    elif os.path.isdir(match):
+                        files.extend(_collect_resource_files(match, resource_type))
+        return list(dict.fromkeys(files))
+
+    def _resolve_local_entries(
+        self,
+        entries: list[str],
+        resource_type: ResourceType,
+        target: dict,
+        metadata: PathMetadata,
+        base_dir: str,
+    ) -> None:
+        if not entries:
+            return
+        plain, patterns = _split_patterns(entries)
+        all_files = self._collect_files_from_paths(plain, base_dir, resource_type)
+        enabled = _apply_patterns(all_files, patterns, base_dir)
+        for f in all_files:
+            self._add_to_accumulator(target, f, metadata, f in enabled)
+
+    def _is_enabled_by_overrides(self, file_path: str, patterns: list[str], base_dir: str) -> bool:
+        overrides = [pattern for pattern in patterns if _is_override_pattern(pattern)]
+        excludes = [pattern[1:] for pattern in overrides if pattern.startswith("!")]
+        force_includes = [pattern[1:] for pattern in overrides if pattern.startswith("+")]
+        force_excludes = [pattern[1:] for pattern in overrides if pattern.startswith("-")]
+
+        def _matches(path: str, pats: list[str]) -> bool:
+            rel = os.path.relpath(path, base_dir)
+            name = os.path.basename(path)
+            return any(
+                fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(path, pat)
+                for pat in pats
+            )
+
+        enabled = True
+        if excludes and _matches(file_path, excludes):
+            enabled = False
+        if force_includes and _matches(file_path, force_includes):
+            enabled = True
+        if force_excludes and _matches(file_path, force_excludes):
+            enabled = False
+        return enabled
+
+    def _add_auto_resources(
+        self,
+        resource_type: ResourceType,
+        paths: list[str],
+        target: dict,
+        metadata: PathMetadata,
+        overrides: list[str],
+        base_dir: str,
+    ) -> None:
+        for path in paths:
+            self._add_to_accumulator(
+                target,
+                path,
+                metadata,
+                self._is_enabled_by_overrides(path, overrides, base_dir),
+            )
+
+    def _add_auto_discovered_resources(
+        self,
+        accumulator: dict,
+        global_settings: dict[str, Any],
+        project_settings: dict[str, Any],
+        global_base_dir: str,
+        project_base_dir: str,
+    ) -> None:
+        user_metadata = PathMetadata(source="auto", scope="user", origin="top-level", base_dir=global_base_dir)
+        project_metadata = PathMetadata(source="auto", scope="project", origin="top-level", base_dir=project_base_dir)
+        project_trusted = self._settings_manager is None or self._settings_manager.is_project_trusted()
+        for rt in RESOURCE_TYPES:
+            project_dir = os.path.join(project_base_dir, rt)
+            if project_trusted:
+                self._add_auto_resources(
+                    rt,
+                    _collect_resource_files(project_dir, rt),
+                    accumulator[rt],
+                    project_metadata,
+                    project_settings.get(rt, []) or [],
+                    project_base_dir,
+                )
+            user_dir = os.path.join(global_base_dir, rt)
+            self._add_auto_resources(
+                rt,
+                _collect_resource_files(user_dir, rt),
+                accumulator[rt],
+                user_metadata,
+                global_settings.get(rt, []) or [],
+                global_base_dir,
+            )
+
+        user_agents_skills_dir = os.path.join(os.path.expanduser("~"), ".agents", "skills")
+        user_agents_base_dir = os.path.dirname(user_agents_skills_dir)
+        user_agents_metadata = PathMetadata(
+            source="auto",
+            scope="user",
+            origin="top-level",
+            base_dir=user_agents_base_dir,
+        )
+        self._add_auto_resources(
+            "skills",
+            _collect_skill_entries(user_agents_skills_dir),
+            accumulator["skills"],
+            user_agents_metadata,
+            global_settings.get("skills", []) or [],
+            user_agents_base_dir,
+        )
+
+        if project_trusted:
+            user_agents_real = os.path.realpath(user_agents_skills_dir)
+            for agents_skills_dir in _collect_ancestor_agents_skill_dirs(self._cwd):
+                if os.path.realpath(agents_skills_dir) == user_agents_real:
+                    continue
+                agents_base_dir = os.path.dirname(agents_skills_dir)
+                agents_metadata = PathMetadata(
+                    source="auto",
+                    scope="project",
+                    origin="top-level",
+                    base_dir=agents_base_dir,
+                )
+                self._add_auto_resources(
+                    "skills",
+                    _collect_skill_entries(agents_skills_dir),
+                    accumulator["skills"],
+                    agents_metadata,
+                    project_settings.get("skills", []) or [],
+                    agents_base_dir,
+                )
+
+    def _collect_manifest_files(self, package_root: str, resource_type: ResourceType) -> list[str]:
+        manifest = self._read_pi_manifest(package_root)
+        entries = getattr(manifest, resource_type, []) if manifest else []
+        if entries:
+            plain, patterns = _split_patterns(entries)
+            all_files = self._collect_files_from_paths(plain, package_root, resource_type)
+            if patterns:
+                return sorted(_apply_patterns(all_files, patterns, package_root))
+            return all_files
+        d = os.path.join(package_root, resource_type)
+        return _collect_resource_files(d, resource_type) if os.path.isdir(d) else []
+
+    def _apply_package_filter(
+        self,
+        package_root: str,
+        patterns: list[str],
+        resource_type: ResourceType,
+        target: dict,
+        metadata: PathMetadata,
+    ) -> None:
+        all_files = self._collect_manifest_files(package_root, resource_type)
+        enabled = _apply_patterns(all_files, patterns, package_root) if patterns else set()
+        for f in all_files:
+            self._add_to_accumulator(target, f, metadata, f in enabled)
+
     def _add_manifest_entries(
         self,
         entries: list[str],
@@ -458,15 +741,8 @@ class DefaultPackageManager:
     ) -> None:
         if not entries:
             return
-        plain = [e for e in entries if not _is_pattern(e)]
-        patterns = [e for e in entries if _is_pattern(e)]
-        all_files: list[str] = []
-        for e in plain:
-            resolved = os.path.abspath(os.path.join(root, e))
-            if os.path.isfile(resolved):
-                all_files.append(resolved)
-            elif os.path.isdir(resolved):
-                all_files.extend(_collect_resource_files(resolved, resource_type))
+        plain, patterns = _split_patterns(entries)
+        all_files = self._collect_files_from_paths(plain, root, resource_type)
 
         enabled = _apply_patterns(all_files, patterns, root)
         for f in all_files:
@@ -502,12 +778,40 @@ class DefaultPackageManager:
         if path and path not in target:
             target[path] = (metadata, enabled)
 
+    def _resource_precedence_rank(self, metadata: PathMetadata) -> int:
+        if metadata.origin == "package":
+            return 4
+        scope_base = 0 if metadata.scope == "project" else 2
+        return scope_base + (0 if metadata.source == "local" else 1)
+
+    def _dedupe_packages(self, packages: list[tuple[Any, SourceScope]]) -> list[tuple[Any, SourceScope]]:
+        seen: dict[str, tuple[Any, SourceScope]] = {}
+        for pkg, scope in packages:
+            source_str = pkg if isinstance(pkg, str) else pkg.get("source", "")
+            if not source_str:
+                continue
+            identity = self._get_package_identity(source_str, scope)
+            existing = seen.get(identity)
+            if existing is None or (scope == "project" and existing[1] == "user"):
+                seen[identity] = (pkg, scope)
+        return list(seen.values())
+
     def _to_resolved_paths(self, accumulator: dict) -> ResolvedPaths:
         def _build(entries: dict) -> list[ResolvedResource]:
-            return [
+            resolved = [
                 ResolvedResource(path=p, enabled=e, metadata=m)
                 for p, (m, e) in entries.items()
             ]
+            resolved.sort(key=lambda item: self._resource_precedence_rank(item.metadata))
+            seen: set[str] = set()
+            deduped: list[ResolvedResource] = []
+            for item in resolved:
+                canonical_path = os.path.realpath(os.path.abspath(item.path))
+                if canonical_path in seen:
+                    continue
+                seen.add(canonical_path)
+                deduped.append(item)
+            return deduped
 
         return ResolvedPaths(
             extensions=_build(accumulator["extensions"]),
@@ -548,6 +852,7 @@ class DefaultPackageManager:
         global_settings = self._settings_manager.get_global_settings()
         project_settings = self._settings_manager.get_project_settings()
         target_identity = self._get_package_identity(source) if source else None
+        matched = False
 
         for pkg in global_settings.get("packages", []):
             source_str = pkg if isinstance(pkg, str) else pkg.get("source", "")
@@ -555,6 +860,7 @@ class DefaultPackageManager:
                 continue
             if target_identity and self._get_package_identity(source_str, "user") != target_identity:
                 continue
+            matched = True
             await self._update_source_for_scope(source_str, "user")
 
         for pkg in project_settings.get("packages", []):
@@ -563,7 +869,22 @@ class DefaultPackageManager:
                 continue
             if target_identity and self._get_package_identity(source_str, "project") != target_identity:
                 continue
+            matched = True
             await self._update_source_for_scope(source_str, "project")
+
+        if source and not matched:
+            raise RuntimeError(f"No matching package found for {source}")
+
+    async def self_update(self, force: bool = False, package_name: str = "pi-coding-agent") -> None:
+        """Update the Python CLI package that provides this harness."""
+        args = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
+        if force:
+            args.insert(-1, "--force-reinstall")
+
+        async def _op() -> None:
+            await self._run_command(args)
+
+        await self._with_progress("update", package_name, f"Updating {package_name}...", _op)
 
     async def _update_source_for_scope(self, source: str, scope: SourceScope) -> None:
         parsed = self._parse_source(source)
@@ -684,3 +1005,76 @@ class DefaultPackageManager:
         else:
             self._settings_manager.set_packages(new_packages)
         return True
+
+    def list_configured_packages(self) -> list[ConfiguredPackage]:
+        if not self._settings_manager:
+            return []
+        configured: list[ConfiguredPackage] = []
+        for pkg in self._settings_manager.get_global_settings().get("packages", []) or []:
+            source = pkg if isinstance(pkg, str) else pkg.get("source", "")
+            if source:
+                configured.append(
+                    ConfiguredPackage(
+                        source=source,
+                        scope="user",
+                        filtered=isinstance(pkg, dict),
+                        installed_path=self.get_installed_path(source, "user"),
+                    )
+                )
+        for pkg in self._settings_manager.get_project_settings().get("packages", []) or []:
+            source = pkg if isinstance(pkg, str) else pkg.get("source", "")
+            if source:
+                configured.append(
+                    ConfiguredPackage(
+                        source=source,
+                        scope="project",
+                        filtered=isinstance(pkg, dict),
+                        installed_path=self.get_installed_path(source, "project"),
+                    )
+                )
+        return configured
+
+    async def install_and_persist(self, source: str, options: dict[str, Any] | None = None) -> None:
+        await self.install(source, options)
+        self.add_source_to_settings(source, options)
+
+    async def remove_and_persist(self, source: str, options: dict[str, Any] | None = None) -> bool:
+        await self.remove(source, options)
+        return self.remove_source_from_settings(source, options)
+
+
+DefaultPackageManager.installAndPersist = DefaultPackageManager.install_and_persist
+DefaultPackageManager.removeAndPersist = DefaultPackageManager.remove_and_persist
+DefaultPackageManager.selfUpdate = DefaultPackageManager.self_update
+
+
+def _package_manager_add_source_to_settings(self, source, options=None):
+    return self.add_source_to_settings(source, options)
+
+
+def _package_manager_get_installed_path(self, source, scope):
+    return self.get_installed_path(source, scope)
+
+
+def _package_manager_list_configured_packages(self):
+    return self.list_configured_packages()
+
+
+def _package_manager_remove_source_from_settings(self, source, options=None):
+    return self.remove_source_from_settings(source, options)
+
+
+async def _package_manager_resolve_extension_sources(self, sources, options=None):
+    return await self.resolve_extension_sources(sources, options)
+
+
+def _package_manager_set_progress_callback(self, callback):
+    return self.set_progress_callback(callback)
+
+
+DefaultPackageManager.addSourceToSettings = _package_manager_add_source_to_settings
+DefaultPackageManager.getInstalledPath = _package_manager_get_installed_path
+DefaultPackageManager.resolveExtensionSources = _package_manager_resolve_extension_sources
+DefaultPackageManager.removeSourceFromSettings = _package_manager_remove_source_from_settings
+DefaultPackageManager.setProgressCallback = _package_manager_set_progress_callback
+DefaultPackageManager.listConfiguredPackages = _package_manager_list_configured_packages

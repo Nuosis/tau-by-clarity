@@ -26,6 +26,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
+markers = [
+    "live: tests that require live external provider credentials or network access",
+]
 testpaths = [
     "packages/ai/tests",
     "packages/agent/tests",

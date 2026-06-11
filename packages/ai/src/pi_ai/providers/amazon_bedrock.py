@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from pi_ai.models import calculate_cost
+from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.utils.event_stream import EventStream
 from pi_ai.utils.json_parse import parse_streaming_json
 from pi_ai.utils.sanitize_unicode import sanitize_surrogates
@@ -163,8 +164,7 @@ def stream_bedrock(
             if add_fields:
                 request["additionalModelRequestFields"] = add_fields
 
-            if opts.get("on_payload"):
-                opts["on_payload"](request)
+            request = await apply_on_payload(request, model, opts.get("on_payload"))
 
             response = client.converse_stream(**request)
 

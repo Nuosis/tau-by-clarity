@@ -185,11 +185,15 @@ class TestSimpleOptionsFull:
 class TestProviderStreamReturn:
     """Verify all provider stream functions return EventStreams immediately without blocking."""
 
+    def _close_scheduled_coroutine(self, coro):
+        coro.close()
+        return MagicMock()
+
     def test_amazon_bedrock_returns_event_stream(self):
         from pi_ai.providers.amazon_bedrock import stream_bedrock
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_bedrock(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 
@@ -197,7 +201,7 @@ class TestProviderStreamReturn:
         from pi_ai.providers.google_vertex import stream_google_vertex
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_google_vertex(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 
@@ -205,7 +209,7 @@ class TestProviderStreamReturn:
         from pi_ai.providers.openai_responses import stream_openai_responses
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_openai_responses(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 
@@ -213,7 +217,7 @@ class TestProviderStreamReturn:
         from pi_ai.providers.azure_openai_responses import stream_azure_openai_responses
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_azure_openai_responses(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 
@@ -221,7 +225,7 @@ class TestProviderStreamReturn:
         from pi_ai.providers.openai_codex_responses import stream_openai_codex_responses
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_openai_codex_responses(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 
@@ -229,7 +233,7 @@ class TestProviderStreamReturn:
         from pi_ai.providers.google_gemini_cli import stream_google_gemini_cli
         from pi_ai.utils.event_stream import EventStream
 
-        with patch("asyncio.ensure_future"):
+        with patch("asyncio.ensure_future", side_effect=self._close_scheduled_coroutine):
             stream = stream_google_gemini_cli(_make_model(), _make_context())
             assert isinstance(stream, EventStream)
 

@@ -91,12 +91,26 @@ class TestKeybindingsManager:
         keys = mgr.get_keys_for_action("submit")
         if keys:
             assert mgr.matches("submit", keys[0])
+            assert mgr.matches(keys[0], "tui.input.submit")
 
     def test_set_keybinding(self):
         from pi_coding_agent.core.keybindings import KeybindingsManager
         mgr = KeybindingsManager()
         mgr.set_keybinding("submit", "ctrl+space")
         assert mgr.matches("submit", "ctrl+space")
+        assert mgr.matches("ctrl+space", "tui.input.submit")
+
+    def test_node_style_keybinding_ids_and_legacy_config_migration(self):
+        from pi_coding_agent.core.keybindings import KeybindingsManager
+
+        mgr = KeybindingsManager({"interrupt": "ctrl+x", "tui.input.submit": "ctrl+enter"})
+
+        assert mgr.get_keys_for_action("app.interrupt") == ["ctrl+x"]
+        assert mgr.get_keys_for_action("interrupt") == ["ctrl+x"]
+        assert mgr.matches("ctrl+x", "app.interrupt")
+        assert mgr.matches("app.interrupt", "ctrl+x")
+        assert mgr.matches("ctrl+enter", "tui.input.submit")
+        assert mgr.get_effective_config()["app.interrupt"] == "ctrl+x"
 
     def test_create_from_file(self, tmp_path):
         from pi_coding_agent.core.keybindings import KeybindingsManager
@@ -104,6 +118,7 @@ class TestKeybindingsManager:
         kb_file.write_text(json.dumps({"submit": "ctrl+enter"}))
         mgr = KeybindingsManager.create(str(tmp_path))
         assert mgr.matches("submit", "ctrl+enter")
+        assert mgr.matches("ctrl+enter", "tui.input.submit")
 
     def test_get_config(self):
         from pi_coding_agent.core.keybindings import KeybindingsManager
@@ -337,6 +352,14 @@ class TestPrintMode:
         assert opts.mode == "json"
         assert opts.initial_message == "hello"
 
+    def test_print_mode_options_accept_node_style_fields(self):
+        from pi_coding_agent.modes.print_mode import PrintModeOptions
+        opts = PrintModeOptions(mode="json", initialMessage="hello", initialImages=[{"type": "image"}])
+        assert opts.initial_message == "hello"
+        assert opts.initialMessage == "hello"
+        assert opts.initial_images == [{"type": "image"}]
+        assert opts.initialImages == [{"type": "image"}]
+
     def test_format_args(self):
         from pi_coding_agent.modes.print_mode import _format_args
         result = _format_args({"key": "value", "num": 42})
@@ -354,6 +377,23 @@ class TestPrintMode:
         d = _event_to_dict(FakeEvent())
         assert d["type"] == "agent_end"
         assert d["reason"] == "stop"
+
+    def test_event_to_dict_tool_end_includes_result(self):
+        from pi_coding_agent.modes.print_mode import _event_to_dict
+
+        class FakeEvent:
+            type = "tool_execution_end"
+            tool_call_id = "tool-1"
+            tool_name = "example"
+            result = {"content": [{"type": "text", "text": "details"}]}
+            is_error = True
+
+        d = _event_to_dict(FakeEvent())
+        assert d["type"] == "tool_execution_end"
+        assert d["toolCallId"] == "tool-1"
+        assert d["toolName"] == "example"
+        assert d["result"] == {"content": [{"type": "text", "text": "details"}]}
+        assert d["isError"] is True
 
     def test_handle_print_event_does_not_raise(self):
         from pi_coding_agent.modes.print_mode import _handle_print_event
@@ -497,6 +537,67 @@ class TestModelRegistryExtended:
         # Should return None or empty dict when no headers defined
         result = mr.resolve_headers(m)
         assert result is None or isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_node_style_model_registry_auth_and_display_surface(self, monkeypatch):
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        monkeypatch.setenv("RUNTIME_AI_KEY", "runtime-secret")
+        registry = ModelRegistry()
+        registry.registerProvider(
+            "runtime-ai",
+            {
+                "name": "Runtime AI",
+                "api": "openai-completions",
+                "baseUrl": "https://runtime.example/v1",
+                "apiKey": "$RUNTIME_AI_KEY",
+                "authHeader": True,
+                "headers": {"X-Provider": "provider"},
+                "models": [
+                    {
+                        "id": "runtime-model",
+                        "headers": {"X-Model": "model"},
+                    }
+                ],
+            },
+        )
+
+        model = registry.find("runtime-ai", "runtime-model")
+
+        assert model is not None
+        assert registry.getProviderDisplayName("runtime-ai") == "Runtime AI"
+        assert registry.hasConfiguredAuth(model) is True
+        assert registry.getProviderAuthStatus("runtime-ai") == {
+            "configured": True,
+            "source": "environment",
+            "label": "RUNTIME_AI_KEY",
+        }
+        assert await registry.getApiKeyForProvider("runtime-ai") == "runtime-secret"
+
+        auth = await registry.getApiKeyAndHeaders(model)
+        assert auth["ok"] is True
+        assert auth["apiKey"] == "runtime-secret"
+        assert auth["headers"]["Authorization"] == "Bearer runtime-secret"
+        assert auth["headers"]["X-Provider"] == "provider"
+        assert auth["headers"]["X-Model"] == "model"
+
+        registry.resetApiProviders()
+        assert registry.find("runtime-ai", "runtime-model") is None
+
+    def test_find_exact_model_reference_match_rejects_ambiguous_bare_ids(self):
+        from types import SimpleNamespace
+
+        from pi_coding_agent.core.model_resolver import find_exact_model_reference_match
+
+        openai_model = SimpleNamespace(provider="openai", id="shared-model")
+        anthropic_model = SimpleNamespace(provider="anthropic", id="shared-model")
+        unique_model = SimpleNamespace(provider="openai", id="unique-model")
+        models = [openai_model, anthropic_model, unique_model]
+
+        assert find_exact_model_reference_match("unique-model", models) is unique_model
+        assert find_exact_model_reference_match("openai/shared-model", models) is openai_model
+        assert find_exact_model_reference_match("OPENAI/SHARED-MODEL", models) is openai_model
+        assert find_exact_model_reference_match("shared-model", models) is None
 
 
 # ── core/settings_manager extended tests ─────────────────────────────────────

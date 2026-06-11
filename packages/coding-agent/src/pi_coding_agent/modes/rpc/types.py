@@ -122,6 +122,7 @@ class RpcCommandBash(BaseModel):
     type: Literal["bash"]
     id: str | None = None
     command: str
+    excludeFromContext: bool | None = None
 
 
 class RpcCommandAbortBash(BaseModel):
@@ -150,6 +151,11 @@ class RpcCommandFork(BaseModel):
     type: Literal["fork"]
     id: str | None = None
     entryId: str
+
+
+class RpcCommandClone(BaseModel):
+    type: Literal["clone"]
+    id: str | None = None
 
 
 class RpcCommandGetForkMessages(BaseModel):
@@ -202,6 +208,7 @@ RpcCommand = Union[
     RpcCommandExportHtml,
     RpcCommandSwitchSession,
     RpcCommandFork,
+    RpcCommandClone,
     RpcCommandGetForkMessages,
     RpcCommandGetLastAssistantText,
     RpcCommandSetSessionName,
@@ -218,8 +225,7 @@ class RpcSlashCommand(BaseModel):
     name: str
     description: str | None = None
     source: Literal["extension", "prompt", "skill"]
-    location: Literal["user", "project", "path"] | None = None
-    path: str | None = None
+    sourceInfo: dict[str, Any]
 
 
 # ============================================================================

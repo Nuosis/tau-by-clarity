@@ -5,8 +5,76 @@ from __future__ import annotations
 
 import json
 import os
+from pi_coding_agent.config import CONFIG_DIR_NAME
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
+
+
+LockResult = dict[str, Any]
+
+
+class AuthStorageBackend:
+    def with_lock(self, fn: Callable[[str | None], LockResult]) -> Any:
+        raise NotImplementedError
+
+    async def with_lock_async(self, fn: Callable[[str | None], Awaitable[LockResult]]) -> Any:
+        raise NotImplementedError
+
+
+class FileAuthStorageBackend(AuthStorageBackend):
+    def __init__(self, auth_path: str | None = None) -> None:
+        from pi_coding_agent.config import get_auth_path
+
+        self.auth_path = os.path.abspath(os.path.expanduser(auth_path or get_auth_path()))
+
+    def _ensure_file(self) -> None:
+        os.makedirs(os.path.dirname(self.auth_path), mode=0o700, exist_ok=True)
+        if not os.path.exists(self.auth_path):
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            fd = os.open(self.auth_path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("{}")
+
+    def with_lock(self, fn: Callable[[str | None], LockResult]) -> Any:
+        self._ensure_file()
+        with open(self.auth_path, encoding="utf-8") as f:
+            current = f.read()
+        result = fn(current)
+        if "next" in result:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            fd = os.open(self.auth_path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(result["next"])
+        return result.get("result")
+
+    async def with_lock_async(self, fn: Callable[[str | None], Awaitable[LockResult]]) -> Any:
+        self._ensure_file()
+        with open(self.auth_path, encoding="utf-8") as f:
+            current = f.read()
+        result = await fn(current)
+        if "next" in result:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            fd = os.open(self.auth_path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(result["next"])
+        return result.get("result")
+
+
+class InMemoryAuthStorageBackend(AuthStorageBackend):
+    def __init__(self, value: str | None = None) -> None:
+        self.value = value
+
+    def with_lock(self, fn: Callable[[str | None], LockResult]) -> Any:
+        result = fn(self.value)
+        if "next" in result:
+            self.value = result["next"]
+        return result.get("result")
+
+    async def with_lock_async(self, fn: Callable[[str | None], Awaitable[LockResult]]) -> Any:
+        result = await fn(self.value)
+        if "next" in result:
+            self.value = result["next"]
+        return result.get("result")
 
 
 class AuthStorage:
@@ -17,79 +85,189 @@ class AuthStorage:
     Storage: ~/.pi/agent/auth.json
     """
 
-    AUTH_DIR = os.path.join(os.path.expanduser("~"), ".pi", "agent")
+    AUTH_DIR = os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent")
     AUTH_FILE = os.path.join(AUTH_DIR, "auth.json")
 
-    def __init__(self) -> None:
+    def __init__(self, storage: AuthStorageBackend | None = None) -> None:
         self._data: dict[str, Any] = {}
         self._loaded = False
         self._runtime_overrides: dict[str, str] = {}  # Runtime API key overrides (in-memory only)
+        self._fallback_resolver: Callable[[str], str | None] | None = None
+        self._errors: list[Exception] = []
+        self._storage = storage
+
+    @classmethod
+    def create(cls, auth_path: str | None = None) -> "AuthStorage":
+        return cls(FileAuthStorageBackend(auth_path))
+
+    @classmethod
+    def from_storage(cls, storage: AuthStorageBackend) -> "AuthStorage":
+        return cls(storage)
+
+    @classmethod
+    def in_memory(cls, data: dict[str, Any] | None = None) -> "AuthStorage":
+        storage = InMemoryAuthStorageBackend(json.dumps(data or {}, indent=2))
+        return cls.from_storage(storage)
+
+    def _record_error(self, error: Any) -> None:
+        self._errors.append(error if isinstance(error, Exception) else Exception(str(error)))
+
+    def _parse_data(self, content: str | None) -> dict[str, Any]:
+        if not content:
+            return {}
+        raw = json.loads(content)
+        if not isinstance(raw, dict):
+            return {}
+        return raw
+
+    def _read_storage(self) -> dict[str, Any]:
+        if self._storage is not None:
+            content_holder: dict[str, str | None] = {"content": None}
+            self._storage.with_lock(lambda current: (content_holder.update(content=current) or {"result": None}))
+            return self._parse_data(content_holder["content"])
+        if os.path.exists(self.AUTH_FILE):
+            with open(self.AUTH_FILE, encoding="utf-8") as f:
+                return self._parse_data(f.read())
+        return {}
+
+    def _write_storage(self, data: dict[str, Any]) -> None:
+        serialized = json.dumps(data, indent=2)
+        if self._storage is not None:
+            self._storage.with_lock(lambda current: {"result": None, "next": serialized})
+            return
+        os.makedirs(self.AUTH_DIR, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(self.AUTH_FILE, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(serialized)
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             self._load()
 
     def _load(self) -> None:
-        if os.path.exists(self.AUTH_FILE):
-            try:
-                with open(self.AUTH_FILE, encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                self._data = {}
+        try:
+            self._data = self._read_storage()
+        except Exception as exc:
+            self._data = {}
+            self._record_error(exc)
         self._loaded = True
 
     def _save(self) -> None:
-        os.makedirs(self.AUTH_DIR, exist_ok=True)
-        # Write with restricted permissions
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        mode = 0o600
-        fd = os.open(self.AUTH_FILE, flags, mode)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2)
-        except Exception:
-            os.close(fd)
+            self._write_storage(self._data)
+        except Exception as exc:
+            self._record_error(exc)
             raise
+
+    def reload(self) -> None:
+        self._loaded = False
+        self._load()
+
+    def get(self, provider: str) -> dict[str, Any] | None:
+        self._ensure_loaded()
+        credential = self._data.get(provider)
+        if isinstance(credential, dict) and credential.get("type") in {"api_key", "oauth"}:
+            return dict(credential)
+        if provider in self._data.get("api_keys", {}):
+            return {"type": "api_key", "key": self._data["api_keys"][provider]}
+        if provider in self._data.get("oauth_tokens", {}):
+            return {"type": "oauth", **self._data["oauth_tokens"][provider]}
+        return None
+
+    def set(self, provider: str, credential: dict[str, Any]) -> None:
+        self._ensure_loaded()
+        self._data[provider] = dict(credential)
+        if credential.get("type") == "api_key":
+            self._data.setdefault("api_keys", {})[provider] = credential.get("key")
+        elif credential.get("type") == "oauth":
+            oauth = dict(credential)
+            oauth.pop("type", None)
+            self._data.setdefault("oauth_tokens", {})[provider] = oauth
+        self._save()
+
+    def remove(self, provider: str) -> None:
+        self._ensure_loaded()
+        self._data.pop(provider, None)
+        self._data.get("api_keys", {}).pop(provider, None)
+        self._data.get("oauth_tokens", {}).pop(provider, None)
+        self._save()
+
+    def list(self) -> list[str]:
+        self._ensure_loaded()
+        providers: set[str] = set()
+        for provider, value in self._data.items():
+            if provider not in {"api_keys", "oauth_tokens"} and isinstance(value, dict):
+                providers.add(provider)
+        providers.update(self._data.get("api_keys", {}).keys())
+        providers.update(self._data.get("oauth_tokens", {}).keys())
+        return sorted(providers)
+
+    def has(self, provider: str) -> bool:
+        return self.get(provider) is not None
+
+    def has_auth(self, provider: str) -> bool:
+        if provider in self._runtime_overrides:
+            return True
+        if self.has(provider):
+            return True
+        from pi_ai.env_api_keys import get_env_api_key
+        if get_env_api_key(provider):
+            return True
+        return bool(self._fallback_resolver and self._fallback_resolver(provider))
+
+    def get_auth_status(self, provider: str) -> dict[str, Any]:
+        if self.has(provider):
+            return {"configured": True, "source": "stored"}
+        if provider in self._runtime_overrides:
+            return {"configured": False, "source": "runtime", "label": "--api-key"}
+        from pi_ai.env_api_keys import get_env_api_key
+        if get_env_api_key(provider):
+            return {"configured": False, "source": "environment"}
+        if self._fallback_resolver and self._fallback_resolver(provider):
+            return {"configured": False, "source": "fallback", "label": "custom provider config"}
+        return {"configured": False}
+
+    def get_all(self) -> dict[str, Any]:
+        self._ensure_loaded()
+        return {provider: credential for provider in self.list() if (credential := self.get(provider))}
+
+    def drain_errors(self) -> list[Exception]:
+        drained = list(self._errors)
+        self._errors = []
+        return drained
 
     def get_api_key(self, provider: str) -> str | None:
         """Get the stored API key for a provider."""
-        self._ensure_loaded()
-        return self._data.get("api_keys", {}).get(provider)
+        credential = self.get(provider)
+        if credential and credential.get("type") == "api_key":
+            return credential.get("key")
+        return None
 
     def set_api_key(self, provider: str, api_key: str) -> None:
         """Store an API key for a provider."""
-        self._ensure_loaded()
-        if "api_keys" not in self._data:
-            self._data["api_keys"] = {}
-        self._data["api_keys"][provider] = api_key
-        self._save()
+        self.set(provider, {"type": "api_key", "key": api_key})
 
     def delete_api_key(self, provider: str) -> None:
         """Delete the stored API key for a provider."""
-        self._ensure_loaded()
-        if "api_keys" in self._data and provider in self._data["api_keys"]:
-            del self._data["api_keys"][provider]
-            self._save()
+        self.remove(provider)
 
     def get_oauth_token(self, provider: str) -> dict[str, Any] | None:
         """Get the stored OAuth token for a provider."""
-        self._ensure_loaded()
-        return self._data.get("oauth_tokens", {}).get(provider)
+        credential = self.get(provider)
+        if credential and credential.get("type") == "oauth":
+            token = dict(credential)
+            token.pop("type", None)
+            return token
+        return None
 
     def set_oauth_token(self, provider: str, token: dict[str, Any]) -> None:
         """Store an OAuth token for a provider."""
-        self._ensure_loaded()
-        if "oauth_tokens" not in self._data:
-            self._data["oauth_tokens"] = {}
-        self._data["oauth_tokens"][provider] = token
-        self._save()
+        self.set(provider, {"type": "oauth", **token})
 
     def delete_oauth_token(self, provider: str) -> None:
         """Delete the stored OAuth token for a provider."""
-        self._ensure_loaded()
-        if "oauth_tokens" in self._data and provider in self._data["oauth_tokens"]:
-            del self._data["oauth_tokens"][provider]
-            self._save()
+        self.remove(provider)
 
     def set_runtime_api_key(self, provider: str, api_key: str) -> None:
         """
@@ -100,6 +278,12 @@ class AuthStorage:
         Used by openclaw to inject API keys from auth-profiles.json.
         """
         self._runtime_overrides[provider] = api_key
+
+    def remove_runtime_api_key(self, provider: str) -> None:
+        self._runtime_overrides.pop(provider, None)
+
+    def set_fallback_resolver(self, resolver: Callable[[str], str | None] | None) -> None:
+        self._fallback_resolver = resolver
 
     def resolve_api_key(self, provider: str) -> str | None:
         """
@@ -136,12 +320,15 @@ class AuthStorage:
         
         # 4. Environment variable fallback
         from pi_ai.env_api_keys import get_env_api_key
-        return get_env_api_key(provider)
+        env_key = get_env_api_key(provider)
+        if env_key:
+            return env_key
+        return self._fallback_resolver(provider) if self._fallback_resolver else None
 
     def is_using_oauth(self, provider: str) -> bool:
         """Check if provider uses OAuth authentication."""
-        self._ensure_loaded()
-        return provider in self._data.get("oauth_tokens", {})
+        credential = self.get(provider)
+        return bool(credential and credential.get("type") == "oauth")
 
     async def login(
         self,
@@ -274,12 +461,32 @@ class AuthStorage:
 
     def get_oauth_providers(self) -> list[str]:
         """Get list of providers with OAuth credentials."""
-        self._ensure_loaded()
-        return list(self._data.get("oauth_tokens", {}).keys())
+        return [provider for provider in self.list() if self.is_using_oauth(provider)]
 
     def list_stored_providers(self) -> list[str]:
         """List all providers with stored credentials."""
-        self._ensure_loaded()
-        api_providers = list(self._data.get("api_keys", {}).keys())
-        oauth_providers = list(self._data.get("oauth_tokens", {}).keys())
-        return sorted(set(api_providers + oauth_providers))
+        return self.list()
+
+
+AuthStorage.fromStorage = AuthStorage.from_storage
+AuthStorage.inMemory = AuthStorage.in_memory
+AuthStorage.setRuntimeApiKey = AuthStorage.set_runtime_api_key
+AuthStorage.removeRuntimeApiKey = AuthStorage.remove_runtime_api_key
+AuthStorage.setFallbackResolver = AuthStorage.set_fallback_resolver
+AuthStorage.resolveApiKey = AuthStorage.resolve_api_key
+AuthStorage.getApiKey = AuthStorage.get_api_key
+AuthStorage.setApiKey = AuthStorage.set_api_key
+AuthStorage.deleteApiKey = AuthStorage.delete_api_key
+AuthStorage.getAuthStatus = AuthStorage.get_auth_status
+AuthStorage.hasAuth = AuthStorage.has_auth
+AuthStorage.getAll = AuthStorage.get_all
+AuthStorage.drainErrors = AuthStorage.drain_errors
+AuthStorage.listStoredProviders = AuthStorage.list_stored_providers
+AuthStorage.getOAuthProviders = AuthStorage.get_oauth_providers
+
+__all__ = [
+    "AuthStorage",
+    "AuthStorageBackend",
+    "FileAuthStorageBackend",
+    "InMemoryAuthStorageBackend",
+]

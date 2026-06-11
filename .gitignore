@@ -13,6 +13,12 @@ ENV/
 .venv/
 uv.lock
 
+# Build artifacts
+build/
+*.egg-info/
+dist/
+.pi-py/
+
 # IDE
 .vscode/
 .idea/
@@ -48,3 +54,4 @@ evals/fixtures/clarify_chat/
 
 # Downloaded corpora (public-domain, reproducible via curl)
 evals/fixtures/corpus/
+result.txt

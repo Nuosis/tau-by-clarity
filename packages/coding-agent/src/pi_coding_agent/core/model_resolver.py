@@ -22,14 +22,14 @@ if TYPE_CHECKING:
 DEFAULT_MODEL_PER_PROVIDER: dict[str, str] = {
     "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
     "anthropic": "claude-opus-4-6",
-    "openai": "gpt-5.1-codex",
+    "openai": "gpt-5.5",
     "azure-openai-responses": "gpt-5.2",
-    "openai-codex": "gpt-5.3-codex",
+    "openai-codex": "gpt-5.5",
     "google": "gemini-2.5-pro",
     "google-gemini-cli": "gemini-2.5-pro",
     "google-antigravity": "gemini-3-pro-high",
     "google-vertex": "gemini-3-pro-preview",
-    "github-copilot": "gpt-4o",
+    "github-copilot": "gpt-5.5",
     "openrouter": "openai/gpt-5.1-codex",
     "vercel-ai-gateway": "anthropic/claude-opus-4-6",
     "xai": "grok-4-fast-non-reasoning",
@@ -37,7 +37,7 @@ DEFAULT_MODEL_PER_PROVIDER: dict[str, str] = {
     "cerebras": "zai-glm-4.6",
     "zai": "glm-4.6",
     "mistral": "devstral-medium-latest",
-    "minimax": "MiniMax-M2.1",
+    "minimax": "MiniMax-M3",
     "minimax-cn": "MiniMax-M2.1",
     "huggingface": "moonshotai/Kimi-K2.5",
     "opencode": "claude-opus-4-6",
@@ -61,21 +61,56 @@ def _is_alias(model_id: str) -> bool:
     return not bool(_DATE_PATTERN.search(model_id))
 
 
+def find_exact_model_reference_match(model_reference: str, available_models: list[Any]) -> Any | None:
+    """Find an exact bare-id or provider/model model reference.
+
+    Bare IDs must resolve to exactly one model across providers. Canonical
+    provider/model references are preferred and also require a single match.
+    """
+    trimmed = model_reference.strip()
+    if not trimmed:
+        return None
+
+    normalized = trimmed.lower()
+    canonical_matches = [
+        model
+        for model in available_models
+        if f"{getattr(model, 'provider', '')}/{getattr(model, 'id', '')}".lower() == normalized
+    ]
+    if len(canonical_matches) == 1:
+        return canonical_matches[0]
+    if len(canonical_matches) > 1:
+        return None
+
+    slash_idx = trimmed.find("/")
+    if slash_idx != -1:
+        provider = trimmed[:slash_idx].strip()
+        model_id = trimmed[slash_idx + 1:].strip()
+        if provider and model_id:
+            provider_matches = [
+                model
+                for model in available_models
+                if getattr(model, "provider", "").lower() == provider.lower()
+                and getattr(model, "id", "").lower() == model_id.lower()
+            ]
+            if len(provider_matches) == 1:
+                return provider_matches[0]
+            if len(provider_matches) > 1:
+                return None
+
+    id_matches = [
+        model
+        for model in available_models
+        if getattr(model, "id", "").lower() == normalized
+    ]
+    return id_matches[0] if len(id_matches) == 1 else None
+
+
 def _try_match_model(pattern: str, available_models: list[Any]) -> Any | None:
     """Try to match a pattern to a model from the available models list."""
-    slash_idx = pattern.find("/")
-    if slash_idx != -1:
-        provider_part = pattern[:slash_idx]
-        model_id_part = pattern[slash_idx + 1:]
-        for m in available_models:
-            if (getattr(m, "provider", "").lower() == provider_part.lower()
-                    and m.id.lower() == model_id_part.lower()):
-                return m
-
-    # Exact ID match (case-insensitive)
-    for m in available_models:
-        if m.id.lower() == pattern.lower():
-            return m
+    exact = find_exact_model_reference_match(pattern, available_models)
+    if exact is not None:
+        return exact
 
     # Partial matching
     lower = pattern.lower()

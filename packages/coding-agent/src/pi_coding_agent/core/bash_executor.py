@@ -56,6 +56,7 @@ async def execute_bash(
     command: str,
     on_chunk: Callable[[str], None] | None = None,
     cancel_event: asyncio.Event | None = None,
+    cwd: str | None = None,
 ) -> BashResult:
     """Execute a bash command with optional streaming and cancellation support.
 
@@ -79,6 +80,7 @@ async def execute_bash(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,
+        cwd=cwd,
         start_new_session=True,
     )
 
@@ -131,10 +133,30 @@ async def execute_bash(
         if cancel_event:
             tasks.append(asyncio.ensure_future(_wait_for_cancel()))
 
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED if cancel_event else asyncio.ALL_COMPLETED)
+        done, pending = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_COMPLETED if cancel_event else asyncio.ALL_COMPLETED,
+        )
 
-        if not cancelled:
+        if cancelled:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        else:
             await process.wait()
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     except Exception:
         cancelled = True

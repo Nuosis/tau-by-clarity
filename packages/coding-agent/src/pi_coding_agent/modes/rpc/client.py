@@ -14,6 +14,7 @@ import sys
 from typing import Any, Callable
 
 from .types import RpcResponse, RpcSessionState, RpcSlashCommand
+from .jsonl import JsonlLineReader, serialize_json_line
 
 
 RpcEventListener = Callable[[dict[str, Any]], None]
@@ -23,13 +24,14 @@ class RpcClientOptions:
     def __init__(
         self,
         cli_path: str | None = None,
+        cliPath: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         provider: str | None = None,
         model: str | None = None,
         args: list[str] | None = None,
     ) -> None:
-        self.cli_path = cli_path
+        self.cli_path = cli_path if cli_path is not None else cliPath
         self.cwd = cwd
         self.env = env or {}
         self.provider = provider
@@ -52,6 +54,7 @@ class RpcClient:
         self._stderr = ""
         self._reader_task: asyncio.Task | None = None
         self._stdin_lock = asyncio.Lock()
+        self._exit_error: RuntimeError | None = None
 
     async def start(self) -> None:
         """Start the RPC agent process."""
@@ -71,6 +74,7 @@ class RpcClient:
 
         env = {**os.environ, **self._options.env}
 
+        self._exit_error = None
         self._process = subprocess.Popen(
             args,
             cwd=self._options.cwd,
@@ -128,8 +132,12 @@ class RpcClient:
 
         return unsubscribe
 
+    onEvent = on_event
+
     def get_stderr(self) -> str:
         return self._stderr
+
+    getStderr = get_stderr
 
     # =========================================================================
     # Command Methods
@@ -144,6 +152,8 @@ class RpcClient:
     async def follow_up(self, message: str, images: list[dict] | None = None) -> None:
         await self._send({"type": "follow_up", "message": message, "images": images})
 
+    followUp = follow_up
+
     async def abort(self) -> None:
         await self._send({"type": "abort"})
 
@@ -151,35 +161,53 @@ class RpcClient:
         response = await self._send({"type": "new_session", "parentSession": parent_session})
         return self._get_data(response)
 
+    newSession = new_session
+
     async def get_state(self) -> dict[str, Any]:
         response = await self._send({"type": "get_state"})
         return self._get_data(response)
+
+    getState = get_state
 
     async def set_model(self, provider: str, model_id: str) -> dict[str, Any]:
         response = await self._send({"type": "set_model", "provider": provider, "modelId": model_id})
         return self._get_data(response)
 
+    setModel = set_model
+
     async def cycle_model(self) -> dict[str, Any] | None:
         response = await self._send({"type": "cycle_model"})
         return self._get_data(response)
+
+    cycleModel = cycle_model
 
     async def get_available_models(self) -> list[dict[str, Any]]:
         response = await self._send({"type": "get_available_models"})
         data = self._get_data(response)
         return data.get("models", [])
 
+    getAvailableModels = get_available_models
+
     async def set_thinking_level(self, level: str) -> None:
         await self._send({"type": "set_thinking_level", "level": level})
+
+    setThinkingLevel = set_thinking_level
 
     async def cycle_thinking_level(self) -> dict[str, str] | None:
         response = await self._send({"type": "cycle_thinking_level"})
         return self._get_data(response)
 
+    cycleThinkingLevel = cycle_thinking_level
+
     async def set_steering_mode(self, mode: str) -> None:
         await self._send({"type": "set_steering_mode", "mode": mode})
 
+    setSteeringMode = set_steering_mode
+
     async def set_follow_up_mode(self, mode: str) -> None:
         await self._send({"type": "set_follow_up_mode", "mode": mode})
+
+    setFollowUpMode = set_follow_up_mode
 
     async def compact(self, custom_instructions: str | None = None) -> dict[str, Any]:
         response = await self._send({"type": "compact", "customInstructions": custom_instructions})
@@ -188,11 +216,17 @@ class RpcClient:
     async def set_auto_compaction(self, enabled: bool) -> None:
         await self._send({"type": "set_auto_compaction", "enabled": enabled})
 
+    setAutoCompaction = set_auto_compaction
+
     async def set_auto_retry(self, enabled: bool) -> None:
         await self._send({"type": "set_auto_retry", "enabled": enabled})
 
+    setAutoRetry = set_auto_retry
+
     async def abort_retry(self) -> None:
         await self._send({"type": "abort_retry"})
+
+    abortRetry = abort_retry
 
     async def bash(self, command: str) -> dict[str, Any]:
         response = await self._send({"type": "bash", "command": command})
@@ -201,20 +235,32 @@ class RpcClient:
     async def abort_bash(self) -> None:
         await self._send({"type": "abort_bash"})
 
+    abortBash = abort_bash
+
     async def get_session_stats(self) -> dict[str, Any]:
         response = await self._send({"type": "get_session_stats"})
         return self._get_data(response)
+
+    getSessionStats = get_session_stats
 
     async def export_html(self, output_path: str | None = None) -> dict[str, str]:
         response = await self._send({"type": "export_html", "outputPath": output_path})
         return self._get_data(response)
 
+    exportHtml = export_html
+
     async def switch_session(self, session_path: str) -> dict[str, bool]:
         response = await self._send({"type": "switch_session", "sessionPath": session_path})
         return self._get_data(response)
 
+    switchSession = switch_session
+
     async def fork(self, entry_id: str) -> dict[str, Any]:
         response = await self._send({"type": "fork", "entryId": entry_id})
+        return self._get_data(response)
+
+    async def clone(self) -> dict[str, bool]:
+        response = await self._send({"type": "clone"})
         return self._get_data(response)
 
     async def get_fork_messages(self) -> list[dict[str, str]]:
@@ -222,23 +268,33 @@ class RpcClient:
         data = self._get_data(response)
         return data.get("messages", [])
 
+    getForkMessages = get_fork_messages
+
     async def get_last_assistant_text(self) -> str | None:
         response = await self._send({"type": "get_last_assistant_text"})
         data = self._get_data(response)
         return data.get("text")
 
+    getLastAssistantText = get_last_assistant_text
+
     async def set_session_name(self, name: str) -> None:
         await self._send({"type": "set_session_name", "name": name})
+
+    setSessionName = set_session_name
 
     async def get_messages(self) -> list[dict[str, Any]]:
         response = await self._send({"type": "get_messages"})
         data = self._get_data(response)
         return data.get("messages", [])
 
+    getMessages = get_messages
+
     async def get_commands(self) -> list[dict[str, Any]]:
         response = await self._send({"type": "get_commands"})
         data = self._get_data(response)
         return data.get("commands", [])
+
+    getCommands = get_commands
 
     # =========================================================================
     # Helpers
@@ -262,6 +318,8 @@ class RpcClient:
         finally:
             unsubscribe()
 
+    waitForIdle = wait_for_idle
+
     async def collect_events(self, timeout: float = 60.0) -> list[dict[str, Any]]:
         """Collect events until agent becomes idle."""
         events: list[dict[str, Any]] = []
@@ -282,6 +340,8 @@ class RpcClient:
         finally:
             unsubscribe()
 
+    collectEvents = collect_events
+
     async def prompt_and_wait(
         self,
         message: str,
@@ -289,9 +349,17 @@ class RpcClient:
         timeout: float = 60.0,
     ) -> list[dict[str, Any]]:
         """Send prompt and wait for completion, returning all events."""
-        events_coro = self.collect_events(timeout)
-        await self.prompt(message, images)
-        return await events_coro
+        events_task = asyncio.create_task(self.collect_events(timeout))
+        try:
+            await asyncio.sleep(0)
+            await self.prompt(message, images)
+            return await events_task
+        except Exception:
+            if not events_task.done():
+                events_task.cancel()
+            raise
+
+    promptAndWait = prompt_and_wait
 
     # =========================================================================
     # Internal
@@ -300,18 +368,12 @@ class RpcClient:
     async def _read_loop(self) -> None:
         """Background task reading stdout from the agent process."""
         loop = asyncio.get_event_loop()
+        reader = JsonlLineReader(self._handle_line)
         while self._process and self._process.stdout:
             line_bytes = await loop.run_in_executor(None, self._process.stdout.readline)
             if not line_bytes:
                 break
-            line = line_bytes.decode().strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                self._handle_line(data)
-            except json.JSONDecodeError:
-                pass
+            reader.feed(line_bytes)
 
             # Collect stderr
             if self._process and self._process.stderr:
@@ -321,8 +383,19 @@ class RpcClient:
                         self._stderr += chunk.decode(errors="replace")
                 except Exception:
                     pass
+        reader.end()
+        if self._process and self._process.poll() is not None:
+            self._exit_error = self._create_process_exit_error(self._process.returncode, None)
+            self._reject_pending_requests(self._exit_error)
 
-    def _handle_line(self, data: dict[str, Any]) -> None:
+    def _handle_line(self, data: dict[str, Any] | str) -> None:
+        if isinstance(data, str):
+            if not data:
+                return
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                return
         if data.get("type") == "response" and data.get("id") and data["id"] in self._pending_requests:
             future = self._pending_requests.pop(data["id"])
             if not future.done():
@@ -335,6 +408,11 @@ class RpcClient:
     async def _send(self, command: dict[str, Any]) -> dict[str, Any]:
         if not self._process or not self._process.stdin:
             raise RuntimeError("Client not started")
+        if self._exit_error is not None:
+            raise self._exit_error
+        if hasattr(self._process, "poll") and self._process.poll() is not None:
+            self._exit_error = self._create_process_exit_error(getattr(self._process, "returncode", None), None)
+            raise self._exit_error
 
         self._request_id += 1
         req_id = f"req_{self._request_id}"
@@ -345,7 +423,7 @@ class RpcClient:
 
         async def _do_send() -> dict[str, Any]:
             self._pending_requests[req_id] = future
-            line = json.dumps(full_command) + "\n"
+            line = serialize_json_line(full_command)
             await loop.run_in_executor(None, self._process.stdin.write, line.encode())
             await loop.run_in_executor(None, self._process.stdin.flush)
             try:
@@ -357,6 +435,15 @@ class RpcClient:
                 )
 
         return await _do_send()
+
+    def _create_process_exit_error(self, code: int | None, signal: str | None) -> RuntimeError:
+        return RuntimeError(f"Agent process exited (code={code} signal={signal}). Stderr: {self._stderr}")
+
+    def _reject_pending_requests(self, error: BaseException) -> None:
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending_requests.clear()
 
     def _get_data(self, response: dict[str, Any]) -> Any:
         if not response.get("success"):

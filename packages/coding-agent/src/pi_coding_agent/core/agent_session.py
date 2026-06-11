@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -278,6 +279,7 @@ class AgentSession:
             append_system_prompt="\n\n".join(append_parts) if append_parts else None,
             context_files=context_files,
             skills=skills,
+            session_vars=self._settings.session_vars,
         )
 
     def _skills_for_prompt(self, loaded_skills: list[Any]) -> list[dict[str, str]]:
@@ -610,6 +612,20 @@ class AgentSession:
         - Bash flush
         - pendingNextTurnMessages injection
         """
+        try:
+            from .cli_debug_log import log_event
+
+            log_event(
+                "session_prompt_start",
+                source=source,
+                streaming_behavior=streaming_behavior,
+                message_type=type(message).__name__,
+                message_chars=len(message) if isinstance(message, str) else None,
+                has_images=bool(images),
+                is_streaming=getattr(self._agent.state, "is_streaming", None),
+            )
+        except Exception:
+            pass
         current_text: str | None = None
         current_images = images
 
@@ -721,6 +737,14 @@ class AgentSession:
         except Exception:
             if preflight_result is not None:
                 preflight_result(False)
+            try:
+                from .cli_debug_log import log_exception
+
+                exc = sys.exc_info()[1]
+                if exc is not None:
+                    log_exception("session_prompt_preflight_exception", exc)
+            except Exception:
+                pass
             raise
 
         # Reset retry state
@@ -730,8 +754,26 @@ class AgentSession:
 
         if preflight_result is not None:
             preflight_result(True)
+        try:
+            from .cli_debug_log import log_event
+
+            log_event("session_prompt_agent_start", prompt_count=len(msgs))
+        except Exception:
+            pass
         await self._agent.prompt(msgs)
+        try:
+            from .cli_debug_log import log_event
+
+            log_event("session_prompt_agent_returned")
+        except Exception:
+            pass
         await self._wait_for_retry()
+        try:
+            from .cli_debug_log import log_event
+
+            log_event("session_prompt_end")
+        except Exception:
+            pass
 
     def _flush_pending_bash_messages(self) -> None:
         """Flush pending bash messages into agent state and session."""

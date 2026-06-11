@@ -112,6 +112,11 @@ class StreamOptions(BaseModel):
         Callable[[Any, "Model"], Awaitable[Any | None]] | 
         None
     ) = None
+    on_response: (
+        Callable[[Any, "Model"], Any | None] |
+        Callable[[Any, "Model"], Awaitable[Any | None]] |
+        None
+    ) = None
     headers: dict[str, str] | None = None
     max_retry_delay_ms: int | None = 60000
     metadata: dict[str, Any] | None = None

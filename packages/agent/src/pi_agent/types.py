@@ -69,11 +69,35 @@ class AgentLoopConfig(SimpleStreamOptions):
     # Resolves API key dynamically per call
     get_api_key: Callable[[str], str | None | Awaitable[str | None]] | None = None
 
+    # Optional provider response hook
+    on_response: Callable[[Any, Model], Any | None | Awaitable[Any | None]] | None = None
+
     # Returns steering messages to inject mid-run
     get_steering_messages: Callable[[], Awaitable[list[AgentMessage]]] | None = None
 
     # Returns follow-up messages after agent would stop
     get_follow_up_messages: Callable[[], Awaitable[list[AgentMessage]]] | None = None
+
+    # Called after turn_end to replace runtime state before another provider call.
+    prepare_next_turn: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None
+    prepareNextTurn: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None
+
+    # Called after prepare_next_turn to gracefully stop before queues are polled.
+    should_stop_after_turn: Callable[[dict[str, Any]], bool | Awaitable[bool]] | None = None
+    shouldStopAfterTurn: Callable[[dict[str, Any]], bool | Awaitable[bool]] | None = None
+
+    # Tool execution mode. Defaults to TypeScript parity: parallel.
+    toolExecution: str = "parallel"
+
+    # Tool execution hooks.
+    before_tool_call: Callable[
+        [dict[str, Any], asyncio.Event | None],
+        Awaitable[dict[str, Any] | None],
+    ] | None = None
+    after_tool_call: Callable[
+        [dict[str, Any], asyncio.Event | None],
+        Awaitable[dict[str, Any] | None],
+    ] | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -84,9 +108,21 @@ class AgentToolResult(BaseModel):
     """Result of a tool execution."""
     content: list[TextContent | ImageContent]
     details: Any = None
+    terminate: bool | None = None
 
 
 AgentToolUpdateCallback = Callable[["AgentToolResult"], None]
+
+
+class AgentToolExecutionPolicy(BaseModel):
+    """Native execution policy for a tool call."""
+    timeout_ms: int | None = None
+    retryable: bool = False
+    idempotent: bool = False
+    max_attempts: int = 1
+    on_timeout: Literal["return_tool_error", "fail_run"] = "return_tool_error"
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class AgentTool(Tool):
@@ -95,6 +131,9 @@ class AgentTool(Tool):
     Mirrors AgentTool<TParameters> interface in TypeScript.
     """
     label: str
+    prepareArguments: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    executionMode: str | None = None
+    executionPolicy: AgentToolExecutionPolicy | dict[str, Any] | None = None
     execute: Callable[
         [str, dict[str, Any], asyncio.Event | None, AgentToolUpdateCallback | None],
         Awaitable["AgentToolResult"],
@@ -201,6 +240,17 @@ class AgentEventToolEnd(BaseModel):
     is_error: bool
 
 
+class AgentEventRunState(BaseModel):
+    type: Literal["run_state"] = "run_state"
+    state: str
+    phase: str | None = None
+    reason: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    terminal: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 AgentEvent = Union[
     AgentEventAgentStart,
     AgentEventAgentEnd,
@@ -212,4 +262,5 @@ AgentEvent = Union[
     AgentEventToolStart,
     AgentEventToolUpdate,
     AgentEventToolEnd,
+    AgentEventRunState,
 ]

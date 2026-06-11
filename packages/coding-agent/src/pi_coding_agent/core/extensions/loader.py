@@ -23,6 +23,7 @@ from .types import Extension, ExtensionAPI, ExtensionFactory
 class LoadExtensionsResult:
     extensions: list[Extension] = field(default_factory=list)
     errors: list[dict[str, str]] = field(default_factory=list)
+    runtime: dict[str, Any] = field(default_factory=dict)
 
 
 def read_pi_manifest(directory: str) -> dict[str, Any] | None:
@@ -122,6 +123,8 @@ def create_extension_runtime() -> dict[str, Any]:
         "commands": {},
         "tools": {},
         "flags": {},
+        "flagValues": {},
+        "pendingProviderRegistrations": [],
     }
 
 
@@ -144,8 +147,9 @@ async def load_extension_from_path(
         raise ImportError(f"No extension_factory(), activate(), or default() export in: {path}")
 
     resolved = os.path.abspath(path)
+    runtime = runtime or create_extension_runtime()
     ext = Extension(path=path, resolved_path=resolved)
-    api = ExtensionAPI(ext)
+    api = ExtensionAPI(ext, runtime)
 
     import asyncio
     import inspect
@@ -160,9 +164,11 @@ async def load_extensions(
     paths: list[str],
     cwd: str = "",
     event_bus: Any = None,
+    runtime: dict[str, Any] | None = None,
 ) -> LoadExtensionsResult:
     """Load extensions from explicit paths (async version)."""
-    result = LoadExtensionsResult()
+    runtime = runtime or create_extension_runtime()
+    result = LoadExtensionsResult(runtime=runtime)
 
     for path in paths:
         resolved = os.path.abspath(path)
@@ -172,7 +178,7 @@ async def load_extensions(
             continue
 
         ext = Extension(path=path, resolved_path=resolved)
-        api = ExtensionAPI(ext)
+        api = ExtensionAPI(ext, runtime)
 
         try:
             import asyncio
@@ -191,7 +197,8 @@ async def load_extensions(
 
 def load_extensions_sync(paths: list[str]) -> LoadExtensionsResult:
     """Load extensions synchronously from explicit paths."""
-    result = LoadExtensionsResult()
+    runtime = create_extension_runtime()
+    result = LoadExtensionsResult(runtime=runtime)
 
     for path in paths:
         resolved = os.path.abspath(path)
@@ -201,7 +208,7 @@ def load_extensions_sync(paths: list[str]) -> LoadExtensionsResult:
             continue
 
         ext = Extension(path=path, resolved_path=resolved)
-        api = ExtensionAPI(ext)
+        api = ExtensionAPI(ext, runtime)
 
         try:
             import asyncio

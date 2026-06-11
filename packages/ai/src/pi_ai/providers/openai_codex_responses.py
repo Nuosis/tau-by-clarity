@@ -20,6 +20,7 @@ from pi_ai.providers.openai_responses_shared import (
     convert_responses_tools,
     process_responses_stream,
 )
+from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.providers.simple_options import build_base_options, clamp_reasoning
 from pi_ai.utils.event_stream import EventStream
 
@@ -77,8 +78,7 @@ def stream_openai_codex_responses(
             messages = convert_responses_messages(model, context, _CODEX_TOOL_CALL_PROVIDERS, include_system_prompt=False)
             request_body = _build_request_body(model, context, opts, messages)
 
-            if opts.get("on_payload"):
-                opts["on_payload"](request_body)
+            request_body = await apply_on_payload(request_body, model, opts.get("on_payload"))
 
             headers: dict[str, str] = {
                 "Authorization": f"Bearer {api_key}",
@@ -100,6 +100,10 @@ def stream_openai_codex_responses(
                     if response.status_code not in (200, 201):
                         error_text = await response.aread()
                         raise RuntimeError(f"HTTP {response.status_code}: {error_text.decode()}")
+                    if opts.get("on_response"):
+                        result = opts["on_response"](response, model)
+                        if hasattr(result, "__await__"):
+                            await result
 
                     sse_events = _parse_sse_stream(response)
                     await process_responses_stream(sse_events, output, ev_stream, model)

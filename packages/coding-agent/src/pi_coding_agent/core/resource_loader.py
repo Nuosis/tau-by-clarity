@@ -34,7 +34,30 @@ class ResourceExtensionPaths:
     theme_paths: list[dict[str, Any]] = field(default_factory=list)
 
 
-_CONTEXT_CANDIDATES = ["AGENTS.md", "CLAUDE.md"]
+_CONTEXT_CANDIDATES = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]
+
+
+def _extensions_result_to_dict(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        normalized = dict(result)
+    else:
+        normalized = {
+            "extensions": list(getattr(result, "extensions", []) or []),
+            "diagnostics": list(
+                getattr(result, "diagnostics", None)
+                or getattr(result, "errors", [])
+                or []
+            ),
+        }
+        runtime = getattr(result, "runtime", None)
+        if isinstance(runtime, dict):
+            normalized["runtime"] = runtime
+    normalized.setdefault("extensions", [])
+    normalized.setdefault("diagnostics", [])
+    normalized.setdefault("runtime", {"flagValues": {}})
+    normalized["runtime"].setdefault("flagValues", {})
+    normalized["runtime"].setdefault("pendingProviderRegistrations", [])
+    return normalized
 
 
 def _load_context_file_from_dir(dir_path: str) -> dict[str, str] | None:
@@ -51,9 +74,16 @@ def _load_context_file_from_dir(dir_path: str) -> dict[str, str] | None:
 
 
 def _load_project_context_files(
-    cwd: str | None = None, agent_dir: str | None = None
+    cwd: str | None = None,
+    agent_dir: str | None = None,
+    project_trusted: bool | None = True,
+    walk_ancestors: bool = True,
 ) -> list[dict[str, str]]:
-    """Load AGENTS.md / CLAUDE.md from global and project ancestors."""
+    """Load AGENTS.md / CLAUDE.md from global and project ancestors.
+
+    When walk_ancestors is False the search is contained to the launch dir
+    (cwd) — context from parent directories is not pulled in.
+    """
     from pi_coding_agent.config import get_agent_dir
 
     resolved_cwd = cwd or os.getcwd()
@@ -67,6 +97,9 @@ def _load_project_context_files(
         context_files.append(global_ctx)
         seen.add(global_ctx["path"])
 
+    if project_trusted is False:
+        return context_files
+
     ancestor_files: list[dict[str, str]] = []
     current = resolved_cwd
     root = os.path.abspath("/")
@@ -77,6 +110,8 @@ def _load_project_context_files(
             ancestor_files.insert(0, ctx)
             seen.add(ctx["path"])
 
+        if not walk_ancestors:
+            break  # contained to the launch dir
         if os.path.abspath(current) == root:
             break
         parent = os.path.dirname(current)
@@ -86,6 +121,15 @@ def _load_project_context_files(
 
     context_files.extend(ancestor_files)
     return context_files
+
+
+def load_project_context_files(
+    cwd: str | None = None,
+    agent_dir: str | None = None,
+    project_trusted: bool | None = True,
+) -> list[dict[str, str]]:
+    """Load AGENTS.md / CLAUDE.md context files for the global and project scopes."""
+    return _load_project_context_files(cwd, agent_dir, project_trusted)
 
 
 def _resolve_prompt_input(input_path: str | None, description: str) -> str | None:
@@ -124,8 +168,12 @@ class DefaultResourceLoaderOptions:
     no_skills: bool = False
     no_prompt_templates: bool = False
     no_themes: bool = False
+    no_context_files: bool = False
+    # When False (the harness default), skills/prompts/extensions/themes are
+    # discovered from the project dir only; the global agent dir is not scanned.
+    inherit_global: bool = True
     system_prompt: str | None = None
-    append_system_prompt: str | None = None
+    append_system_prompt: str | list[str] | None = None
     extensions_override: Callable | None = None
     skills_override: Callable | None = None
     prompts_override: Callable | None = None
@@ -139,11 +187,19 @@ class DefaultResourceLoader:
     """Loads and manages agent resources (skills, prompts, themes, extensions, AGENTS files)."""
 
     def __init__(self, options: DefaultResourceLoaderOptions | None = None) -> None:
-        from pi_coding_agent.config import CONFIG_DIR_NAME, get_agent_dir
+        from pi_coding_agent.config import CONFIG_DIR_NAME, get_agent_dir, get_project_agent_dir
 
         opts = options or DefaultResourceLoaderOptions()
         self._cwd = opts.cwd or os.getcwd()
-        self._agent_dir = opts.agent_dir or get_agent_dir()
+        # Default: project-local discovery only. When a caller explicitly sets
+        # PI_CODING_AGENT_DIR, that directory is the agent under test and must
+        # own its resources even without --inherit.
+        explicit_agent_dir = bool(os.environ.get("PI_CODING_AGENT_DIR"))
+        if opts.inherit_global or explicit_agent_dir:
+            self._agent_dir = opts.agent_dir or get_agent_dir()
+        else:
+            self._agent_dir = get_project_agent_dir(self._cwd)
+        self._inherit_global = opts.inherit_global
         self._config_dir_name = CONFIG_DIR_NAME
         self._settings_manager = opts.settings_manager
         self._event_bus = opts.event_bus
@@ -156,6 +212,7 @@ class DefaultResourceLoader:
         self._no_skills = opts.no_skills
         self._no_prompt_templates = opts.no_prompt_templates
         self._no_themes = opts.no_themes
+        self._no_context_files = opts.no_context_files
         self._system_prompt_source = opts.system_prompt
         self._append_system_prompt_source = opts.append_system_prompt
         self._extensions_override = opts.extensions_override
@@ -208,21 +265,39 @@ class DefaultResourceLoader:
     def get_path_metadata(self) -> dict[str, PathMetadata]:
         return self._path_metadata
 
+    getExtensions = get_extensions
+    getSkills = get_skills
+    getPrompts = get_prompts
+    getThemes = get_themes
+    getAgentsFiles = get_agents_files
+    getSystemPrompt = get_system_prompt
+    getAppendSystemPrompt = get_append_system_prompt
+
     def extend_resources(self, paths: ResourceExtensionPaths) -> None:
-        if paths.skill_paths:
-            new_paths = [entry["path"] for entry in paths.skill_paths]
+        skill_paths = getattr(paths, "skill_paths", None)
+        prompt_paths = getattr(paths, "prompt_paths", None)
+        theme_paths = getattr(paths, "theme_paths", None)
+        if isinstance(paths, dict):
+            skill_paths = paths.get("skillPaths") or paths.get("skill_paths") or skill_paths
+            prompt_paths = paths.get("promptPaths") or paths.get("prompt_paths") or prompt_paths
+            theme_paths = paths.get("themePaths") or paths.get("theme_paths") or theme_paths
+
+        if skill_paths:
+            new_paths = [entry["path"] if isinstance(entry, dict) else getattr(entry, "path") for entry in skill_paths]
             self._last_skill_paths = self._merge_paths(self._last_skill_paths, new_paths)
             self._update_skills_from_paths(self._last_skill_paths)
 
-        if paths.prompt_paths:
-            new_paths = [entry["path"] for entry in paths.prompt_paths]
+        if prompt_paths:
+            new_paths = [entry["path"] if isinstance(entry, dict) else getattr(entry, "path") for entry in prompt_paths]
             self._last_prompt_paths = self._merge_paths(self._last_prompt_paths, new_paths)
             self._update_prompts_from_paths(self._last_prompt_paths)
 
-        if paths.theme_paths:
-            new_paths = [entry["path"] for entry in paths.theme_paths]
+        if theme_paths:
+            new_paths = [entry["path"] if isinstance(entry, dict) else getattr(entry, "path") for entry in theme_paths]
             self._last_theme_paths = self._merge_paths(self._last_theme_paths, new_paths)
             self._update_themes_from_paths(self._last_theme_paths)
+
+    extendResources = extend_resources
 
     async def reload(self) -> None:
         """Reload all resources from disk."""
@@ -252,8 +327,18 @@ class DefaultResourceLoader:
             self._update_themes_from_paths(merged_theme_paths)
 
         # Load AGENTS.md context files
-        agents_files_base = {"agentsFiles": _load_project_context_files(self._cwd, self._agent_dir),
-                             "agents_files": _load_project_context_files(self._cwd, self._agent_dir)}
+        project_trusted = True
+        if self._settings_manager and hasattr(self._settings_manager, "is_project_trusted"):
+            project_trusted = bool(self._settings_manager.is_project_trusted())
+        context_files = (
+            []
+            if self._no_context_files
+            else _load_project_context_files(
+                self._cwd, self._agent_dir, project_trusted,
+                walk_ancestors=self._inherit_global,
+            )
+        )
+        agents_files_base = {"agentsFiles": context_files, "agents_files": context_files}
         resolved = (
             self._agents_files_override(agents_files_base)
             if self._agents_files_override
@@ -272,9 +357,17 @@ class DefaultResourceLoader:
             else base_system
         )
 
-        append_source = self._append_system_prompt_source or self._discover_append_system_prompt_file()
-        resolved_append = _resolve_prompt_input(append_source, "append system prompt")
-        base_append = [resolved_append] if resolved_append else []
+        append_source = self._append_system_prompt_source
+        if append_source is None:
+            append_source = self._discover_append_system_prompt_file()
+        append_sources = append_source if isinstance(append_source, list) else [append_source]
+        base_append = [
+            resolved
+            for source in append_sources
+            if source
+            for resolved in [_resolve_prompt_input(source, "append system prompt")]
+            if resolved
+        ]
         self._append_system_prompt = (
             self._append_system_prompt_override(base_append)
             if self._append_system_prompt_override
@@ -313,11 +406,12 @@ class DefaultResourceLoader:
                 if event_bus is None:
                     from pi_coding_agent.core.event_bus import create_event_bus
                     event_bus = create_event_bus()
-                base_result = await load_extensions(
+                loaded_result = await load_extensions(
                     ext_paths,
                     self._cwd,
                     event_bus,
                 )
+                base_result = _extensions_result_to_dict(loaded_result)
                 # Detect conflicts
                 base_result = self._detect_extension_conflicts(base_result)
             except Exception as e:
@@ -328,6 +422,7 @@ class DefaultResourceLoader:
             if self._extensions_override
             else base_result
         )
+        resolved = _extensions_result_to_dict(resolved)
         self._extensions_result = resolved
 
     def _detect_extension_conflicts(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -344,7 +439,9 @@ class DefaultResourceLoader:
         for ext in extensions:
             ext_path = getattr(ext, "path", "") or ""
 
-            for tool in getattr(ext, "tools", []) or []:
+            tools = getattr(ext, "tools", {}) or {}
+            tool_values = tools.values() if isinstance(tools, dict) else tools
+            for tool in tool_values or []:
                 name = getattr(tool, "name", "") or ""
                 if name in seen_tools:
                     diagnostics.append({
@@ -355,7 +452,9 @@ class DefaultResourceLoader:
                 else:
                     seen_tools[name] = ext_path
 
-            for cmd in getattr(ext, "commands", []) or []:
+            commands = getattr(ext, "commands", {}) or {}
+            command_values = commands.values() if isinstance(commands, dict) else commands
+            for cmd in command_values or []:
                 name = getattr(cmd, "name", "") or ""
                 if name in seen_commands:
                     diagnostics.append({
@@ -366,7 +465,9 @@ class DefaultResourceLoader:
                 else:
                     seen_commands[name] = ext_path
 
-            for flag in getattr(ext, "flags", []) or []:
+            flags = getattr(ext, "flags", {}) or {}
+            flag_values = flags.values() if isinstance(flags, dict) else flags
+            for flag in flag_values or []:
                 name = getattr(flag, "name", "") or ""
                 if name in seen_flags:
                     diagnostics.append({

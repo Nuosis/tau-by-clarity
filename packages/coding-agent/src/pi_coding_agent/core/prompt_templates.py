@@ -12,7 +12,9 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
+from pi_coding_agent.core.source_info import SourceInfo, create_synthetic_source_info
 from pi_coding_agent.utils.frontmatter import parse_frontmatter
 
 
@@ -25,6 +27,7 @@ class PromptTemplate:
     content: str
     source: str
     file_path: str
+    source_info: SourceInfo | None = None
 
 
 def parse_command_args(args_string: str) -> list[str]:
@@ -90,7 +93,7 @@ def substitute_args(content: str, args: list[str]) -> str:
 
 
 def _load_template_from_file(
-    file_path: str, source: str, source_label: str
+    file_path: str, source: str, source_label: str, source_info: SourceInfo | None = None
 ) -> PromptTemplate | None:
     try:
         with open(file_path, encoding="utf-8", errors="replace") as f:
@@ -117,13 +120,14 @@ def _load_template_from_file(
             content=body,
             source=source,
             file_path=file_path,
+            source_info=source_info,
         )
     except Exception:
         return None
 
 
 def _load_templates_from_dir(
-    dir_path: str, source: str, source_label: str
+    dir_path: str, source: str, source_label: str, get_source_info: Any | None = None
 ) -> list[PromptTemplate]:
     templates: list[PromptTemplate] = []
     if not os.path.isdir(dir_path):
@@ -146,7 +150,12 @@ def _load_templates_from_dir(
             continue
 
         if is_file and entry.name.endswith(".md"):
-            tmpl = _load_template_from_file(full_path, source, source_label)
+            tmpl = _load_template_from_file(
+                full_path,
+                source,
+                source_label,
+                get_source_info(full_path) if get_source_info else None,
+            )
             if tmpl:
                 templates.append(tmpl)
 
@@ -185,10 +194,20 @@ def load_prompt_templates(
         global_dir = (
             os.path.join(opts.agent_dir, "prompts") if opts.agent_dir else prompts_dir
         )
-        templates.extend(_load_templates_from_dir(global_dir, "user", "(user)"))
+        templates.extend(_load_templates_from_dir(
+            global_dir,
+            "user",
+            "(user)",
+            lambda p: create_synthetic_source_info(p, source="local", scope="user", base_dir=global_dir),
+        ))
 
         project_dir = os.path.join(cwd, CONFIG_DIR_NAME, "prompts")
-        templates.extend(_load_templates_from_dir(project_dir, "project", "(project)"))
+        templates.extend(_load_templates_from_dir(
+            project_dir,
+            "project",
+            "(project)",
+            lambda p: create_synthetic_source_info(p, source="local", scope="project", base_dir=project_dir),
+        ))
 
     user_prompts_dir = (
         os.path.join(opts.agent_dir, "prompts") if opts.agent_dir else prompts_dir
@@ -200,14 +219,28 @@ def load_prompt_templates(
         norm_target = os.path.abspath(target)
         return norm_target == norm_root or norm_target.startswith(norm_root + os.sep)
 
-    def get_source_info(resolved_path: str) -> tuple[str, str]:
-        if not include_defaults:
-            if _is_under(resolved_path, user_prompts_dir):
-                return "user", "(user)"
-            if _is_under(resolved_path, project_prompts_dir):
-                return "project", "(project)"
+    def get_source_info(resolved_path: str) -> tuple[str, str, SourceInfo]:
+        if _is_under(resolved_path, user_prompts_dir):
+            return "user", "(user)", create_synthetic_source_info(
+                resolved_path,
+                source="local",
+                scope="user",
+                base_dir=user_prompts_dir,
+            )
+        if _is_under(resolved_path, project_prompts_dir):
+            return "project", "(project)", create_synthetic_source_info(
+                resolved_path,
+                source="local",
+                scope="project",
+                base_dir=project_prompts_dir,
+            )
         base = os.path.splitext(os.path.basename(resolved_path))[0] or "path"
-        return "path", f"(path:{base})"
+        base_dir = resolved_path if os.path.isdir(resolved_path) else os.path.dirname(resolved_path)
+        return "path", f"(path:{base})", create_synthetic_source_info(
+            resolved_path,
+            source="local",
+            base_dir=base_dir,
+        )
 
     home = os.path.expanduser("~")
 
@@ -229,11 +262,21 @@ def load_prompt_templates(
             continue
 
         try:
-            source, label = get_source_info(resolved)
+            source, label, source_info = get_source_info(resolved)
             if os.path.isdir(resolved):
-                templates.extend(_load_templates_from_dir(resolved, source, label))
+                templates.extend(_load_templates_from_dir(
+                    resolved,
+                    source,
+                    label,
+                    lambda p, base_dir=resolved: create_synthetic_source_info(
+                        p,
+                        source="local",
+                        scope=source_info.scope,
+                        base_dir=base_dir,
+                    ),
+                ))
             elif os.path.isfile(resolved) and resolved.endswith(".md"):
-                tmpl = _load_template_from_file(resolved, source, label)
+                tmpl = _load_template_from_file(resolved, source, label, source_info)
                 if tmpl:
                     templates.append(tmpl)
         except Exception:

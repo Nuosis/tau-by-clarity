@@ -13,7 +13,25 @@ if TYPE_CHECKING:
     from pi_coding_agent.core.agent_session import AgentSession
 
 
-async def run_interactive_mode(session: "AgentSession", initial_messages: list[str] | None = None) -> None:
+class InteractiveMode:
+    """Programmatic interactive mode host."""
+
+    def __init__(self, session_or_runtime: Any, options: dict[str, Any] | None = None) -> None:
+        self.host = session_or_runtime
+        self.options = options or {}
+
+    @property
+    def session(self) -> "AgentSession":
+        return getattr(self.host, "session", self.host)
+
+    async def run(self, initial_messages: list[str] | None = None) -> None:
+        await run_interactive_mode(
+            self.host,
+            initial_messages if initial_messages is not None else self.options.get("initialMessages"),
+        )
+
+
+async def run_interactive_mode(session_or_runtime: Any, initial_messages: list[str] | None = None) -> None:
     """
     Run the agent in interactive mode with a TUI.
 
@@ -21,9 +39,10 @@ async def run_interactive_mode(session: "AgentSession", initial_messages: list[s
     REPL when Textual is not available. Full TUI support requires the Textual
     library.
     """
+    session = getattr(session_or_runtime, "session", session_or_runtime)
     try:
         from pi_coding_agent.modes.interactive.tui import run_tui
-        await run_tui(session, initial_messages)
+        await run_tui(session, initial_messages, runtime_host=session_or_runtime)
     except ImportError:
         await _run_readline_fallback(session, initial_messages)
 
@@ -92,3 +111,6 @@ async def _send_and_wait(session: "AgentSession", message: str, console: Any) ->
         console.print("\n[yellow]Response timeout[/yellow]")
     finally:
         unsubscribe()
+
+
+runInteractiveMode = run_interactive_mode

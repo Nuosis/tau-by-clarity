@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,11 +27,142 @@ class BashToolDetails:
     full_output_path: str | None = None
 
 
+_URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
+def _inside_project_root(path: str, root: str) -> bool:
+    resolved = os.path.realpath(path)
+    root_real = os.path.realpath(root)
+    return resolved == root_real or resolved.startswith(root_real + os.sep)
+
+
+def _pathish_tokens(command: str) -> list[str]:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    out: list[str] = []
+    for token in tokens:
+        if not token or token.startswith("-") or _URL_RE.match(token):
+            continue
+        if (
+            token.startswith("/")
+            or token.startswith("~")
+            or token in {".", ".."}
+            or token.startswith("./")
+            or token.startswith("../")
+            or "/" in token
+        ):
+            out.append(token)
+    return out
+
+
+def _command_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def _is_shell_separator(token: str) -> bool:
+    return token in {";", "&&", "||", "|", "&"}
+
+
+def _is_option(token: str) -> bool:
+    return token.startswith("-") and token != "-"
+
+
+def _find_search_path_tokens(tokens: list[str], find_index: int) -> list[str]:
+    paths: list[str] = []
+    for token in tokens[find_index + 1:]:
+        if _is_shell_separator(token):
+            break
+        if token in {"(", ")", "!", "not"} or _is_option(token):
+            if paths:
+                break
+            continue
+        if paths and not (token.startswith("/") or token.startswith(".") or token.startswith("~")):
+            break
+        paths.append(token)
+    return paths
+
+
+def _assert_no_broad_filesystem_scan(command: str, cwd: str) -> None:
+    if os.environ.get("PI_ALLOW_BROAD_SHELL_SCAN") == "1":
+        return
+    tokens = _command_tokens(command)
+    for index, token in enumerate(tokens):
+        if os.path.basename(token) != "find":
+            continue
+        for raw_path in _find_search_path_tokens(tokens, index):
+            expanded = os.path.expanduser(raw_path)
+            path = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+            if raw_path == "/" or (os.path.isabs(expanded) and not _inside_project_root(path, cwd)):
+                raise RuntimeError(
+                    "Command blocked: broad filesystem scan via shell find. "
+                    "Use the scoped find tool, or run find inside the current "
+                    "working directory. Set PI_ALLOW_BROAD_SHELL_SCAN=1 to override."
+                )
+
+
+def _assert_command_within_project_root(command: str, cwd: str) -> None:
+    _assert_no_broad_filesystem_scan(command, cwd)
+    root = os.environ.get("PI_PROJECT_ROOT")
+    if not root:
+        return
+    if not _inside_project_root(cwd, root):
+        raise RuntimeError(
+            f"Command blocked: cwd is outside the allowed project root "
+            f"({cwd}); project root is {root}"
+        )
+    for token in _pathish_tokens(command):
+        expanded = os.path.expanduser(token)
+        path = expanded if os.path.isabs(expanded) else os.path.join(cwd, expanded)
+        if not _inside_project_root(path, root):
+            raise RuntimeError(
+                f"Command blocked: path escapes project root ({token}); "
+                f"project root is {root}"
+            )
+
+
+def _sandbox_profile(root: str) -> str:
+    root_real = os.path.realpath(root).replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        "(version 1)\n"
+        "(allow default)\n"
+        "(deny file-write*)\n"
+        f'(allow file-write* (subpath "{root_real}") '
+        '(literal "/dev/null") (literal "/dev/tty"))\n'
+    )
+
+
+def _sandbox_exec_args(shell: str, args: list[str], command: str) -> tuple[str, list[str], str | None]:
+    root = os.environ.get("PI_PROJECT_ROOT")
+    sandbox_exec = shutil.which("sandbox-exec")
+    if sys.platform != "darwin" or not root or not sandbox_exec:
+        return shell, [*args, command], None
+    fd, profile_path = tempfile.mkstemp(prefix="pi-project-boundary-", suffix=".sb")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(_sandbox_profile(root))
+    return sandbox_exec, ["-f", profile_path, shell, *args, command], profile_path
+
+
 def _get_shell() -> tuple[str, list[str]]:
     """Get the shell command and args for the current platform."""
     if sys.platform == "win32":
         return "cmd.exe", ["/c"]
     return os.environ.get("SHELL", "/bin/bash"), ["-c"]
+
+
+def _output_limit(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1024, value)
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -73,15 +207,21 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
 
         if not os.path.exists(cwd):
             raise RuntimeError(f"Working directory does not exist: {cwd}")
+        _assert_command_within_project_root(command, cwd)
 
         resolved_command = f"{command_prefix}\n{command}" if command_prefix else command
 
         shell, args = _get_shell()
+        executable, exec_args, sandbox_profile_path = _sandbox_exec_args(
+            shell, args, resolved_command
+        )
 
         # Track output
         chunks: list[bytes] = []
         chunks_bytes = 0
-        max_chunks_bytes = DEFAULT_MAX_BYTES * 2
+        max_output_bytes = _output_limit("PI_BASH_MAX_OUTPUT_BYTES", DEFAULT_MAX_BYTES)
+        max_output_lines = _output_limit("PI_BASH_MAX_OUTPUT_LINES", DEFAULT_MAX_LINES)
+        max_chunks_bytes = max_output_bytes * 2
         total_bytes = 0
         temp_file_path: str | None = None
         temp_file = None
@@ -96,7 +236,7 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
                 kwargs["start_new_session"] = True
 
             process = await asyncio.create_subprocess_exec(
-                shell, *args, resolved_command,
+                executable, *exec_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,
@@ -113,7 +253,7 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
                 async for chunk in process.stdout:
                     total_bytes += len(chunk)
 
-                    if total_bytes > DEFAULT_MAX_BYTES and temp_file_path is None:
+                    if total_bytes > max_output_bytes and temp_file_path is None:
                         fd, temp_file_path = tempfile.mkstemp(prefix="pi-bash-", suffix=".log")
                         temp_file = os.fdopen(fd, "wb")
                         for existing in chunks:
@@ -131,7 +271,11 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
                     if on_update:
                         full_buf = b"".join(chunks)
                         full_text = full_buf.decode("utf-8", errors="replace")
-                        trunc = truncate_tail(full_text)
+                        trunc = truncate_tail(
+                            full_text,
+                            max_lines=max_output_lines,
+                            max_bytes=max_output_bytes,
+                        )
                         on_update(AgentToolResult(
                             content=[TextContent(type="text", text=trunc.content or "")],
                             details=BashToolDetails(
@@ -183,13 +327,24 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
 
             return exit_code
 
-        exit_code = await run()
+        try:
+            exit_code = await run()
+        finally:
+            if sandbox_profile_path:
+                try:
+                    os.unlink(sandbox_profile_path)
+                except OSError:
+                    pass
 
         # Combine all chunks for final output
         full_buf = b"".join(chunks)
         full_output = full_buf.decode("utf-8", errors="replace")
 
-        truncation = truncate_tail(full_output)
+        truncation = truncate_tail(
+            full_output,
+            max_lines=max_output_lines,
+            max_bytes=max_output_bytes,
+        )
         output_text = truncation.content or "(no output)"
         details: BashToolDetails | None = None
 
@@ -203,7 +358,7 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
             elif truncation.truncated_by == "lines":
                 output_text += f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines}. Full output: {temp_file_path}]"
             else:
-                output_text += f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines} ({format_size(DEFAULT_MAX_BYTES)} limit). Full output: {temp_file_path}]"
+                output_text += f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines} ({format_size(max_output_bytes)} limit). Full output: {temp_file_path}]"
 
         if exit_code is not None and exit_code != 0:
             output_text += f"\n\nCommand exited with code {exit_code}"

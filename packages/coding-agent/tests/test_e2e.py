@@ -36,8 +36,9 @@ def _ts():
 
 
 @pytest.mark.asyncio
-async def test_e2e_read_write_workflow():
+async def test_e2e_read_write_workflow(monkeypatch):
     """Test that the agent can read and write files using tools."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a test file
         test_file = os.path.join(tmpdir, "hello.txt")
@@ -129,8 +130,9 @@ async def test_e2e_system_prompt_includes_cwd():
 
 
 @pytest.mark.asyncio
-async def test_e2e_session_persistence():
+async def test_e2e_session_persistence(monkeypatch):
     """Test that messages are persisted across session restores."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with tempfile.TemporaryDirectory() as tmpdir:
         model = get_model("anthropic", "claude-3-5-sonnet-20241022")
         settings = Settings(auto_compact=False)
@@ -164,8 +166,9 @@ async def test_e2e_session_persistence():
 
 
 @pytest.mark.asyncio
-async def test_e2e_compaction():
+async def test_e2e_compaction(monkeypatch):
     """Test that manual compaction works."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with tempfile.TemporaryDirectory() as tmpdir:
         model = get_model("anthropic", "claude-3-5-sonnet-20241022")
         settings = Settings(auto_compact=False)
@@ -843,10 +846,1020 @@ async def test_tui_initial_messages_render_without_text_delta(monkeypatch):
         "",
         "".join(terminal._writes),
     )
-    assert "You: 你好" in clean
-    assert "You: hello" in clean
+    assert "你好" in clean        # user message (gray box, no "You:" label)
+    assert "hello" in clean
     assert "Assistant: Echo: 你好" in clean
     assert "Assistant: Echo: hello" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_extension_can_install_custom_editor_component(monkeypatch):
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            pass
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class CustomEditor:
+        focused = False
+
+        def __init__(self):
+            self.text = ""
+            self.autocomplete_provider = None
+
+        def render(self, width):
+            return ["custom editor"]
+
+        def invalidate(self):
+            pass
+
+        def handle_input(self, data):
+            pass
+
+        def set_text(self, text):
+            self.text = text
+
+        def get_text(self):
+            return self.text
+
+        def set_autocomplete_provider(self, provider):
+            self.autocomplete_provider = provider
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.custom_editor = CustomEditor()
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def bind_extensions(self, bindings):
+            ui = bindings["uiContext"]
+            ui.setEditorText("draft")
+            ui.setEditorComponent(lambda tui, theme, keybindings: self.custom_editor)
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    session = FakeSession()
+    await _run_pi_tui(session, initial_messages=["/exit"])
+
+    assert session.custom_editor.text == "draft"
+    assert session.custom_editor.focused is True
+    assert callable(session.custom_editor.on_submit)
+    assert callable(session.custom_editor.on_keydown)
+    assert session.custom_editor.autocomplete_provider is not None
+
+
+@pytest.mark.asyncio
+async def test_tui_extension_dialogs_resolve_from_terminal_input(monkeypatch):
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            pass
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self, terminal) -> None:
+            self.terminal = terminal
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.results = {}
+
+        class AbortSignal:
+            def __init__(self) -> None:
+                self.aborted = False
+                self.listeners = []
+
+            def addEventListener(self, event, callback, options=None):
+                if event == "abort":
+                    self.listeners.append(callback)
+
+            def removeEventListener(self, event, callback):
+                if event == "abort" and callback in self.listeners:
+                    self.listeners.remove(callback)
+
+            def abort(self):
+                self.aborted = True
+                for callback in list(self.listeners):
+                    callback()
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def _send_keys(self, *keys):
+            await asyncio.sleep(0)
+            for key in keys:
+                self.terminal._on_input(key)
+                await asyncio.sleep(0)
+
+        async def _abort(self, signal):
+            await asyncio.sleep(0)
+            signal.abort()
+
+        async def bind_extensions(self, bindings):
+            ui = bindings["uiContext"]
+
+            asyncio.create_task(self._send_keys("down", "\n"))
+            self.results["select"] = await ui.select("Pick one", ["Alpha", "Beta"])
+
+            asyncio.create_task(self._send_keys("\n"))
+            self.results["confirm"] = await ui.confirm("Proceed", "Continue?")
+
+            asyncio.create_task(self._send_keys("o", "k", "\n"))
+            self.results["input"] = await ui.input("Name", "placeholder")
+
+            asyncio.create_task(self._send_keys("x", "\n"))
+            self.results["editor"] = await ui.editor("Draft", "pre")
+
+            signal = self.AbortSignal()
+            asyncio.create_task(self._abort(signal))
+            self.results["aborted_select"] = await ui.select("Abort", ["Alpha"], {"signal": signal})
+            self.results["abort_listeners"] = len(signal.listeners)
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    session = FakeSession(terminal)
+    await _run_pi_tui(session, initial_messages=["/exit"])
+
+    assert session.results == {
+        "select": "Beta",
+        "confirm": True,
+        "input": "ok",
+        "editor": "prex",
+        "aborted_select": None,
+        "abort_listeners": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tui_startup_renders_loaded_resources_before_initial_messages(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class ResourceLoader:
+        def get_agents_files(self):
+            return {"agentsFiles": [{"path": "/repo/AGENTS.md"}]}
+
+        def get_skills(self):
+            return {
+                "skills": [SimpleNamespace(name="planning", file_path="/repo/.pi/skills/planning/SKILL.md")],
+                "diagnostics": [],
+            }
+
+        def get_prompts(self):
+            return {
+                "prompts": [SimpleNamespace(name="summarize", file_path="/repo/.pi/prompts/summarize.md")],
+                "diagnostics": [{"type": "collision", "message": 'name "/summarize" collision', "path": "/repo/dup.md"}],
+            }
+
+        def get_extensions(self):
+            return {
+                "extensions": [SimpleNamespace(path="/repo/.pi/extensions/work.py")],
+                "diagnostics": [{"type": "warning", "message": "command conflict", "path": "/repo/.pi/extensions/work.py"}],
+                "errors": [],
+            }
+
+        def get_themes(self):
+            return {"themes": [SimpleNamespace(name="solarized", path="/repo/theme.json")], "diagnostics": []}
+
+    class ExtensionRunner:
+        def get_registered_commands(self):
+            return []
+
+        def get_command_diagnostics(self):
+            return [{"type": "warning", "message": "extension command skipped", "path": "/repo/ext.py"}]
+
+        def get_shortcut_diagnostics(self):
+            return []
+
+    class SettingsManager:
+        def get_quiet_startup(self):
+            return False
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self._listeners: list = []
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.resource_loader = ResourceLoader()
+            self.extension_runner = ExtensionRunner()
+            self.settings_manager = SettingsManager()
+
+        @property
+        def prompt_templates(self):
+            return self.resource_loader.get_prompts()["prompts"]
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            self._listeners.append(fn)
+            return lambda: self._listeners.remove(fn)
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            message = SimpleNamespace(
+                role="assistant",
+                content=[SimpleNamespace(type="text", text=f"Echo: {text}")],
+                error_message=None,
+            )
+            for listener in list(self._listeners):
+                listener(SimpleNamespace(type="message_end", message=message))
+                listener(SimpleNamespace(type="turn_end", message=message))
+                listener(SimpleNamespace(type="agent_end"))
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    await _run_pi_tui(FakeSession(), initial_messages=["hello", "/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+
+    assert "[Context]" in clean
+    assert "/repo/AGENTS.md" in clean
+    assert "[Skills]" in clean
+    assert "planning" in clean
+    assert "[Prompts]" in clean
+    assert "/summarize" in clean
+    assert "[Extensions]" in clean
+    assert "/repo/.pi/extensions/work.py" in clean
+    assert "[Themes]" in clean
+    assert "solarized" in clean
+    assert "[Prompt conflicts]" in clean
+    assert 'name "/summarize" collision' in clean
+    assert "[Extension issues]" in clean
+    assert "extension command skipped" in clean
+    assert clean.index("[Context]") < clean.index("hello")
+
+
+@pytest.mark.asyncio
+async def test_tui_reload_rerenders_resources_and_refreshes_extension_commands(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class ResourceLoader:
+        def __init__(self) -> None:
+            self.reloaded = False
+
+        def get_agents_files(self):
+            return {"agentsFiles": []}
+
+        def get_skills(self):
+            name = "after-reload-skill" if self.reloaded else "before-reload-skill"
+            return {"skills": [SimpleNamespace(name=name, file_path=f"/repo/{name}/SKILL.md")], "diagnostics": []}
+
+        def get_prompts(self):
+            return {"prompts": [], "diagnostics": []}
+
+        def get_extensions(self):
+            path = "/repo/.pi/extensions/after_reload.py" if self.reloaded else "/repo/.pi/extensions/before_reload.py"
+            return {"extensions": [SimpleNamespace(path=path)], "diagnostics": [], "errors": []}
+
+        def get_themes(self):
+            return {"themes": [], "diagnostics": []}
+
+    class ExtensionRunner:
+        def __init__(self, reloaded: bool = False) -> None:
+            self.reloaded = reloaded
+
+        def get_registered_commands(self):
+            if not self.reloaded:
+                return []
+            return [
+                SimpleNamespace(
+                    name="after-reload",
+                    invocation_name="after-reload",
+                    description="Command registered after reload",
+                )
+            ]
+
+        def get_shortcuts(self, config):
+            return {}
+
+        def get_command_diagnostics(self):
+            return []
+
+        def get_shortcut_diagnostics(self):
+            return []
+
+    class SettingsManager:
+        def get_quiet_startup(self):
+            return False
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.resource_loader = ResourceLoader()
+            self.extension_runner = ExtensionRunner()
+            self.settings_manager = SettingsManager()
+
+        @property
+        def prompt_templates(self):
+            return []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        async def reload(self):
+            self.resource_loader.reloaded = True
+            self.extension_runner = ExtensionRunner(reloaded=True)
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    await _run_pi_tui(FakeSession(), initial_messages=["/reload", "/help", "/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+
+    assert "after-reload-skill" in clean
+    assert "/repo/.pi/extensions/after_reload.py" in clean
+    assert "Reloaded keybindings, extensions, skills, prompts, themes." in clean
+    assert "/after-reload" in clean
+    assert "Command registered after reload" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            ui = bindings["uiContext"]
+            ui.setHeader(lambda tui, theme: "Extension header")
+            ui.setFooter(lambda tui, theme, footer_data: "Extension footer")
+            await asyncio.sleep(0)
+            ui.setFooter(None)
+            ui.setWorkingMessage("Indexing project")
+            ui.setWorkingIndicator({"label": "dots"})
+            ui.setWorkingVisible(True)
+            await asyncio.sleep(0)
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    await _run_pi_tui(FakeSession(), initial_messages=["/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+
+    assert "Extension header" in clean
+    assert "Extension footer" in clean
+    assert "working: Indexing project (dots)" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_extension_theme_contract_matches_interactive_runtime(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+    from pi_coding_agent.modes.interactive.theme.theme import BUILTIN_THEME_JSON
+
+    custom_theme = json.loads(json.dumps(BUILTIN_THEME_JSON["dark"]))
+    custom_theme["name"] = "solarized"
+    theme_path = tmp_path / "solarized.json"
+    theme_path.write_text(json.dumps(custom_theme), encoding="utf-8")
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class ResourceLoader:
+        def get_themes(self):
+            return {"themes": [SimpleNamespace(name="solarized", path=str(theme_path))], "diagnostics": []}
+
+    class SettingsManager:
+        def __init__(self) -> None:
+            self.theme = "dark"
+            self.saved: list[tuple[str, str]] = []
+
+        def get_theme(self):
+            return self.theme
+
+        def save_project(self, key: str, value: str) -> None:
+            self.saved.append((key, value))
+            if key == "theme":
+                self.theme = value
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.resource_loader = ResourceLoader()
+            self.settings_manager = SettingsManager()
+            self.theme_names: list[str] = []
+            self.resolved_theme_name: str | None = None
+            self.active_theme_name: str | None = None
+            self.header_theme_name: str | None = None
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        async def bind_extensions(self, bindings):
+            ui = bindings["uiContext"]
+            self.theme_names = [theme["name"] for theme in ui.getAllThemes()]
+            resolved = ui.getTheme("solarized")
+            self.resolved_theme_name = getattr(resolved, "name", None)
+            assert ui.setTheme("solarized") == {"success": True}
+            self.active_theme_name = getattr(ui.theme, "name", None)
+
+            def header(_tui, theme):
+                self.header_theme_name = getattr(theme, "name", None)
+                return "Themed header"
+
+            ui.setHeader(header)
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    session = FakeSession()
+    await _run_pi_tui(session, initial_messages=["/exit"])
+
+    assert "solarized" in session.theme_names
+    assert session.resolved_theme_name == "solarized"
+    assert session.active_theme_name == "solarized"
+    assert session.header_theme_name == "solarized"
+    assert session.settings_manager.saved == [("theme", "solarized")]
+
+
+@pytest.mark.asyncio
+async def test_tui_extension_custom_component_receives_input_and_restores_editor(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class CustomComponent:
+        focused = False
+
+        def __init__(self, done):
+            self.done = done
+            self.disposed = False
+
+        def render(self, width):
+            return ["Custom picker", "Press enter"]
+
+        def invalidate(self):
+            pass
+
+        def handle_input(self, data):
+            if data in {"\n", "enter", "return"}:
+                self.done("accepted")
+
+        def dispose(self):
+            self.disposed = True
+
+    class FakeSession:
+        def __init__(self, terminal) -> None:
+            self.terminal = terminal
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.custom_component = None
+            self.results = {}
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def _send_key(self, key):
+            await asyncio.sleep(0)
+            self.terminal._on_input(key)
+            await asyncio.sleep(0)
+
+        async def bind_extensions(self, bindings):
+            ui = bindings["uiContext"]
+            ui.setEditorText("draft")
+
+            def factory(tui, theme, keybindings, done):
+                self.custom_component = CustomComponent(done)
+                return self.custom_component
+
+            asyncio.create_task(self._send_key("\n"))
+            self.results["custom"] = await ui.custom(factory)
+            self.results["editor_text"] = ui.getEditorText()
+            self.results["disposed"] = self.custom_component.disposed
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession(terminal)
+
+    await _run_pi_tui(session, initial_messages=["/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+
+    assert "Custom picker" in clean
+    assert session.results == {
+        "custom": "accepted",
+        "editor_text": "draft",
+        "disposed": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -1089,7 +2102,8 @@ async def test_tui_renders_tool_execution_lines(monkeypatch):
                 listener(SimpleNamespace(type="agent_start"))
                 listener(SimpleNamespace(type="turn_start"))
                 listener(SimpleNamespace(type="message_start", message=assistant))
-                listener(SimpleNamespace(type="tool_execution_start", tool_call_id="tc1", tool_name="bash"))
+                listener(SimpleNamespace(type="tool_execution_start", tool_call_id="tc1",
+                                         tool_name="bash", args={"command": "echo hi"}))
                 listener(
                     SimpleNamespace(
                         type="tool_execution_end",
@@ -1114,8 +2128,12 @@ async def test_tui_renders_tool_execution_lines(monkeypatch):
         "",
         "".join(terminal._writes),
     )
-    assert "Tool start: bash" in clean
-    assert "Tool end: bash" in clean
+    # Active tool shows a blue marker; completed tool shows a success box
+    # (✓ header) with the call written out ($ command) and the output.
+    assert "⏵ bash" in clean
+    assert "✓ bash" in clean
+    assert "$ echo hi" in clean
+    assert "exit_code: 0" in clean
 
 
 @pytest.mark.asyncio
@@ -1243,3 +2261,1159 @@ async def test_tui_does_not_require_agent_end_event(monkeypatch):
         "".join(terminal._writes),
     )
     assert "Completed without agent_end." in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_assistant_markdown_is_styled(monkeypatch):
+    """Assistant markdown renders via the Markdown component: headings yellow,
+    inline code cyan (backticks gone), bold light-cyan."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+
+        def stop(self) -> None: pass
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None: return
+        def write(self, data: str) -> None: self._writes.append(data)
+        def move_by(self, lines: int) -> None: pass
+        def hide_cursor(self) -> None: pass
+        def show_cursor(self) -> None: pass
+        def clear_line(self) -> None: pass
+        def clear_from_cursor(self) -> None: pass
+        def clear_screen(self) -> None: pass
+        def set_title(self, title: str) -> None: pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self._listeners: list = []
+            self.model = SimpleNamespace(id="MiniMax-M3", provider="minimax")
+            self.thinking_level = "off"
+
+        def get_context_usage(self): return None
+        def get_active_tool_names(self): return ["bash"]
+        def get_session_stats(self):
+            return {"sessionId": "t", "userMessages": 0, "assistantMessages": 0,
+                    "toolCalls": 0, "tokens": {"total": 0}, "cost": 0.0}
+        def cycle_thinking_level(self): return "minimal"
+        async def compact(self): return ""
+        async def set_model(self, model): self.model = model
+        async def cycle_model(self, direction="forward"): return None
+        async def follow_up(self, msg): pass
+
+        @property
+        def model_registry(self):
+            async def ga(): return [self.model]
+            return SimpleNamespace(get_available=ga)
+
+        def subscribe(self, fn):
+            self._listeners.append(fn)
+            return lambda: None
+
+        async def prompt(self, text, images=None, source=None) -> None:
+            md = "## Title\n\nSome **strong** and `inline_code` here."
+            assistant = SimpleNamespace(
+                role="assistant",
+                content=[SimpleNamespace(type="text", text=md)],
+                error_message=None,
+            )
+            for listener in list(self._listeners):
+                listener(SimpleNamespace(type="agent_start"))
+                listener(SimpleNamespace(type="turn_start"))
+                listener(SimpleNamespace(type="message_start", message=assistant))
+                listener(SimpleNamespace(type="message_end", message=assistant))
+                listener(SimpleNamespace(type="turn_end", message=assistant))
+                listener(SimpleNamespace(type="agent_end", messages=[assistant]))
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    await _run_pi_tui(FakeSession(), initial_messages=["go", "/exit"])
+
+    raw = "".join(terminal._writes)
+    assert "\x1b[33m" in raw            # heading yellow
+    assert "\x1b[38;5;51m" in raw       # inline code cyan
+    assert "\x1b[38;5;39m" in raw       # bold blue (matches tool calls)
+    # backticks are removed by the markdown parser
+    clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw)
+    assert "inline_code" in clean and "`inline_code`" not in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_esc_interrupts_running_agent(monkeypatch):
+    """Pressing ESC while the agent is working aborts the turn (session.abort)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+            self._on_input = None
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None: pass
+        def hide_cursor(self) -> None: pass
+        def show_cursor(self) -> None: pass
+        def clear_line(self) -> None: pass
+        def clear_from_cursor(self) -> None: pass
+        def clear_screen(self) -> None: pass
+        def set_title(self, title: str) -> None: pass
+
+    started = asyncio.Event()
+    aborted = asyncio.Event()
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self._listeners: list = []
+            self.model = SimpleNamespace(id="MiniMax-M3", provider="minimax")
+            self.thinking_level = "off"
+
+        def get_context_usage(self): return None
+        def get_active_tool_names(self): return ["bash"]
+        def get_session_stats(self):
+            return {"sessionId": "t", "userMessages": 0, "assistantMessages": 0,
+                    "toolCalls": 0, "tokens": {"total": 0}, "cost": 0.0}
+        def cycle_thinking_level(self): return "minimal"
+        async def compact(self): return ""
+        async def set_model(self, model): self.model = model
+        async def cycle_model(self, direction="forward"): return None
+        async def follow_up(self, msg): pass
+
+        @property
+        def model_registry(self):
+            async def ga(): return [self.model]
+            return SimpleNamespace(get_available=ga)
+
+        def subscribe(self, fn):
+            self._listeners.append(fn)
+            return lambda: self._listeners.remove(fn) if fn in self._listeners else None
+
+        async def abort(self):
+            aborted.set()
+
+        async def prompt(self, text, images=None, source=None) -> None:
+            for listener in list(self._listeners):
+                listener(SimpleNamespace(type="agent_start"))
+                listener(SimpleNamespace(type="turn_start"))
+            started.set()        # agent is now "working" (is_busy True)
+            await aborted.wait()  # block until ESC -> abort fires
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+
+    task = asyncio.create_task(_run_pi_tui(session, initial_messages=["do work"]))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert terminal._on_input is not None
+        terminal._on_input("\x1b")  # press ESC
+        await asyncio.wait_for(aborted.wait(), timeout=5)
+        assert aborted.is_set()  # session.abort() was invoked
+    finally:
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_tui_tree_rebuilds_visible_history_after_navigation(monkeypatch):
+    """Interactive /tree should rebuild the visible transcript from the selected branch."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.messages = [
+                {"role": "user", "content": "stale branch prompt"},
+                {"role": "assistant", "content": [{"type": "text", "text": "stale branch response"}]},
+            ]
+            self.navigated: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 1,
+                "assistantMessages": 1,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def get_messages(self):
+            return self.messages
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def navigate_tree(self, entry_id):
+            self.navigated.append(entry_id)
+            self.messages = [
+                {"role": "user", "content": "selected branch prompt"},
+                {"role": "assistant", "content": [{"type": "text", "text": "selected branch response"}]},
+            ]
+            return {"cancelled": False, "editorText": "selected branch prompt"}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+
+    await _run_pi_tui(session, initial_messages=["/tree entry-1", "/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert session.navigated == ["entry-1"]
+    assert "selected branch prompt" in clean
+    assert "selected branch response" in clean
+    assert "Navigated session tree." in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_fork_uses_runtime_host_and_restores_selected_text(monkeypatch):
+    """Interactive /fork <entry> should replace through runtime host and restore selected text."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self, model_id: str) -> None:
+            self.model = SimpleNamespace(id=model_id, provider="openai")
+            self.thinking_level = "off"
+            self.direct_fork_calls: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def fork_session(self, entry_id):
+            self.direct_fork_calls.append(entry_id)
+            return {"cancelled": False, "selectedText": "direct"}
+
+    class RuntimeHost:
+        def __init__(self, session):
+            self.session = session
+            self.forks: list[str] = []
+
+        async def fork(self, entry_id, options=None):
+            self.forks.append(entry_id)
+            self.session = FakeSession("forked-model")
+            return {"cancelled": False, "selectedText": "selected prompt"}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    original = FakeSession("initial-model")
+    runtime = RuntimeHost(original)
+
+    await _run_pi_tui(original, initial_messages=["/fork entry-7", "/session", "/exit"], runtime_host=runtime)
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert runtime.forks == ["entry-7"]
+    assert original.direct_fork_calls == []
+    assert runtime.session.model.id == "forked-model"
+    assert "Forked to new session" in clean
+    assert "forked-model" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_resume_uses_runtime_host_switch_contract(monkeypatch):
+    """Interactive /resume should replace through runtime host switchSession."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self, model_id: str) -> None:
+            self.model = SimpleNamespace(id=model_id, provider="openai")
+            self.thinking_level = "off"
+            self.direct_switches: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def switch_session(self, session_path):
+            self.direct_switches.append(session_path)
+            return True
+
+    class RuntimeHost:
+        def __init__(self, session):
+            self.session = session
+            self.switches: list[str] = []
+
+        async def switch_session(self, session_path):
+            self.switches.append(session_path)
+            self.session = FakeSession("resumed-model")
+            return {"cancelled": False}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    original = FakeSession("initial-model")
+    runtime = RuntimeHost(original)
+
+    await _run_pi_tui(original, initial_messages=["/resume /tmp/session.jsonl", "/session", "/exit"], runtime_host=runtime)
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert runtime.switches == ["/tmp/session.jsonl"]
+    assert original.direct_switches == []
+    assert runtime.session.model.id == "resumed-model"
+    assert "Resumed session." in clean
+    assert "resumed-model" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_new_uses_runtime_host_replacement_contract(monkeypatch):
+    """Interactive /new should replace through the runtime host, not only mutate the session."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self, model_id: str) -> None:
+            self.model = SimpleNamespace(id=model_id, provider="openai")
+            self.thinking_level = "off"
+            self.direct_new_calls = 0
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def new_session(self):
+            self.direct_new_calls += 1
+            return True
+
+    class RuntimeHost:
+        def __init__(self, session):
+            self.session = session
+            self.new_calls = 0
+
+        async def new_session(self):
+            self.new_calls += 1
+            self.session = FakeSession("replacement-model")
+            return {"cancelled": False}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    original = FakeSession("initial-model")
+    runtime = RuntimeHost(original)
+
+    await _run_pi_tui(original, initial_messages=["/new", "/session", "/exit"], runtime_host=runtime)
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert runtime.new_calls == 1
+    assert original.direct_new_calls == 0
+    assert runtime.session.model.id == "replacement-model"
+    assert "Started a new session." in clean
+    assert "replacement-model" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_clone_uses_runtime_host_current_leaf_contract(monkeypatch):
+    """Interactive /clone should mirror Node runtime-host current-leaf fork behavior."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class SessionManager:
+        def get_leaf_id(self):
+            return "leaf-123"
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.session_manager = SessionManager()
+            self.clone_calls = 0
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def clone_session(self):
+            self.clone_calls += 1
+            return {"cancelled": False}
+
+    class RuntimeHost:
+        def __init__(self, session):
+            self.session = session
+            self.forks: list[tuple[str, dict[str, str]]] = []
+
+        async def fork(self, entry_id, options=None):
+            self.forks.append((entry_id, options or {}))
+            return {"cancelled": False}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+    runtime = RuntimeHost(session)
+
+    await _run_pi_tui(session, initial_messages=["/clone", "/exit"], runtime_host=runtime)
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert runtime.forks == [("leaf-123", {"position": "at"})]
+    assert session.clone_calls == 0
+    assert "Cloned to new session" in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_export_jsonl_and_import_use_runtime_contract(monkeypatch, tmp_path):
+    """Interactive /export and /import should mirror Node runtime contracts."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.exported_html: list[str | None] = []
+            self.exported_jsonl: list[str] = []
+            self.switched: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            return None
+
+        async def export_to_html(self, output_path=None):
+            self.exported_html.append(output_path)
+            return output_path or "/tmp/session.html"
+
+        def export_to_jsonl(self, output_path):
+            self.exported_jsonl.append(output_path)
+            return output_path
+
+        async def switch_session(self, session_path):
+            self.switched.append(session_path)
+            return True
+
+    class RuntimeHost:
+        def __init__(self, session):
+            self.session = session
+            self.imported: list[str] = []
+
+        async def import_from_jsonl(self, input_path, cwd_override=None):
+            self.imported.append(input_path)
+            return {"cancelled": False}
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+    runtime = RuntimeHost(session)
+    html_path = str(tmp_path / "out file.html")
+    jsonl_path = str(tmp_path / "out file.jsonl")
+    import_path = str(tmp_path / "source file.jsonl")
+
+    await _run_pi_tui(
+        session,
+        initial_messages=[
+            f'/export "{jsonl_path}" trailing text',
+            f"/export '{html_path}' trailing text",
+            f'/import "{import_path}" trailing text',
+            "/exit",
+        ],
+        runtime_host=runtime,
+    )
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert session.exported_jsonl == [jsonl_path]
+    assert session.exported_html == [html_path]
+    assert runtime.imported == [import_path]
+    assert session.switched == []
+    assert clean.count("Exported session:") >= 2
+    assert "out file.jsonl" in clean
+    assert "out file.html" in clean
+    assert "Imported session." in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_compact_command_passes_custom_instructions(monkeypatch):
+    """Interactive /compact <text> should pass custom instructions to the session."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="gpt-5.4-nano", provider="openai")
+            self.thinking_level = "off"
+            self.compact_calls: list[str | None] = []
+            self.prompts: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self, custom_instructions=None):
+            self.compact_calls.append(custom_instructions)
+            return "summary"
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            self.prompts.append(text)
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+
+    await _run_pi_tui(
+        session,
+        initial_messages=[
+            "/compact focus on decisions and open risks",
+            "/exit",
+        ],
+    )
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert session.compact_calls == ["focus on decisions and open risks"]
+    assert session.prompts == []
+    assert "Compaction complete." in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_accepts_provider_model_reference(monkeypatch):
+    """Interactive /model should accept canonical provider/model references."""
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None:
+            self._on_input = on_input
+            self._on_resize = on_resize
+
+        def stop(self) -> None:
+            pass
+
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            return
+
+        def write(self, data: str) -> None:
+            self._writes.append(data)
+
+        def move_by(self, lines: int) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, title: str) -> None:
+            pass
+
+    openai_model = SimpleNamespace(id="shared-model", provider="openai")
+    anthropic_model = SimpleNamespace(id="shared-model", provider="anthropic")
+
+    class Registry:
+        async def get_available(self):
+            return [openai_model, anthropic_model]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = anthropic_model
+            self.model_registry = Registry()
+            self.thinking_level = "off"
+            self.selected_models: list[object] = []
+            self.prompts: list[str] = []
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self, custom_instructions=None):
+            return ""
+
+        async def set_model(self, model):
+            self.selected_models.append(model)
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        async def bind_extensions(self, bindings):
+            return None
+
+        def subscribe(self, fn):
+            return lambda: None
+
+        async def prompt(self, text: str, images=None, source: str | None = None) -> None:
+            self.prompts.append(text)
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    session = FakeSession()
+
+    await _run_pi_tui(
+        session,
+        initial_messages=[
+            "/model openai/shared-model",
+            "/model shared-model",
+            "/exit",
+        ],
+    )
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        "".join(terminal._writes),
+    )
+    assert session.selected_models == [openai_model]
+    assert session.prompts == []
+    assert "Switched to model: shared-model (openai)" in clean
+    assert "Unknown model: shared-model" in clean
