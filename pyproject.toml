@@ -62,11 +62,18 @@ Homepage = "https://github.com/Nuosis/pi-mono-python"
 Repository = "https://github.com/Nuosis/pi-mono-python"
 Issues = "https://github.com/Nuosis/pi-mono-python/issues"
 
-# Entry points — only `pi-py` to avoid collision with the Node.js `pi` CLI
-# (https://github.com/badlogic/pi-mono). The Node `pi` registers `pi` on PATH;
-# installing both would shadow one. Users running both should use `pi-py`.
-[project.scripts]
-pi-py = "pi_coding_agent.main:main"
+# No [project.scripts] here by design.
+#
+# The Python port's `pi-coding-agent` package historically registered both
+# `pi` and `pi-py` console scripts. The `pi` slot on PATH collides with the
+# Node.js `pi-mono` CLI (https://github.com/badlogic/pi-mono) — installing
+# both packages would shadow one. The `pi-py` slot was kept as a workaround.
+#
+# Decision (2026-06-11): ship the package as an importable library only.
+# Users who want the CLI can invoke `python -m pi_coding_agent.main`
+# or `python -c "from pi_coding_agent.main import main; main()"` after
+# `pip install clarity-pi`. This keeps Node `pi` and Python `pi-py`
+# cleanly side-by-side, with zero PATH contention.
 
 # Bundle all 4 sub-packages into a single wheel (namespace distribution).
 # Users get: import pi_ai, pi_agent, pi_coding_agent, pi_tui, plus the pi-py CLI.

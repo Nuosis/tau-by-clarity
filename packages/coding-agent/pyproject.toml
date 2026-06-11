@@ -24,8 +24,11 @@ dev = [
     "pytest-tmp-files>=0.0.2",
 ]
 
-[project.scripts]
-pi-py = "pi_coding_agent.main:main"
+# No [project.scripts] here either. See the top-level pyproject.toml for
+# the rationale (avoid shadowing the Node.js `pi` CLI on PATH). When the
+# coding-agent is developed in isolation, run it via
+# `python -m pi_coding_agent.main` instead of the removed `pi` / `pi-py`
+# console scripts.
 
 [build-system]
 requires = ["hatchling"]
