@@ -1,10 +1,55 @@
-[project]
-name = "pi-mono-python"
-version = "0.53.0"
-description = "Python mirror of pi-mono TypeScript monorepo"
-requires-python = ">=3.11,<3.14"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[dependency-groups]
+[project]
+name = "pi-py"
+version = "0.53.0"
+description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "Marcus Swift", email = "marcus@claritybusinesssolutions.ca" },
+]
+keywords = ["ai", "agent", "coding-agent", "llm", "anthropic", "openai", "cli", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: User Interfaces",
+    "Topic :: Terminals",
+    "Typing :: Typed",
+]
+# Merged external dependencies from all 4 sub-packages (pi-ai, pi-agent, pi-coding-agent, pi-tui)
+dependencies = [
+    "pydantic>=2.0.0",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "google-genai>=1.64.0",
+    "boto3>=1.35.0",
+    "httpx>=0.27.0",
+    "jsonschema>=4.0.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "aiofiles>=24.0.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "pygments>=2.17.0",
+    "wcwidth>=0.2.13",
+    "mistune>=3.0.2",
+]
+
+[project.optional-dependencies]
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
@@ -12,6 +57,49 @@ dev = [
     "pytest-timeout>=2.4.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Nuosis/pi-mono-python"
+Repository = "https://github.com/Nuosis/pi-mono-python"
+Issues = "https://github.com/Nuosis/pi-mono-python/issues"
+
+# Entry points (from pi-coding-agent)
+[project.scripts]
+pi = "pi_coding_agent.main:main"
+pi-py = "pi_coding_agent.main:main"
+
+# Bundle all 4 sub-packages into a single wheel (namespace distribution).
+# Users get: import pi_ai, pi_agent, pi_coding_agent, pi_tui, plus the pi-py CLI.
+[tool.hatch.build.targets.wheel.force-include]
+"packages/ai/src/pi_ai" = "pi_ai"
+"packages/agent/src/pi_agent" = "pi_agent"
+"packages/coding-agent/src/pi_coding_agent" = "pi_coding_agent"
+"packages/tui/src/pi_tui" = "pi_tui"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "packages/ai/src/pi_ai",
+    "packages/agent/src/pi_agent",
+    "packages/coding-agent/src/pi_coding_agent",
+    "packages/tui/src/pi_tui",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+    "PARITY.md",
+    "parity_audit.py",
+    "eval_parity.py",
+]
+exclude = [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/tests",
+    "**/tests/**",
+    "**/examples",
+    "**/.pi-py",
+    "**/build",
+    "**/.venv",
+]
+
+# Keep the uv workspace for local dev (sub-packages remain independent).
 [tool.uv.workspace]
 members = ["packages/ai", "packages/agent", "packages/coding-agent", "packages/tui"]
 
