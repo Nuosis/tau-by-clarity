@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clarity-pi"
-version = "0.53.0"
+version = "0.53.1"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -62,9 +62,10 @@ Homepage = "https://github.com/Nuosis/pi-mono-python"
 Repository = "https://github.com/Nuosis/pi-mono-python"
 Issues = "https://github.com/Nuosis/pi-mono-python/issues"
 
-# Entry points (from pi-coding-agent)
+# Entry points — only `pi-py` to avoid collision with the Node.js `pi` CLI
+# (https://github.com/badlogic/pi-mono). The Node `pi` registers `pi` on PATH;
+# installing both would shadow one. Users running both should use `pi-py`.
 [project.scripts]
-pi = "pi_coding_agent.main:main"
 pi-py = "pi_coding_agent.main:main"
 
 # Bundle all 4 sub-packages into a single wheel (namespace distribution).

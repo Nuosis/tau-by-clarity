@@ -25,7 +25,6 @@ dev = [
 ]
 
 [project.scripts]
-pi = "pi_coding_agent.main:main"
 pi-py = "pi_coding_agent.main:main"
 
 [build-system]
