@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pi-py"
+name = "clarity-pi"
 version = "0.53.0"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
