@@ -143,8 +143,36 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     assert created_again is None
     assert text.count("pi-py managed shell function") == 2
     assert 'grep -q "clarity-pi" "pyproject.toml"' in text
+    assert 'uv sync --upgrade-package clarity-pi "$@"' in text
     assert 'uv run pi-py "$@"' in text
     assert 'command pi-py "$@"' in text
+
+
+def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> None:
+    from pi_coding_agent import config
+
+    old_block = "\n".join(
+        [
+            "# >>> pi-py managed shell function >>>",
+            "pi-py() {",
+            '  uv run pi-py "$@"',
+            "}",
+            "# <<< pi-py managed shell function <<<",
+            "",
+        ]
+    )
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_text(f"# before\n{old_block}# after\n", encoding="utf-8")
+
+    changed = config.ensure_zsh_pi_py_alias(str(zshrc))
+
+    text = zshrc.read_text(encoding="utf-8")
+    assert changed == str(zshrc)
+    assert "# before" in text
+    assert "# after" in text
+    assert text.count("pi-py()") == 1
+    assert 'uv sync --upgrade-package clarity-pi "$@"' in text
+    assert '  uv run pi-py "$@"\n}' not in text
 
 
 def test_scaffold_installs_zsh_alias_once(tmp_path, monkeypatch) -> None:

@@ -26,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.4"
+        VERSION = "0.54.5"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -362,7 +362,12 @@ def _pi_py_zsh_function_block() -> str:
             _ZSH_ALIAS_BEGIN,
             "pi-py() {",
             '  if [ -f "pyproject.toml" ] && grep -q "clarity-pi" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
-            '    uv run pi-py "$@"',
+            '    if [ "${1:-}" = "update" ]; then',
+            '      shift',
+            '      uv sync --upgrade-package clarity-pi "$@"',
+            "    else",
+            '      uv run pi-py "$@"',
+            "    fi",
             "  else",
             '    command pi-py "$@"',
             "  fi",
@@ -388,7 +393,14 @@ def ensure_zsh_pi_py_alias(zshrc_path: str | None = None) -> str | None:
             with open(path, encoding="utf-8") as f:
                 existing = f.read()
         if _ZSH_ALIAS_BEGIN in existing and _ZSH_ALIAS_END in existing:
-            return None
+            start = existing.index(_ZSH_ALIAS_BEGIN)
+            end = existing.index(_ZSH_ALIAS_END, start) + len(_ZSH_ALIAS_END)
+            if existing[start:end].strip() == block.strip():
+                return None
+            updated = existing[:start] + block.rstrip("\n") + existing[end:]
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            return path
         os.makedirs(os.path.dirname(path), exist_ok=True)
         prefix = "" if not existing or existing.endswith("\n") else "\n"
         with open(path, "a", encoding="utf-8") as f:
