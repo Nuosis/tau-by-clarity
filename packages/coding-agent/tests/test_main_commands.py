@@ -205,12 +205,29 @@ def test_ensure_project_gitignore_adds_agent_sensitive_paths(tmp_path) -> None:
     changed_again = config.ensure_project_gitignore(str(proj))
 
     text = (proj / ".gitignore").read_text(encoding="utf-8")
+    lines = text.splitlines()
     assert changed == str(proj / ".gitignore")
     assert changed_again is None
+    assert ".pi-py/agent/auth.json.key" in text
+    assert ".pi-py/agent/pii_vault" in text
+    assert ".pi-py/agent/sessions" in text
+    assert ".pi-py/evals/results/" in text
+    assert "**/.pi-py/agent/auth.json.key" in text
+    assert "**/.pi-py/agent/pii_vault" in text
+    assert "**/.pi-py/agent/sessions" in text
+    assert "~/.pi-py/agent/auth.json.key" in text
     assert "~/.pi-py/agent/pii_vault" in text
     assert "~/.pi-py/agent/sessions" in text
-    assert text.count("~/.pi-py/agent/pii_vault") == 1
-    assert text.count("~/.pi-py/agent/sessions") == 1
+    assert lines.count(".pi-py/agent/auth.json.key") == 1
+    assert lines.count(".pi-py/agent/pii_vault") == 1
+    assert lines.count(".pi-py/agent/sessions") == 1
+    assert lines.count(".pi-py/evals/results/") == 1
+    assert lines.count("**/.pi-py/agent/auth.json.key") == 1
+    assert lines.count("**/.pi-py/agent/pii_vault") == 1
+    assert lines.count("**/.pi-py/agent/sessions") == 1
+    assert lines.count("~/.pi-py/agent/auth.json.key") == 1
+    assert lines.count("~/.pi-py/agent/pii_vault") == 1
+    assert lines.count("~/.pi-py/agent/sessions") == 1
 
 
 def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
@@ -224,10 +241,19 @@ def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
     changed = config.ensure_project_gitignore(str(proj))
 
     text = gitignore.read_text(encoding="utf-8")
+    lines = text.splitlines()
     assert changed == str(gitignore)
     assert ".venv" in text
-    assert text.count("~/.pi-py/agent/sessions") == 1
-    assert text.count("~/.pi-py/agent/pii_vault") == 1
+    assert lines.count(".pi-py/agent/auth.json.key") == 1
+    assert lines.count(".pi-py/agent/pii_vault") == 1
+    assert lines.count(".pi-py/agent/sessions") == 1
+    assert lines.count(".pi-py/evals/results/") == 1
+    assert lines.count("**/.pi-py/agent/auth.json.key") == 1
+    assert lines.count("**/.pi-py/agent/pii_vault") == 1
+    assert lines.count("**/.pi-py/agent/sessions") == 1
+    assert lines.count("~/.pi-py/agent/auth.json.key") == 1
+    assert lines.count("~/.pi-py/agent/sessions") == 1
+    assert lines.count("~/.pi-py/agent/pii_vault") == 1
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.7"
+        VERSION = "0.54.8"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -411,6 +411,14 @@ def ensure_zsh_pi_py_alias(zshrc_path: str | None = None) -> str | None:
 
 
 _PROJECT_GITIGNORE_ENTRIES = (
+    ".pi-py/agent/auth.json.key",
+    ".pi-py/agent/pii_vault",
+    ".pi-py/agent/sessions",
+    ".pi-py/evals/results/",
+    "**/.pi-py/agent/auth.json.key",
+    "**/.pi-py/agent/pii_vault",
+    "**/.pi-py/agent/sessions",
+    "~/.pi-py/agent/auth.json.key",
     "~/.pi-py/agent/pii_vault",
     "~/.pi-py/agent/sessions",
 )
