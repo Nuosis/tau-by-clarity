@@ -82,7 +82,7 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     if args and args[0] == "update":
         os.execvpe(
             "uv",
-            ["uv", "sync", "--project", project_root, "--upgrade-package", "clarity-pi", *args[1:]],
+            ["uv", "add", "--project", project_root, "--upgrade-package", "clarity-pi", "clarity-pi", *args[1:]],
             env,
         )
     os.execvpe(

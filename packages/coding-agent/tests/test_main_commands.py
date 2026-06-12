@@ -143,7 +143,7 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     assert created_again is None
     assert text.count("pi-py managed shell function") == 2
     assert 'grep -q "clarity-pi" "pyproject.toml"' in text
-    assert 'uv sync --upgrade-package clarity-pi "$@"' in text
+    assert 'uv add --upgrade-package clarity-pi clarity-pi "$@"' in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert 'command pi-py "$@"' in text
 
@@ -171,7 +171,7 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     assert "# before" in text
     assert "# after" in text
     assert text.count("pi-py()") == 1
-    assert 'uv sync --upgrade-package clarity-pi "$@"' in text
+    assert 'uv add --upgrade-package clarity-pi clarity-pi "$@"' in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert '  uv run pi-py "$@"\n}' not in text
 
@@ -297,7 +297,7 @@ def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None
     assert env["PI_PY_LOCAL_DISPATCH"] == "1"
 
 
-def test_dispatch_to_local_project_reexecs_update_as_uv_sync(tmp_path, monkeypatch) -> None:
+def test_dispatch_to_local_project_reexecs_update_as_uv_add(tmp_path, monkeypatch) -> None:
     from pi_coding_agent import main as main_mod
 
     proj = tmp_path / "proj"
@@ -318,7 +318,7 @@ def test_dispatch_to_local_project_reexecs_update_as_uv_sync(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="exec"):
         main_mod._dispatch_to_local_project(["update"], str(proj))
 
-    assert calls == [["uv", "sync", "--project", str(proj), "--upgrade-package", "clarity-pi"]]
+    assert calls == [["uv", "add", "--project", str(proj), "--upgrade-package", "clarity-pi", "clarity-pi"]]
 
 
 def test_dispatch_to_local_project_skips_init(tmp_path, monkeypatch) -> None:
