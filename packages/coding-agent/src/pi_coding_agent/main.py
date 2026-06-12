@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -63,6 +65,13 @@ def _find_local_project_root(cwd: str) -> str | None:
     return None
 
 
+def _latest_clarity_pi_requirement() -> str:
+    with urllib.request.urlopen("https://pypi.org/pypi/clarity-pi/json", timeout=20) as response:
+        data = json.load(response)
+    version = str(data["info"]["version"])
+    return f"clarity-pi=={version}"
+
+
 def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     """Re-exec into the project-pinned clarity-pi when launched globally.
 
@@ -80,9 +89,10 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     env = os.environ.copy()
     env[_LOCAL_DISPATCH_ENV] = "1"
     if args and args[0] == "update":
+        requirement = _latest_clarity_pi_requirement()
         os.execvpe(
             "uv",
-            ["uv", "add", "--project", project_root, "--upgrade-package", "clarity-pi", "clarity-pi", *args[1:]],
+            ["uv", "add", "--project", project_root, requirement, *args[1:]],
             env,
         )
     os.execvpe(

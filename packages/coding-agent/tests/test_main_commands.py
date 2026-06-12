@@ -143,7 +143,7 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     assert created_again is None
     assert text.count("pi-py managed shell function") == 2
     assert 'grep -q "clarity-pi" "pyproject.toml"' in text
-    assert 'uv add --upgrade-package clarity-pi clarity-pi "$@"' in text
+    assert 'command pi-py update "$@"' in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert 'command pi-py "$@"' in text
 
@@ -171,7 +171,7 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     assert "# before" in text
     assert "# after" in text
     assert text.count("pi-py()") == 1
-    assert 'uv add --upgrade-package clarity-pi clarity-pi "$@"' in text
+    assert 'command pi-py update "$@"' in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert '  uv run pi-py "$@"\n}' not in text
 
@@ -313,12 +313,13 @@ def test_dispatch_to_local_project_reexecs_update_as_uv_add(tmp_path, monkeypatc
         raise RuntimeError("exec")
 
     monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
+    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "clarity-pi==0.54.10")
     monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
 
     with pytest.raises(RuntimeError, match="exec"):
         main_mod._dispatch_to_local_project(["update"], str(proj))
 
-    assert calls == [["uv", "add", "--project", str(proj), "--upgrade-package", "clarity-pi", "clarity-pi"]]
+    assert calls == [["uv", "add", "--project", str(proj), "clarity-pi==0.54.10"]]
 
 
 def test_dispatch_to_local_project_skips_init(tmp_path, monkeypatch) -> None:

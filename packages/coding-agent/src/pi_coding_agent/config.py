@@ -26,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.10"
+        VERSION = "0.54.11"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -364,7 +364,7 @@ def _pi_py_zsh_function_block() -> str:
             '  if [ -f "pyproject.toml" ] && grep -q "clarity-pi" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
             '    if [ "${1:-}" = "update" ]; then',
             '      shift',
-            '      uv add --upgrade-package clarity-pi clarity-pi "$@"',
+            '      command pi-py update "$@"',
             "    else",
             '      uv run python -m pi_coding_agent.main "$@"',
             "    fi",
