@@ -44,6 +44,53 @@ from .core.trust_manager import ProjectTrustStore, has_project_trust_inputs
 from .migrations import run_migrations, show_deprecation_warnings
 from .modes import run_interactive_mode, run_print_mode, run_rpc_mode
 
+_LOCAL_DISPATCH_ENV = "PI_PY_LOCAL_DISPATCH"
+
+
+def _find_local_project_root(cwd: str) -> str | None:
+    """Return the nearest uv project that pins clarity-pi."""
+    current = Path(cwd).resolve()
+    for path in (current, *current.parents):
+        pyproject = path / "pyproject.toml"
+        if not pyproject.exists():
+            continue
+        try:
+            text = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "clarity-pi" in text:
+            return str(path)
+    return None
+
+
+def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
+    """Re-exec into the project-pinned clarity-pi when launched globally.
+
+    A CLI process cannot source ~/.zshrc into its parent shell. This makes the
+    global pi-py wrapper prefer the initialized project's uv environment even
+    when the user's current terminal has not sourced the zsh helper yet.
+    """
+    if os.environ.get(_LOCAL_DISPATCH_ENV):
+        return
+    if "--init" in args:
+        return
+    project_root = _find_local_project_root(cwd)
+    if not project_root:
+        return
+    env = os.environ.copy()
+    env[_LOCAL_DISPATCH_ENV] = "1"
+    if args and args[0] == "update":
+        os.execvpe(
+            "uv",
+            ["uv", "sync", "--project", project_root, "--upgrade-package", "clarity-pi", *args[1:]],
+            env,
+        )
+    os.execvpe(
+        "uv",
+        ["uv", "run", "--project", project_root, "python", "-m", "pi_coding_agent.main", *args],
+        env,
+    )
+
 
 def _load_env_files(cwd: str) -> None:
     """Load .env from current workspace (best-effort)."""
@@ -924,6 +971,7 @@ async def _run(args: Sequence[str]) -> int:
 def main(args: Sequence[str] | None = None) -> None:
     """CLI entrypoint used by project script."""
     run_args = args if args is not None else sys.argv[1:]
+    _dispatch_to_local_project(run_args, os.getcwd())
     configure_cli_debug_logging(cwd=os.getcwd(), argv=run_args)
     try:
         exit_code = asyncio.run(_run(run_args))

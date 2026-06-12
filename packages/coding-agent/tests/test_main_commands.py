@@ -256,6 +256,90 @@ def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
     assert lines.count("~/.pi-py/agent/pii_vault") == 1
 
 
+def test_find_local_project_root_detects_parent_clarity_project(tmp_path) -> None:
+    from pi_coding_agent.main import _find_local_project_root
+
+    proj = tmp_path / "proj"
+    subdir = proj / "nested"
+    subdir.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        encoding="utf-8",
+    )
+
+    assert _find_local_project_root(str(subdir)) == str(proj)
+
+
+def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import main as main_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, list[str], dict[str, str]]] = []
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        calls.append((file, args, env))
+        raise RuntimeError("exec")
+
+    monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
+    monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
+
+    with pytest.raises(RuntimeError, match="exec"):
+        main_mod._dispatch_to_local_project(["--version"], str(proj))
+
+    file, args, env = calls[0]
+    assert file == "uv"
+    assert args == ["uv", "run", "--project", str(proj), "python", "-m", "pi_coding_agent.main", "--version"]
+    assert env["PI_PY_LOCAL_DISPATCH"] == "1"
+
+
+def test_dispatch_to_local_project_reexecs_update_as_uv_sync(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import main as main_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        calls.append(args)
+        raise RuntimeError("exec")
+
+    monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
+    monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
+
+    with pytest.raises(RuntimeError, match="exec"):
+        main_mod._dispatch_to_local_project(["update"], str(proj))
+
+    assert calls == [["uv", "sync", "--project", str(proj), "--upgrade-package", "clarity-pi"]]
+
+
+def test_dispatch_to_local_project_skips_init(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import main as main_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        encoding="utf-8",
+    )
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        raise AssertionError("should not dispatch --init")
+
+    monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
+    monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
+
+    main_mod._dispatch_to_local_project(["--init"], str(proj))
+
+
 @pytest.mark.asyncio
 async def test_handle_package_command_list(monkeypatch, capsys) -> None:
     from pi_coding_agent import main as main_mod
