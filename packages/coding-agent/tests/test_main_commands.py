@@ -144,7 +144,7 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     assert text.count("pi-py managed shell function") == 2
     assert 'grep -q "clarity-pi" "pyproject.toml"' in text
     assert 'uv sync --upgrade-package clarity-pi "$@"' in text
-    assert 'uv run pi-py "$@"' in text
+    assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert 'command pi-py "$@"' in text
 
 
@@ -172,6 +172,7 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     assert "# after" in text
     assert text.count("pi-py()") == 1
     assert 'uv sync --upgrade-package clarity-pi "$@"' in text
+    assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert '  uv run pi-py "$@"\n}' not in text
 
 

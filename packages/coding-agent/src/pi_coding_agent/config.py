@@ -26,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.5"
+        VERSION = "0.54.6"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -366,7 +366,7 @@ def _pi_py_zsh_function_block() -> str:
             '      shift',
             '      uv sync --upgrade-package clarity-pi "$@"',
             "    else",
-            '      uv run pi-py "$@"',
+            '      uv run python -m pi_coding_agent.main "$@"',
             "    fi",
             "  else",
             '    command pi-py "$@"',
