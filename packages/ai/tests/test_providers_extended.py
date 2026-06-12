@@ -130,6 +130,34 @@ class TestGoogleShared:
 # ---------------------------------------------------------------------------
 
 class TestOpenAIResponsesShared:
+    def test_convert_responses_messages_normalizes_cross_provider_tool_ids(self):
+        from pi_ai.providers.openai_responses_shared import convert_responses_messages
+        from pi_ai.types import AssistantMessage, Context, Model, ModelCost, ToolCall
+
+        model = Model(
+            id="target",
+            name="Target",
+            api="openai-responses",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            cost=ModelCost(),
+            context_window=128000,
+            max_tokens=4096,
+        )
+        source = AssistantMessage(
+            content=[ToolCall(id="call_123|item.456", name="read", arguments={"path": "x"})],
+            api="anthropic-messages",
+            provider="anthropic",
+            model="source",
+            timestamp=1,
+        )
+
+        result = convert_responses_messages(model, Context(messages=[source]))
+
+        assert result[0]["type"] == "function_call"
+        assert result[0]["call_id"] == "call_123"
+        assert result[0]["id"] == "fc_item_456"
+
     def test_convert_responses_tools(self):
         from pi_ai.providers.openai_responses_shared import convert_responses_tools
         tool = MagicMock()

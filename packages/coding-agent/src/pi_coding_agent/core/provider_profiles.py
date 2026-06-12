@@ -55,7 +55,7 @@ PROVIDER_PROFILES: tuple[ProviderProfile, ...] = (
         label="OpenAI Compatible",
         default_models={"strong": "gpt-5.5", "standard": "gpt-5.4", "weak": "gpt-5.4-mini"},
         auth_methods=("api_key",),
-        api="openai-responses",
+        api="openai-completions",
         base_url=os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "https://api.openai.com/v1"),
     ),
     ProviderProfile(

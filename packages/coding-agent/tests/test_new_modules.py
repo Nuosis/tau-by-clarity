@@ -538,7 +538,7 @@ class TestModelRegistryExtended:
         assert model is not None
         assert model.provider == "openai-compatible"
         assert model.id == "custom-model-id"
-        assert model.api == "openai-responses"
+        assert model.api == "openai-completions"
 
     def test_synthesizes_models_for_configured_compatible_provider_without_plaintext_key(self, tmp_path):
         import json
@@ -553,7 +553,7 @@ class TestModelRegistryExtended:
                     "providers": {
                         "minimax": {
                             "name": "MiniMax",
-                            "api": "openai-responses",
+                            "api": "openai-completions",
                             "baseUrl": "https://api.minimax.example/v1",
                             "models": [],
                         }
@@ -572,7 +572,7 @@ class TestModelRegistryExtended:
         assert model is not None
         assert model.provider == "minimax"
         assert model.id == "MiniMax-M3"
-        assert model.api == "openai-responses"
+        assert model.api == "openai-completions"
         assert model.base_url == "https://api.minimax.example/v1"
         assert registry.get_api_key("minimax") == "secret-key"
 
@@ -819,7 +819,7 @@ async def test_tui_set_compatible_template_offers_configured_provider(tmp_path, 
                 "providers": {
                     "minimax": {
                         "name": "MiniMax",
-                        "api": "openai-responses",
+                        "api": "openai-completions",
                         "baseUrl": "https://api.minimax.example/v1",
                         "models": [],
                     }
@@ -997,7 +997,7 @@ async def test_tui_model_command_compatible_template_uses_configured_provider(tm
                 "providers": {
                     "minimax": {
                         "name": "MiniMax",
-                        "api": "openai-responses",
+                        "api": "openai-completions",
                         "baseUrl": "https://api.minimax.example/v1",
                         "tiers": {
                             "standard": {
@@ -1126,7 +1126,7 @@ async def test_compatible_provider_login_stores_metadata_and_encrypted_key(tmp_p
     assert provider_id == "minimax"
     assert label == "MiniMax"
     assert stored["providers"]["minimax"] == {
-        "api": "openai-responses",
+        "api": "openai-completions",
         "baseUrl": "https://api.minimax.example/v1",
         "models": [],
         "name": "MiniMax",

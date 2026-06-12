@@ -67,7 +67,7 @@ def convert_responses_messages(
     if allowed_tool_call_providers is None:
         allowed_tool_call_providers = _RESPONSES_ALLOWED_TOOL_CALL_PROVIDERS
 
-    def normalize_tool_call_id(id_: str) -> str:
+    def normalize_tool_call_id(id_: str, *_args: Any) -> str:
         if model.provider not in allowed_tool_call_providers:
             return id_
         if "|" not in id_:
