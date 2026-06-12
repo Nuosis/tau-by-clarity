@@ -39,7 +39,15 @@ def test_parse_package_command_node_update_targets() -> None:
     assert parsed is not None
     assert parsed["update_target"] == {"type": "all", "source": None}
 
+    parsed = _parse_package_command(["update", "all"])
+    assert parsed is not None
+    assert parsed["update_target"] == {"type": "all", "source": None}
+
     parsed = _parse_package_command(["update", "--self"])
+    assert parsed is not None
+    assert parsed["update_target"] == {"type": "self", "source": None}
+
+    parsed = _parse_package_command(["update"])
     assert parsed is not None
     assert parsed["update_target"] == {"type": "self", "source": None}
 
@@ -71,6 +79,53 @@ def test_package_help_mentions_uninstall_alias(capsys) -> None:
 
     out = capsys.readouterr().out
     assert "Alias: pi uninstall <source> [-l]" in out
+
+
+def test_ensure_project_uv_runner_creates_root_pyproject_and_venv(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import config
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(args, cwd=None, **kwargs):
+        calls.append((list(args), str(cwd)))
+        (tmp_path / "proj" / ".venv").mkdir(parents=True)
+        return object()
+
+    monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/local/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(config.subprocess, "run", fake_run)
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    created = config.ensure_project_uv_runner(str(proj))
+
+    pyproject = proj / "pyproject.toml"
+    assert str(pyproject) in created
+    assert str(proj / ".venv") in created
+    assert "clarity-pi==" in pyproject.read_text(encoding="utf-8")
+    assert calls == [(["/usr/local/bin/uv", "sync", "--project", str(proj), "--quiet"], str(proj))]
+
+
+def test_ensure_project_uv_runner_preserves_existing_root_project(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import config
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    pyproject = proj / "pyproject.toml"
+    pyproject.write_text("# existing project\n", encoding="utf-8")
+    (proj / ".venv").mkdir()
+
+    monkeypatch.setattr(config.shutil, "which", lambda name: "/usr/local/bin/uv")
+    monkeypatch.setattr(
+        config.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not sync")),
+    )
+
+    created = config.ensure_project_uv_runner(str(proj))
+
+    assert str(pyproject) not in created
+    assert str(proj / ".venv") not in created
+    assert pyproject.read_text(encoding="utf-8") == "# existing project\n"
 
 
 @pytest.mark.asyncio
@@ -218,7 +273,7 @@ async def test_handle_package_command_update_all_updates_extensions_then_self(mo
     monkeypatch.setattr(main_mod, "DefaultPackageManager", _PkgMgr)
     monkeypatch.setattr(main_mod, "get_agent_dir", lambda: "/tmp/agent")
 
-    handled, code = await main_mod._handle_package_command(["update"])
+    handled, code = await main_mod._handle_package_command(["update", "all"])
     out = capsys.readouterr().out
 
     assert handled is True
@@ -250,7 +305,7 @@ async def test_package_manager_self_update_invokes_python_pip(monkeypatch, tmp_p
         "install",
         "--upgrade",
         "--force-reinstall",
-        "pi-coding-agent",
+        "clarity-pi",
     ]]
 
 

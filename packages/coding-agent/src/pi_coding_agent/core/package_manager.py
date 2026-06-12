@@ -875,7 +875,7 @@ class DefaultPackageManager:
         if source and not matched:
             raise RuntimeError(f"No matching package found for {source}")
 
-    async def self_update(self, force: bool = False, package_name: str = "pi-coding-agent") -> None:
+    async def self_update(self, force: bool = False, package_name: str = "clarity-pi") -> None:
         """Update the Python CLI package that provides this harness."""
         args = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
         if force:

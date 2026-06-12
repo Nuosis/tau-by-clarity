@@ -6,6 +6,8 @@ Mirrors packages/coding-agent/src/config.ts
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
@@ -24,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.2"
+        VERSION = "0.54.3"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -300,6 +302,56 @@ def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
     return created
 
 
+def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
+    """Create a project-local uv environment for pi-py.
+
+    For fresh agent directories, this writes a root ``pyproject.toml`` so plain
+    ``uv run pi-py`` works from the active directory. It is intentionally
+    non-destructive: existing project files and venvs are left alone.
+    """
+    base = cwd or os.getcwd()
+    pyproject_path = os.path.join(base, "pyproject.toml")
+    created: list[str] = []
+
+    if not os.path.exists(pyproject_path):
+        with open(pyproject_path, "w", encoding="utf-8") as f:
+            f.write(
+                "\n".join(
+                    [
+                        "[project]",
+                        'name = "pi-py-agent-runner"',
+                        'version = "0.1.0"',
+                        'requires-python = ">=3.11,<3.14"',
+                        f'dependencies = ["clarity-pi=={VERSION}"]',
+                        "",
+                        "[tool.uv]",
+                        "package = false",
+                        "",
+                    ]
+                )
+            )
+        created.append(pyproject_path)
+
+    venv_dir = os.path.join(base, ".venv")
+    uv_bin = shutil.which("uv")
+    if uv_bin and not os.path.exists(venv_dir):
+        try:
+            subprocess.run(
+                [uv_bin, "sync", "--project", base, "--quiet"],
+                cwd=base,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+            if os.path.exists(venv_dir):
+                created.append(venv_dir)
+        except Exception:
+            pass
+
+    return created
+
+
 def scaffold_project(cwd: str | None = None) -> list[str]:
     """Create the project-local .pi-py structure for a new agent dir.
 
@@ -340,6 +392,7 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
         created.append(mem_db)
 
     created.extend(ensure_project_agent_config(base))
+    created.extend(ensure_project_uv_runner(base))
 
     agents_path = os.path.join(base, "AGENTS.md")
     if not os.path.exists(agents_path):

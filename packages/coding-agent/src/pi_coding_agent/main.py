@@ -385,10 +385,13 @@ def _parse_package_command(args: Sequence[str]) -> dict[str, Any] | None:
                 conflicting_options = conflicting_options or "--extension cannot be combined with a positional source"
             update_target = {"type": "extensions", "source": extension_flag_source}
         elif source:
-            source_is_self = source in {"self", "pi"}
+            source_is_all = source == "all"
+            source_is_self = source in {"self", "pi", "pi-py"}
+            if source_is_all:
+                update_target = {"type": "all", "source": None}
             if source_is_self:
                 update_target = {"type": "all" if extensions_flag else "self", "source": None}
-            else:
+            elif not source_is_all:
                 if extensions_flag or self_flag:
                     conflicting_options = (
                         conflicting_options
@@ -402,7 +405,7 @@ def _parse_package_command(args: Sequence[str]) -> dict[str, Any] | None:
         elif extensions_flag:
             update_target = {"type": "extensions", "source": None}
         else:
-            update_target = {"type": "all", "source": None}
+            update_target = {"type": "self", "source": None}
 
     return {
         "command": command,
@@ -426,7 +429,7 @@ def _package_usage(command: str) -> str:
         return f"{APP_NAME} remove <source> [-l] [--approve|--no-approve]"
     if command == "update":
         return (
-            f"{APP_NAME} update [source|self|pi] [--self] [--extensions] "
+            f"{APP_NAME} update [source|self|pi|pi-py|all] [--self] [--extensions] "
             "[--extension <source>] [--approve|--no-approve] [--force]"
         )
     return f"{APP_NAME} list [--approve|--no-approve]"
@@ -439,7 +442,10 @@ def _print_package_help(command: str) -> None:
     elif command == "remove":
         print(f"Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nAlias: {APP_NAME} uninstall <source> [-l]\n")
     elif command == "update":
-        print(f"Usage:\n  {usage}\n\nUpdate installed packages.\n")
+        print(
+            f"Usage:\n  {usage}\n\n"
+            "Update pi-py by default. Use --extensions, --extension <source>, or all to update installed packages.\n"
+        )
     else:
         print(f"Usage:\n  {usage}\n\nList installed packages from user and project settings.\n")
 
