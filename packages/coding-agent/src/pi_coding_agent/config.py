@@ -24,7 +24,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.53.3"
+        VERSION = "0.54.0"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
