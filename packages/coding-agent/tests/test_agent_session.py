@@ -132,6 +132,20 @@ async def test_agent_session_set_thinking_level(agent_session):
 
 
 @pytest.mark.asyncio
+async def test_agent_session_allows_custom_thinking_level_for_reasoning_model(agent_session):
+    agent_session._agent.set_model(agent_session.state.model.model_copy(update={"reasoning": True}))
+    agent_session.set_thinking_level("adaptive")
+    assert agent_session.state.thinking_level == "adaptive"
+
+
+@pytest.mark.asyncio
+async def test_agent_session_clamps_custom_thinking_level_for_non_reasoning_model(agent_session):
+    agent_session._agent.set_model(agent_session.state.model.model_copy(update={"reasoning": False}))
+    agent_session.set_thinking_level("adaptive")
+    assert agent_session.state.thinking_level == "off"
+
+
+@pytest.mark.asyncio
 async def test_agent_session_fork(agent_session):
     await agent_session.prompt("Hello!")
     original_count = len(agent_session.state.messages)  # 2: user + assistant

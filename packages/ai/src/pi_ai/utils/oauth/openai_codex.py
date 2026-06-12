@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import secrets
 import time
 from urllib.parse import urlencode
 
@@ -19,13 +20,13 @@ import httpx
 from pi_ai.utils.oauth.pkce import generate_pkce
 from pi_ai.utils.oauth.types import OAuthAuthInfo, OAuthCredentials, OAuthLoginCallbacks
 
-_CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"
-_AUTHORIZE_URL = "https://auth.openai.com/authorize"
+_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 _TOKEN_URL = "https://auth.openai.com/oauth/token"
-_REDIRECT_PORT = 9006
-_REDIRECT_URI = f"http://localhost:{_REDIRECT_PORT}/callback"
-_AUDIENCE = "https://api.openai.com/v1"
-_SCOPES = "openid email profile offline_access model.request model.read organization.read organization.write"
+_REDIRECT_PORT = 1455
+_REDIRECT_PATH = "/auth/callback"
+_REDIRECT_URI = f"http://localhost:{_REDIRECT_PORT}{_REDIRECT_PATH}"
+_SCOPES = "openid profile email offline_access"
 
 
 def _get_account_id_from_jwt(access_token: str) -> str | None:
@@ -45,31 +46,38 @@ def _get_account_id_from_jwt(access_token: str) -> str | None:
 async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials:
     """Login with OpenAI Codex OAuth (PKCE + local callback server)."""
     verifier, challenge = generate_pkce()
+    state = secrets.token_urlsafe(32)
 
     auth_params = urlencode({
         "client_id": _CLIENT_ID,
         "redirect_uri": _REDIRECT_URI,
         "response_type": "code",
         "scope": _SCOPES,
-        "audience": _AUDIENCE,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "originator": "codex_cli",
+        "state": state,
     })
     auth_url = f"{_AUTHORIZE_URL}?{auth_params}"
     callbacks.on_auth(OAuthAuthInfo(url=auth_url, instructions="Visit the URL to authorize ChatGPT access."))
 
-    code = await _wait_for_callback_code()
+    code, returned_state = await _wait_for_callback_code()
+    if returned_state != state:
+        raise ValueError("OAuth state mismatch during OpenAI login")
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             _TOKEN_URL,
-            json={
+            data={
                 "grant_type": "authorization_code",
                 "client_id": _CLIENT_ID,
                 "code": code,
                 "redirect_uri": _REDIRECT_URI,
                 "code_verifier": verifier,
             },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -91,11 +99,12 @@ async def refresh_openai_codex_token(credentials: OAuthCredentials) -> OAuthCred
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             _TOKEN_URL,
-            json={
+            data={
                 "grant_type": "refresh_token",
                 "client_id": _CLIENT_ID,
                 "refresh_token": credentials.refresh,
             },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -113,24 +122,25 @@ async def refresh_openai_codex_token(credentials: OAuthCredentials) -> OAuthCred
     return creds
 
 
-async def _wait_for_callback_code() -> str:
+async def _wait_for_callback_code() -> tuple[str, str]:
     """Start a local HTTP server to receive the OAuth callback."""
-    code_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+    code_future: asyncio.Future[tuple[str, str]] = asyncio.get_event_loop().create_future()
 
     try:
         from aiohttp import web  # type: ignore[import]
 
         async def handle(request: web.Request) -> web.Response:
             code = request.query.get("code", "")
+            state = request.query.get("state", "")
             if code and not code_future.done():
-                code_future.set_result(code)
+                code_future.set_result((code, state))
             return web.Response(
                 text="<html><body>Authorization complete! You can close this window.</body></html>",
                 content_type="text/html",
             )
 
         app = web.Application()
-        app.router.add_get("/callback", handle)
+        app.router.add_get(_REDIRECT_PATH, handle)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "localhost", _REDIRECT_PORT)
@@ -141,9 +151,13 @@ async def _wait_for_callback_code() -> str:
             await runner.cleanup()
 
     except ImportError:
-        return await asyncio.get_event_loop().run_in_executor(
+        code = await asyncio.get_event_loop().run_in_executor(
             None, input, "Enter the authorization code from the callback URL: "
         )
+        state = await asyncio.get_event_loop().run_in_executor(
+            None, input, "Enter the state value from the callback URL: "
+        )
+        return code, state
 
 
 class _OpenAICodexOAuthProvider:

@@ -17,6 +17,7 @@ from typing import Any
 
 from pi_ai import get_model, get_models, get_providers
 from pi_ai.types import Model
+from pi_coding_agent.core.provider_profiles import PROVIDER_PROFILES, synthetic_model
 
 
 # ─── Config schema (runtime validation without AJV) ───────────────────────────
@@ -40,17 +41,16 @@ def _validate_models_config(config: Any) -> str | None:
 
         if not models:
             # Override-only: needs baseUrl or modelOverrides
-            if not provider_config.get("baseUrl") and not model_overrides:
+            if not provider_config.get("baseUrl") and not model_overrides and not provider_config.get("tiers"):
                 return (
                     f'Provider {provider_name}: must specify "baseUrl", '
-                    '"modelOverrides", or "models".'
+                    '"modelOverrides", "tiers", or "models".'
                 )
         else:
             # Custom models: needs baseUrl + apiKey
             if not provider_config.get("baseUrl"):
                 return f'Provider {provider_name}: "baseUrl" is required when defining custom models.'
-            if not provider_config.get("apiKey"):
-                return f'Provider {provider_name}: "apiKey" is required when defining custom models.'
+            # apiKey may be omitted when the key is stored in encrypted auth.json.
 
         for model_def in models:
             provider_api = provider_config.get("api")
@@ -211,6 +211,7 @@ class ModelRegistry:
         self._models: list[Model] = []
         self._custom_provider_api_keys: dict[str, str] = {}
         self._registered_providers: dict[str, ProviderConfig] = {}
+        self._config_providers: dict[str, ProviderConfig] = {}
         self._load_error: str | None = None
         self._extra_models: list[Model] = []
 
@@ -219,6 +220,7 @@ class ModelRegistry:
     def _load_models(self) -> None:
         """(Re)load built-in + custom models."""
         self._custom_provider_api_keys.clear()
+        self._config_providers.clear()
         self._load_error = None
 
         custom_models, overrides, model_overrides, error = self._load_custom_models()
@@ -231,8 +233,10 @@ class ModelRegistry:
         # Apply OAuth provider modifications if auth_storage supports it
         if self._auth_storage and hasattr(self._auth_storage, "get_oauth_providers"):
             for provider in self._auth_storage.get_oauth_providers():
-                cred = self._auth_storage.get(provider.id)
-                if cred and getattr(cred, "type", None) == "oauth":
+                provider_id = getattr(provider, "id", provider)
+                cred = self._auth_storage.get(provider_id)
+                cred_type = cred.get("type") if isinstance(cred, dict) else getattr(cred, "type", None)
+                if cred and cred_type == "oauth":
                     modify = getattr(provider, "modify_models", None)
                     if callable(modify):
                         combined = modify(combined, cred)
@@ -284,6 +288,19 @@ class ModelRegistry:
 
                 result.append(m)
 
+        existing = {(m.provider, m.id) for m in result}
+        for profile in PROVIDER_PROFILES:
+            if profile.id in get_providers():
+                continue
+            for model_id in profile.default_models.values():
+                key = (profile.id, model_id)
+                if key in existing:
+                    continue
+                model = synthetic_model(profile.id, model_id)
+                if model is not None:
+                    result.append(model)
+                    existing.add(key)
+
         return result
 
     def _merge_custom_models(self, built_in: list[Model], custom: list[Model]) -> list[Model]:
@@ -329,6 +346,17 @@ class ModelRegistry:
         models: list[Model] = []
 
         for provider_name, prov_cfg in config.get("providers", {}).items():
+            self._config_providers[provider_name] = ProviderConfig(
+                name=prov_cfg.get("name") or provider_name,
+                base_url=prov_cfg.get("baseUrl"),
+                api_key=prov_cfg.get("apiKey"),
+                api=prov_cfg.get("api"),
+                headers=prov_cfg.get("headers"),
+                auth_header=prov_cfg.get("authHeader", False),
+                models=prov_cfg.get("models") or [],
+                model_overrides=prov_cfg.get("modelOverrides") or {},
+            )
+
             # Provider-level overrides for built-in models
             if prov_cfg.get("baseUrl") or prov_cfg.get("headers") or prov_cfg.get("apiKey"):
                 overrides[provider_name] = {
@@ -460,7 +488,9 @@ class ModelRegistry:
         """Check if a provider has auth via environment variable."""
         env_map = {
             "anthropic": ["ANTHROPIC_API_KEY"],
+            "anthropic-compatible": ["ANTHROPIC_COMPATIBLE_API_KEY"],
             "openai": ["OPENAI_API_KEY"],
+            "openai-compatible": ["OPENAI_COMPATIBLE_API_KEY"],
             "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
             "mistral": ["MISTRAL_API_KEY"],
             "groq": ["GROQ_API_KEY"],
@@ -517,7 +547,7 @@ class ModelRegistry:
             if resolved_headers is not None:
                 headers = resolved_headers
 
-            provider_config = self._registered_providers.get(model.provider)
+            provider_config = self._registered_providers.get(model.provider) or self._config_providers.get(model.provider)
             if provider_config:
                 provider_headers = _resolve_headers(provider_config.headers) or {}
                 headers = {**headers, **provider_headers}
@@ -570,6 +600,9 @@ class ModelRegistry:
         registered = self._registered_providers.get(provider)
         if registered and registered.name:
             return registered.name
+        configured = self._config_providers.get(provider)
+        if configured and configured.name:
+            return configured.name
         if self._auth_storage and hasattr(self._auth_storage, "get_oauth_providers"):
             for oauth_provider in self._auth_storage.get_oauth_providers():
                 if getattr(oauth_provider, "id", None) == provider and getattr(oauth_provider, "name", None):
@@ -626,24 +659,82 @@ class ModelRegistry:
 
     def get_model(self, provider: str, model_id: str) -> Model:
         """Get a model by provider and ID."""
+        config_loaded = self._find_config_loaded_model(provider, model_id)
+        if config_loaded is not None:
+            return config_loaded
+        configured = self._synthetic_config_model(provider, model_id)
+        if configured is not None:
+            return configured
         for m in self._models:
             if m.provider == provider and m.id == model_id:
                 return m
-        return get_model(provider, model_id)
+        model = get_model(provider, model_id)
+        if model is not None:
+            return model
+        synthetic = synthetic_model(provider, model_id)
+        if synthetic is not None:
+            return synthetic
+        raise RuntimeError(f"Unknown model {provider}/{model_id}")
 
     def find(self, provider: str, model_id: str) -> Model | None:
         """Find a model or return None."""
+        config_loaded = self._find_config_loaded_model(provider, model_id)
+        if config_loaded is not None:
+            return config_loaded
+        configured = self._synthetic_config_model(provider, model_id)
+        if configured is not None:
+            return configured
         for m in self._models:
             if m.provider == provider and m.id == model_id:
                 return m
         try:
-            return get_model(provider, model_id)
+            model = get_model(provider, model_id)
+            if model is not None:
+                return model
         except Exception:
+            pass
+        synthetic = synthetic_model(provider, model_id)
+        if synthetic is not None:
+            return synthetic
+        return None
+
+    def _find_config_loaded_model(self, provider: str, model_id: str) -> Model | None:
+        config = self._config_providers.get(provider) or self._registered_providers.get(provider)
+        if config is None:
             return None
+        explicit_model_ids = {model.get("id") for model in config.models if isinstance(model, dict)}
+        if model_id not in explicit_model_ids:
+            return None
+        for m in self._models:
+            if m.provider != provider or m.id != model_id:
+                continue
+            if config.base_url and getattr(m, "base_url", None) == config.base_url:
+                return m
+            if config.api and getattr(m, "api", None) == config.api and getattr(m, "base_url", None):
+                return m
+        return None
+
+    def _synthetic_config_model(self, provider: str, model_id: str) -> Model | None:
+        config = self._config_providers.get(provider) or self._registered_providers.get(provider)
+        if config is None or not config.api:
+            return None
+        return Model(
+            id=model_id,
+            name=model_id,
+            api=config.api,
+            provider=provider,
+            base_url=config.base_url,
+            headers=config.headers,
+            reasoning=config.api in {"openai-responses", "anthropic-messages"},
+            input=["text", "image"],
+            cost={"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            context_window=128000,
+            max_tokens=8192,
+        )
 
     def get_providers(self) -> list[str]:
         """Get all available providers."""
-        return list({m.provider for m in self._models})
+        return list({m.provider for m in self._models} | set(self._config_providers))
 
     def resolve_model(
         self,

@@ -221,6 +221,8 @@ def _build_client(
             **model_headers,
             **(options_headers or {}),
         }
+        if base_url and "api.anthropic.com" not in base_url:
+            default_headers.setdefault("X-Api-Key", api_key)
         client = _anthropic.AsyncAnthropic(
             api_key=api_key,
             base_url=base_url,

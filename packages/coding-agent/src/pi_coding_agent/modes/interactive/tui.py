@@ -12,7 +12,9 @@ Ctrl+P:         cycle model
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 import sys
 import time
 from typing import Any, Callable
@@ -507,7 +509,7 @@ def _loaded_resource_lines(session: Any, *, show_listing: bool = True, show_diag
         extension_diagnostics.extend(_built_in_command_conflict_diagnostics(
             extension_runner,
             {
-                "settings", "model", "scoped-models", "export", "import", "share", "copy", "name",
+                "settings", "chat", "model", "models", "set", "scoped-models", "export", "import", "share", "copy", "name",
                 "session", "changelog", "hotkeys", "fork", "clone", "tree", "trust", "login",
                 "logout", "new", "compact", "resume", "reload", "quit", "exit", "clear",
                 "help", "thinking", "tools",
@@ -1021,7 +1023,10 @@ async def _run_pi_tui(
     editor_runtime_callbacks: dict[str, Any] = {"on_submit": None, "on_keydown": None}
     built_in_slash_specs = [
         ("settings", "Open settings menu"),
-        ("model", "List or switch models"),
+        ("chat", "Render chat transcript"),
+        ("model", "Select provider and model strength"),
+        ("models", "Alias for /model"),
+        ("set", "Set provider tier model mapping"),
         ("scoped-models", "Enable/disable scoped models"),
         ("export", "Export session as HTML"),
         ("import", "Import and resume a session"),
@@ -1222,7 +1227,10 @@ async def _run_pi_tui(
             placeholder,
             on_submit=lambda value: resolve(value),
             on_cancel=lambda: resolve(None),
-            opts={"timeout": _option_value(opts, "timeout")},
+            opts={
+                "timeout": _option_value(opts, "timeout"),
+                "secret": bool(_option_value(opts, "secret", False)),
+            },
         )
         cleanup_abort_listener = _add_abort_listener(signal, lambda: resolve(None))
         show_prompt_component(component)
@@ -1459,11 +1467,21 @@ async def _run_pi_tui(
             set_stream("")
             return
 
+        if stripped == "/chat":
+            trace("handle_submit: chat command")
+            history_text.set_text("")
+            history_text.invalidate()
+            set_stream("")
+            rebuild_history_from_current_session()
+            tui.request_render()
+            return
+
         if stripped == "/help":
             lines = [
                 bold("Available commands:"),
                 f"  {cyan('/exit')}     — Exit the agent",
                 f"  {cyan('/clear')}    — Clear conversation history",
+                f"  {cyan('/chat')}     — Render the session chat transcript",
                 f"  {cyan('/model')}    — List available models / switch model",
                 f"  {cyan('/copy')}     — Copy last assistant message",
                 f"  {cyan('/name')}     — Set session display name",
@@ -1687,70 +1705,18 @@ async def _run_pi_tui(
             return
 
         if stripped == "/login" or stripped.startswith("/login "):
-            parts = stripped.split(maxsplit=2)
-            if len(parts) < 3:
-                append_history(dim("Usage: /login <provider> <api_key>"))
-            else:
-                # Provider names in the registry are lowercase — normalize so
-                # "/login Minimax" matches the `minimax` provider.
-                provider = parts[1].lower()
-                try:
-                    session.login_api_key(provider, parts[2])
-                    sm = getattr(session, "settings_manager", None)
-                    # One command configures everything: store auth, then auto-pick
-                    # the best model for the provider and set it + thinking as the
-                    # global default. No separate /model or /thinking needed.
-                    try:
-                        available = await session.model_registry.get_available()
-                    except Exception:
-                        available = []
-                    pmodels = [m for m in available if str(getattr(m, "provider", "")).lower() == provider]
-                    best = None
-                    if pmodels:
-                        # Prefer a reasoning model with the largest context window.
-                        best = sorted(
-                            pmodels,
-                            key=lambda m: (bool(getattr(m, "reasoning", False)),
-                                           int(getattr(m, "context_window", 0) or 0)),
-                        )[-1]
-                    if best is not None:
-                        try:
-                            await session.set_model(best)
-                        except Exception:
-                            pass
-                        reasons = bool(getattr(best, "reasoning", False))
-                        updates = {"defaultProvider": provider, "defaultModel": best.id}
-                        if reasons:
-                            updates["defaultThinkingLevel"] = "medium"
-                        scope = _persist_defaults(updates)
-                        update_footer()
-                        append_history(green(
-                            f"✓ {provider} ready — model {best.id}"
-                            + (" · thinking medium" if reasons else "")
-                            + f"  (saved as {scope})"
-                        ))
-                    else:
-                        scope = _persist_defaults({"defaultProvider": provider})
-                        append_history(green(
-                            f"Stored API key for {provider}; set as {scope}. "
-                            f"Run /model to pick a model."
-                        ))
-                except Exception as exc:
-                    append_history(f"{red('Login failed:')} {exc}")
-            tui.request_render()
+            await _handle_login_command(
+                stripped, session, append_history, update_footer, tui,
+                show_extension_selector, show_extension_input,
+                cyan, dim, red, green, _persist_defaults,
+            )
             return
 
         if stripped == "/logout" or stripped.startswith("/logout "):
-            parts = stripped.split(maxsplit=1)
-            if len(parts) < 2:
-                append_history(dim("Usage: /logout <provider>"))
-            else:
-                try:
-                    session.logout_provider(parts[1])
-                    append_history(green(f"Removed stored credentials for {parts[1]}."))
-                except Exception as exc:
-                    append_history(f"{red('Logout failed:')} {exc}")
-            tui.request_render()
+            await _handle_logout_command(
+                stripped, session, append_history, update_footer, tui,
+                show_extension_selector, dim, red, green,
+            )
             return
 
         if stripped == "/hotkeys":
@@ -1941,11 +1907,21 @@ async def _run_pi_tui(
             tui.request_render()
             return
 
-        if stripped == "/model" or stripped.startswith("/model "):
-            await _handle_model_command(stripped, session,
+        if stripped == "/model" or stripped.startswith("/model ") or stripped == "/models" or stripped.startswith("/models "):
+            normalized_stripped = "/model" + stripped[len("/models"):] if stripped.startswith("/models") else stripped
+            await _handle_model_command(normalized_stripped, session,
                                         append_history, update_footer, tui,
                                         cyan, dim, red, bold, green,
-                                        _persist_defaults)
+                                        _persist_defaults,
+                                        show_extension_selector)
+            return
+
+        if stripped == "/set" or stripped.startswith("/set "):
+            await _handle_set_command(
+                stripped, session, append_history, update_footer, tui,
+                show_extension_selector, show_extension_input,
+                cyan, dim, red, green, _persist_defaults,
+            )
             return
 
         # ── Busy guard ────────────────────────────────────────────────────────
@@ -2313,6 +2289,7 @@ async def _handle_model_command(
     tui,
     cyan, dim, red, bold, green,
     persist_defaults=None,
+    show_select=None,
 ) -> None:
     """Handle /model and /model <id> commands."""
     parts = stripped.split(None, 1)
@@ -2338,17 +2315,629 @@ async def _handle_model_command(
         tui.request_render()
         return
 
-    # /model — list available models
-    available = await session.model_registry.get_available()
-    current = session.model
-    if not available:
-        append_history(dim("No models available."))
+    if show_select is None:
+        append_history(dim("Use /model <provider/model> or /set <provider> <tier> <model>."))
         tui.request_render()
         return
-    lines = [bold("Available models:")]
-    for m in available:
-        marker = cyan("→") if (current and m.id == current.id) else " "
-        lines.append(f"  {marker} {m.id} ({m.provider})")
-    lines.append(dim("Use /model <id> to switch."))
-    append_history("\n".join(lines))
+
+    selection = await _select_provider_and_strength(show_select)
+    if selection is None:
+        append_history(dim("Model selection cancelled."))
+        tui.request_render()
+        return
+    provider, strength = selection
+    if provider in {"openai-compatible", "anthropic-compatible"}:
+        configured_provider = await _select_configured_compatible_provider(provider, show_select)
+        if configured_provider is None:
+            append_history(_compatible_provider_login_reminder(provider))
+            tui.request_render()
+            return
+        provider = configured_provider
+    await _apply_profile_model(
+        session, provider, strength, None, append_history, update_footer, tui,
+        cyan, dim, red, green, persist_defaults,
+    )
     tui.request_render()
+
+
+async def _handle_set_command(
+    stripped: str,
+    session: "AgentSession",
+    append_history,
+    update_footer,
+    tui,
+    show_select,
+    show_input,
+    cyan, dim, red, green,
+    persist_defaults=None,
+) -> None:
+    """Handle /set and /set <provider> <tier> <model> commands."""
+    from pi_coding_agent.core.provider_profiles import STRENGTHS, normalize_provider_id
+
+    parts = stripped.split()
+    if len(parts) >= 4:
+        provider = normalize_provider_id(parts[1])
+        strength = parts[2].strip().lower()
+        if strength not in STRENGTHS:
+            append_history(f"{red('Invalid tier:')} {parts[2]} {dim('(use strong, standard, or weak)')}")
+            tui.request_render()
+            return
+        model_id = " ".join(parts[3:]).strip()
+        if provider in {"openai-compatible", "anthropic-compatible"}:
+            configured_provider = await _select_configured_compatible_provider(provider, show_select)
+            if configured_provider is None:
+                append_history(_compatible_provider_login_reminder(provider))
+                tui.request_render()
+                return
+            provider = configured_provider
+        thinking_level = await _prompt_reasoning_level(show_select, show_input)
+        if thinking_level is None and show_select is not None and show_input is not None:
+            append_history(dim("Set cancelled."))
+            tui.request_render()
+            return
+        _store_tier_config(provider, strength, model_id, thinking_level)
+        reload_registry = getattr(session.model_registry, "reload", None)
+        if callable(reload_registry):
+            reload_registry()
+        append_history(green(f"Set {provider} {strength} to {model_id} (thinking {thinking_level or 'off'})."))
+        tui.request_render()
+        return
+
+    if show_select is None or show_input is None:
+        append_history(dim("Usage: /set <provider> <tier> <model>"))
+        tui.request_render()
+        return
+
+    selection = await _select_provider_and_strength(show_select)
+    if selection is None:
+        append_history(dim("Set cancelled."))
+        tui.request_render()
+        return
+    provider, strength = selection
+    if provider in {"openai-compatible", "anthropic-compatible"}:
+        configured_provider = await _select_configured_compatible_provider(provider, show_select)
+        if configured_provider is None:
+            append_history(_compatible_provider_login_reminder(provider))
+            tui.request_render()
+            return
+        provider = configured_provider
+    default_model = _default_model_for(provider, strength) or ""
+    model_id = await show_input("Model ID", default_model, None)
+    if not model_id or not str(model_id).strip():
+        append_history(dim("Set cancelled."))
+        tui.request_render()
+        return
+    thinking_level = await _prompt_reasoning_level(show_select, show_input)
+    if thinking_level is None:
+        append_history(dim("Set cancelled."))
+        tui.request_render()
+        return
+    _store_tier_config(provider, strength, str(model_id).strip(), thinking_level)
+    reload_registry = getattr(session.model_registry, "reload", None)
+    if callable(reload_registry):
+        reload_registry()
+    append_history(green(f"Set {provider} {strength} to {str(model_id).strip()} (thinking {thinking_level})."))
+    tui.request_render()
+
+
+async def _handle_login_command(
+    stripped: str,
+    session: "AgentSession",
+    append_history,
+    update_footer,
+    tui,
+    show_select,
+    show_input,
+    cyan, dim, red, green,
+    persist_defaults=None,
+) -> None:
+    """Handle /login provider selection, auth method selection, and direct API-key login."""
+    from pi_coding_agent.core.provider_profiles import get_provider_profile, normalize_provider_id
+
+    parts = stripped.split(maxsplit=2)
+    if len(parts) >= 3:
+        provider = normalize_provider_id(parts[1])
+        try:
+            session.login_api_key(provider, parts[2])
+            scope = persist_defaults({"defaultProvider": provider}) if persist_defaults else "default"
+            append_history(green(f"Stored API key for {provider}  {dim('· saved as ' + scope)}"))
+        except Exception as exc:
+            append_history(f"{red('Login failed:')} {exc}")
+        tui.request_render()
+        return
+
+    if show_select is None or show_input is None:
+        append_history(dim("Usage: /login <provider> <api_key>"))
+        tui.request_render()
+        return
+
+    provider = normalize_provider_id(parts[1]) if len(parts) == 2 else None
+    profile = get_provider_profile(provider) if provider else None
+    if profile is None:
+        chosen_provider = await _select_provider(show_select, "Login provider")
+        if chosen_provider is None:
+            append_history(dim("Login cancelled."))
+            tui.request_render()
+            return
+        profile = get_provider_profile(chosen_provider)
+    if profile is None:
+        append_history(f"{red('Unknown provider:')} {provider}")
+        tui.request_render()
+        return
+
+    method = "api_key"
+    if len(profile.auth_methods) > 1:
+        label_by_method = {"subscription": "subscription", "api_key": "api_key"}
+        selected = await show_select("Auth method", [label_by_method[m] for m in profile.auth_methods], None)
+        if selected is None:
+            append_history(dim("Login cancelled."))
+            tui.request_render()
+            return
+        method = str(selected)
+
+    try:
+        if method == "subscription":
+            await _subscription_login(profile.id, session, append_history, show_input)
+            append_history(green(f"Subscription login stored for {profile.label}."))
+        elif profile.id in {"openai-compatible", "anthropic-compatible"}:
+            provider_id, provider_label = await _compatible_provider_login(
+                profile.id,
+                session,
+                show_input,
+            )
+            append_history(green(f"{provider_label} stored as {provider_id}."))
+            if persist_defaults:
+                persist_defaults({"defaultProvider": provider_id})
+            update_footer()
+            tui.request_render()
+            return
+        else:
+            key = await show_input(
+                f"{profile.label} API key (paste, then Enter)",
+                "",
+                {"secret": True},
+            )
+            if not key or not str(key).strip():
+                append_history(dim("Login cancelled."))
+                tui.request_render()
+                return
+            session.login_api_key(profile.id, str(key).strip())
+            append_history(green(f"API key stored for {profile.label}."))
+        if persist_defaults:
+            persist_defaults({"defaultProvider": profile.id})
+        update_footer()
+    except Exception as exc:
+        append_history(f"{red('Login failed:')} {exc}")
+    tui.request_render()
+
+
+async def _handle_logout_command(
+    stripped: str,
+    session: "AgentSession",
+    append_history,
+    update_footer,
+    tui,
+    show_select,
+    dim, red, green,
+) -> None:
+    """Handle /logout provider selection and direct provider logout."""
+    from pi_coding_agent.core.provider_display_names import get_provider_display_name
+    from pi_coding_agent.core.provider_profiles import normalize_provider_id
+
+    parts = stripped.split(maxsplit=2)
+    provider = normalize_provider_id(parts[1]) if len(parts) >= 2 else None
+    credential_type = _normalize_logout_credential_type(parts[2]) if len(parts) >= 3 else None
+
+    auth = getattr(session, "auth_storage", None) or getattr(session, "_auth_storage", None)
+    if provider is None:
+        stored = auth.list_stored_providers() if auth is not None and hasattr(auth, "list_stored_providers") else []
+        if not stored:
+            append_history(dim("No stored credentials."))
+            tui.request_render()
+            return
+        if show_select is None:
+            append_history(dim("Usage: /logout <provider>"))
+            tui.request_render()
+            return
+        choices = [(str(provider_id), get_provider_display_name(str(provider_id))) for provider_id in sorted(stored)]
+        labels = [f"{label} ({provider_id})" for provider_id, label in choices]
+        selected = await show_select("Logout provider", labels, None)
+        if selected is None:
+            append_history(dim("Logout cancelled."))
+            tui.request_render()
+            return
+        selected_label = str(selected)
+        for provider_id, label in choices:
+            if selected_label == f"{label} ({provider_id})":
+                provider = provider_id
+                break
+
+    if not provider:
+        append_history(dim("Logout cancelled."))
+        tui.request_render()
+        return
+    if credential_type is None:
+        choices = _logout_credential_choices(auth, provider)
+        if not choices:
+            append_history(dim(f"No stored credentials for {provider}."))
+            tui.request_render()
+            return
+        if len(choices) == 1:
+            credential_type = choices[0]
+        elif show_select is None:
+            append_history(dim("Usage: /logout <provider> <api_key|token>"))
+            tui.request_render()
+            return
+        else:
+            selected = await show_select("Credential type", choices, None)
+            if selected is None:
+                append_history(dim("Logout cancelled."))
+                tui.request_render()
+                return
+            credential_type = _normalize_logout_credential_type(str(selected))
+    if credential_type not in {"api_key", "token"}:
+        append_history(f"{red('Invalid credential type:')} {credential_type} {dim('(use api_key or token)')}")
+        tui.request_render()
+        return
+
+    try:
+        session.logout_provider(provider, credential_type)
+        append_history(green(f"Removed stored {credential_type} for {provider}."))
+        update_footer()
+    except Exception as exc:
+        append_history(f"{red('Logout failed:')} {exc}")
+    tui.request_render()
+
+
+def _normalize_logout_credential_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().lower().replace("-", "_")
+    if cleaned in {"api_key", "key", "apikey"}:
+        return "api_key"
+    if cleaned in {"token", "oauth", "subscription"}:
+        return "token"
+    return cleaned
+
+
+def _logout_credential_choices(auth: Any, provider: str) -> list[str]:
+    choices: list[str] = []
+    if auth is not None and hasattr(auth, "get_api_key") and auth.get_api_key(provider):
+        choices.append("api_key")
+    if auth is not None and hasattr(auth, "get_oauth_token") and auth.get_oauth_token(provider):
+        choices.append("token")
+    return choices
+
+
+async def _select_provider_and_strength(show_select) -> tuple[str, str] | None:
+    provider = await _select_provider(show_select, "Provider")
+    if provider is None:
+        return None
+    strength = await show_select("Model strength", ["strong", "standard", "weak"], None)
+    if strength is None:
+        return None
+    return provider, str(strength)
+
+
+async def _select_provider(show_select, title: str) -> str | None:
+    from pi_coding_agent.core.provider_profiles import provider_profile_choices
+
+    choices = provider_profile_choices()
+    labels = [label for _provider_id, label in choices]
+    selected = await show_select(title, labels, None)
+    if selected is None:
+        return None
+    selected_label = str(selected)
+    for provider_id, label in choices:
+        if label == selected_label:
+            return provider_id
+    return None
+
+
+def _default_model_for(provider: str, strength: str) -> str | None:
+    from pi_coding_agent.core.provider_profiles import default_model_for
+
+    tier = _tier_config_for(provider, strength)
+    if tier and tier.get("model"):
+        return str(tier["model"])
+    return default_model_for(provider, strength)
+
+
+def _tier_config_for(provider: str, strength: str) -> dict[str, Any] | None:
+    from pi_coding_agent.config import get_models_path
+
+    config = _read_models_config(get_models_path())
+    provider_config = config.get("providers", {}).get(provider)
+    if not isinstance(provider_config, dict):
+        return None
+    tiers = provider_config.get("tiers")
+    if not isinstance(tiers, dict):
+        return None
+    tier = tiers.get(strength)
+    return tier if isinstance(tier, dict) else None
+
+
+def _store_tier_config(provider: str, strength: str, model_id: str, thinking_level: str | None) -> None:
+    from pi_coding_agent.config import get_models_path
+    from pi_coding_agent.core.provider_profiles import get_provider_profile
+
+    models_path = get_models_path()
+    config = _read_models_config(models_path)
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+        config["providers"] = providers
+    provider_config = providers.get(provider)
+    if not isinstance(provider_config, dict):
+        profile = get_provider_profile(provider)
+        provider_config = {"name": profile.label} if profile else {"name": provider}
+        providers[provider] = provider_config
+    tiers = provider_config.setdefault("tiers", {})
+    if not isinstance(tiers, dict):
+        tiers = {}
+        provider_config["tiers"] = tiers
+    tiers[strength] = {
+        "model": model_id,
+        "thinkingLevel": thinking_level or "off",
+    }
+    _write_models_config(models_path, config)
+
+
+def _thinking_level_for_tier(provider: str, strength: str, model: Any) -> str | None:
+    tier = _tier_config_for(provider, strength)
+    if tier and tier.get("thinkingLevel"):
+        return str(tier["thinkingLevel"])
+    if bool(getattr(model, "reasoning", False)):
+        return "medium"
+    return "off"
+
+
+def _configured_compatible_provider_choices(template_provider: str) -> list[tuple[str, str]]:
+    from pi_coding_agent.config import get_models_path
+    from pi_coding_agent.core.provider_profiles import get_provider_profile
+
+    profile = get_provider_profile(template_provider)
+    if profile is None:
+        return []
+    config = _read_models_config(get_models_path())
+    choices: list[tuple[str, str]] = []
+    for provider_id, provider_config in config.get("providers", {}).items():
+        if not isinstance(provider_config, dict):
+            continue
+        if provider_config.get("api") != profile.api:
+            continue
+        label = str(provider_config.get("name") or provider_id)
+        choices.append((str(provider_id), label))
+    return sorted(choices, key=lambda item: item[1].lower())
+
+
+async def _select_configured_compatible_provider(template_provider: str, show_select) -> str | None:
+    choices = _configured_compatible_provider_choices(template_provider)
+    if not choices or show_select is None:
+        return None
+    labels = [label for _provider_id, label in choices]
+    selected = await show_select("Configured provider", labels, None)
+    if selected is None:
+        return None
+    selected_label = str(selected)
+    for provider_id, label in choices:
+        if label == selected_label:
+            return provider_id
+    return None
+
+
+def _compatible_provider_login_reminder(template_provider: str) -> str:
+    label = "OpenAI Compatible" if template_provider == "openai-compatible" else "Anthropic Compatible"
+    return f"No {label} providers configured. Run /login and choose {label} first."
+
+
+async def _prompt_reasoning_level(show_select, show_input) -> str | None:
+    if show_select is None or show_input is None:
+        return None
+    reasoning = await show_select("Reasoning", ["yes", "no"], None)
+    if reasoning is None:
+        return None
+    if str(reasoning).strip().lower() != "yes":
+        return "off"
+    level = await show_input("Thinking level", "medium", None)
+    if level is None:
+        return None
+    cleaned = str(level).strip()
+    return cleaned or "medium"
+
+
+async def _apply_profile_model(
+    session: "AgentSession",
+    provider: str,
+    strength: str,
+    model_id: str | None,
+    append_history,
+    update_footer,
+    tui,
+    cyan, dim, red, green,
+    persist_defaults=None,
+    thinking_level: str | None = None,
+) -> None:
+    from pi_coding_agent.core.provider_profiles import normalize_provider_id, synthetic_model
+
+    normalized_provider = normalize_provider_id(provider)
+    selected_model_id = model_id or _default_model_for(normalized_provider, strength)
+    if not selected_model_id:
+        append_history(f"{red('Unknown provider:')} {provider}")
+        return
+    model = None
+    finder = getattr(session.model_registry, "find", None)
+    if callable(finder):
+        model = finder(normalized_provider, selected_model_id)
+    if model is None:
+        model = synthetic_model(normalized_provider, selected_model_id)
+    if model is None:
+        append_history(f"{red('Unknown model:')} {normalized_provider}/{selected_model_id}")
+        return
+    try:
+        await session.set_model(model)
+    except Exception:
+        pass
+    updates = {"defaultProvider": normalized_provider, "defaultModel": selected_model_id}
+    if thinking_level is not None:
+        effective_thinking = thinking_level
+    else:
+        effective_thinking = _thinking_level_for_tier(normalized_provider, strength, model)
+    if effective_thinking is not None:
+        set_thinking = getattr(session, "set_thinking_level", None)
+        if callable(set_thinking):
+            set_thinking(effective_thinking)
+        updates["defaultThinkingLevel"] = effective_thinking
+    scope = persist_defaults(updates) if persist_defaults else "default"
+    append_history(
+        f"{cyan('Model:')} {selected_model_id} ({normalized_provider}, {strength}, thinking {updates.get('defaultThinkingLevel', 'off')})  "
+        f"{dim('· saved as ' + scope)}"
+    )
+    update_footer()
+
+
+def _slug_provider_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "compatible-provider"
+
+
+def _normalize_base_url(value: str) -> str:
+    cleaned = value.strip().rstrip("/")
+    if not cleaned:
+        return cleaned
+    if not re.match(r"^https?://", cleaned, re.I):
+        cleaned = "https://" + cleaned
+    return cleaned
+
+
+def _read_models_config(path: str) -> dict[str, Any]:
+    if not os.path.exists(path):
+        return {"providers": {}}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        data["providers"] = {}
+    return data
+
+
+def _write_models_config(path: str, config: dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp_path, path)
+
+
+async def _compatible_provider_login(
+    template_provider: str,
+    session: "AgentSession",
+    show_input,
+) -> tuple[str, str]:
+    from pi_coding_agent.config import get_models_path
+    from pi_coding_agent.core.provider_profiles import get_provider_profile
+
+    profile = get_provider_profile(template_provider)
+    if profile is None:
+        raise ValueError(f"Unknown compatible provider template: {template_provider}")
+
+    label = await show_input("Provider display name", "MiniMax", None)
+    if not label or not str(label).strip():
+        raise RuntimeError("Compatible provider setup cancelled")
+    provider_label = str(label).strip()
+    provider_id = _slug_provider_name(provider_label)
+
+    url = await show_input(f"{provider_label} base URL", profile.base_url, None)
+    if not url or not str(url).strip():
+        raise RuntimeError("Compatible provider setup cancelled")
+    base_url = _normalize_base_url(str(url))
+
+    key = await show_input(
+        f"{provider_label} API key (paste, then Enter)",
+        "",
+        {"secret": True},
+    )
+    if not key or not str(key).strip():
+        raise RuntimeError("Compatible provider setup cancelled")
+
+    auth = getattr(session, "auth_storage", None) or getattr(session, "_auth_storage", None)
+    if auth is None or not hasattr(auth, "set_api_key"):
+        raise RuntimeError("Session auth storage does not support API keys")
+    auth.set_api_key(provider_id, str(key).strip())
+
+    models_path = get_models_path()
+    config = _read_models_config(models_path)
+    config["providers"][provider_id] = {
+        **(config["providers"].get(provider_id) if isinstance(config["providers"].get(provider_id), dict) else {}),
+        "name": provider_label,
+        "api": profile.api,
+        "baseUrl": base_url,
+        "models": config["providers"].get(provider_id, {}).get("models", []) if isinstance(config["providers"].get(provider_id), dict) else [],
+    }
+    _write_models_config(models_path, config)
+
+    reload_session = getattr(session, "reload", None)
+    if callable(reload_session):
+        await reload_session()
+    return provider_id, provider_label
+
+
+async def _subscription_login(provider: str, session: "AgentSession", append_history, show_input) -> None:
+    import webbrowser
+
+    from pi_ai.utils.oauth.types import OAuthLoginCallbacks
+
+    if provider == "openai":
+        from pi_ai.utils.oauth.openai_codex import openai_codex_oauth_provider as oauth_provider
+    elif provider == "anthropic":
+        from pi_ai.utils.oauth.anthropic import anthropic_oauth_provider as oauth_provider
+    elif provider == "google":
+        from pi_ai.utils.oauth.google_gemini_cli import gemini_cli_oauth_provider as oauth_provider
+    else:
+        raise ValueError(f"{provider} does not support subscription login")
+
+    def on_auth(info) -> None:
+        opened = False
+        try:
+            opened = bool(webbrowser.open(info.url))
+        except Exception:
+            pass
+        if opened:
+            append_history("Opened browser for subscription login.")
+        else:
+            append_history(f"Could not open browser automatically. Authorize here:\n{info.url}")
+
+    async def on_prompt(prompt) -> str:
+        value = await show_input(prompt.message, getattr(prompt, "placeholder", None), None)
+        if value is None and not getattr(prompt, "allow_empty", False):
+            raise RuntimeError("OAuth login cancelled")
+        return "" if value is None else str(value)
+
+    credentials = await oauth_provider.login(
+        OAuthLoginCallbacks(
+            on_auth=on_auth,
+            on_prompt=on_prompt,
+            on_progress=lambda message: append_history(str(message)),
+        )
+    )
+    token = {
+        "access_token": credentials.access,
+        "refresh_token": credentials.refresh,
+        "expires_at": credentials.expires / 1000 if credentials.expires else 0,
+        "oauth_provider": getattr(oauth_provider, "id", provider),
+        **dict(credentials.extra),
+    }
+    auth = getattr(session, "auth_storage", None)
+    if auth is None:
+        auth = getattr(session, "_auth_storage", None)
+    if auth is None or not hasattr(auth, "set_oauth_token"):
+        raise RuntimeError("Session auth storage does not support OAuth tokens")
+    auth.set_oauth_token(provider, token)
+    if provider == "google":
+        auth.set_oauth_token("google-gemini-cli", token)

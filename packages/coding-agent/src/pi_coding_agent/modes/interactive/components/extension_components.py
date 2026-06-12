@@ -7,6 +7,8 @@ import shlex
 import tempfile
 from typing import Any, Callable
 
+from pi_tui import CURSOR_MARKER
+
 from .countdown_timer import CountdownTimer
 from .text_input import TextInput
 
@@ -46,7 +48,7 @@ class ExtensionSelectorComponent:
             self.selected_index = max(0, self.selected_index - 1)
         elif key_data in {"down", "j", "\x1b[B"} and self.options:
             self.selected_index = min(len(self.options) - 1, self.selected_index + 1)
-        elif key_data in {"\n", "enter", "return"} and self.options:
+        elif key_data in {"\n", "\r", "\x1bOM", "enter", "return"} and self.options:
             self.on_select(self.options[self.selected_index])
         elif key_data in {"escape", "esc", "\x1b"}:
             self.on_cancel()
@@ -79,6 +81,8 @@ class ExtensionInputComponent:
         self.placeholder = placeholder
         self.on_submit = on_submit or (lambda value: None)
         self.on_cancel = on_cancel or (lambda: None)
+        self.secret = bool((opts or {}).get("secret"))
+        self.focused = False
         self.input = TextInput(on_submit=self.on_submit, on_escape=self.on_cancel)
         timeout = (opts or {}).get("timeout")
         self.countdown = (
@@ -99,8 +103,23 @@ class ExtensionInputComponent:
             self.countdown.dispose()
 
     def render(self, width: int | None = None) -> list[str]:
-        hint = self.placeholder or ""
-        return [self.title, hint, *self.input.render(width)]
+        value = self.input.get_value()
+        visible_value = "*" * len(value) if self.secret else value
+        prefix = "> "
+        suffix = " "
+        available = None if width is None else max(0, width - len(prefix) - len(suffix))
+        if available is not None:
+            visible_value = visible_value[-available:] if len(visible_value) > available else visible_value
+        if visible_value:
+            cursor = f"{CURSOR_MARKER}\x1b[7m \x1b[27m" if self.focused else ""
+            entry = visible_value + cursor
+        else:
+            placeholder = self.placeholder or ""
+            if available is not None:
+                placeholder = placeholder[:available]
+            cursor = f"{CURSOR_MARKER}\x1b[7m \x1b[27m" if self.focused else ""
+            entry = cursor + placeholder
+        return [self.title, f"{prefix}{entry}{suffix}"]
 
 
 class ExtensionEditorComponent:

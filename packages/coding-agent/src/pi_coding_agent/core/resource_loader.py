@@ -37,6 +37,45 @@ class ResourceExtensionPaths:
 _CONTEXT_CANDIDATES = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]
 
 
+def get_extension_discovery_paths(
+    cwd: str,
+    agent_dir: str | None = None,
+    *,
+    inherit_global: bool = True,
+) -> list[str]:
+    """Return extension module paths discovered from configured extensions dirs."""
+    from pi_coding_agent.config import CONFIG_DIR_NAME, ENV_AGENT_DIR, get_agent_dir
+    from pi_coding_agent.core.extensions.loader import discover_extensions_in_dir
+
+    resolved_cwd = os.path.abspath(cwd or os.getcwd())
+    resolved_agent_dir = os.path.abspath(os.path.expanduser(agent_dir or get_agent_dir()))
+    explicit_agent_dir = bool(os.environ.get(ENV_AGENT_DIR))
+
+    project_dir = os.path.join(resolved_cwd, CONFIG_DIR_NAME, "extensions")
+    dirs: list[str] = []
+
+    if inherit_global or explicit_agent_dir:
+        if explicit_agent_dir:
+            global_dir = os.path.join(resolved_agent_dir, "extensions")
+        else:
+            # get_agent_dir() is ~/.pi-py/agent; Python extensions live in
+            # ~/.pi-py/extensions so they are not mixed with agent internals.
+            global_dir = os.path.join(os.path.dirname(resolved_agent_dir), "extensions")
+        dirs.append(global_dir)
+
+    dirs.append(project_dir)
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for directory in dirs:
+        for path in discover_extensions_in_dir(directory):
+            resolved = os.path.abspath(path)
+            if resolved not in seen:
+                seen.add(resolved)
+                paths.append(path)
+    return paths
+
+
 def _extensions_result_to_dict(result: Any) -> dict[str, Any]:
     if isinstance(result, dict):
         normalized = dict(result)
@@ -303,7 +342,7 @@ class DefaultResourceLoader:
         """Reload all resources from disk."""
         self._path_metadata = {}
 
-        # Load extensions (from package manager + additional paths)
+        # Load extensions (from extension dirs + additional paths)
         if not self._no_extensions:
             await self._load_extensions()
 
@@ -390,12 +429,19 @@ class DefaultResourceLoader:
 
     async def _load_extensions(self) -> None:
         """
-        Load extensions from settings paths + additional paths.
+        Load extensions from discovered extension directories + additional paths.
         Detects conflicts in tool/command/flag names.
         Mirrors extension loading in DefaultResourceLoader.reload() in TypeScript.
         """
-        # Get extension paths from settings
-        ext_paths = self._resolve_resource_paths_from_settings("extensions") + self._additional_extension_paths
+        ext_paths = (
+            get_extension_discovery_paths(
+                self._cwd,
+                self._agent_dir,
+                inherit_global=self._inherit_global,
+            )
+            + self._additional_extension_paths
+        )
+        ext_paths = self._merge_paths([], ext_paths)
 
         if not ext_paths and not self._extension_factories:
             base_result: dict[str, Any] = {"extensions": [], "diagnostics": []}

@@ -16,9 +16,23 @@ from .types import (
     Context,
     EventDone,
     EventError,
+    EventStart,
+    EventTextDelta,
+    EventTextEnd,
+    EventTextStart,
+    EventThinkingDelta,
+    EventThinkingEnd,
+    EventThinkingStart,
+    EventToolCallDelta,
+    EventToolCallEnd,
+    EventToolCallStart,
     Model,
     SimpleStreamOptions,
     StreamOptions,
+    TextContent,
+    ThinkingContent,
+    ToolCall,
+    Usage,
 )
 
 register_builtins()
@@ -45,7 +59,7 @@ async def stream_simple(
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
     async for event in provider.stream_simple(model, context, opts):
-        yield event
+        yield _normalize_stream_event(event)
 
 
 async def complete_simple(
@@ -91,7 +105,7 @@ async def stream(
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
     async for event in provider.stream(model, context, opts):
-        yield event
+        yield _normalize_stream_event(event)
 
 
 async def complete(
@@ -115,3 +129,74 @@ async def complete(
         raise RuntimeError("Stream completed without a final message")
 
     return final_message
+
+
+def _normalize_stream_event(event: AssistantMessageEvent | dict) -> AssistantMessageEvent:
+    """Convert legacy dict stream events into typed stream events."""
+    if not isinstance(event, dict):
+        return event
+
+    event_type = event.get("type")
+    data = dict(event)
+    for key in ("partial", "message", "error"):
+        if isinstance(data.get(key), dict):
+            data[key] = _normalize_assistant_message(data[key])
+    if event_type == "start":
+        return EventStart(**data)
+    if event_type == "text_start":
+        return EventTextStart(**data)
+    if event_type == "text_delta":
+        return EventTextDelta(**data)
+    if event_type == "text_end":
+        return EventTextEnd(**data)
+    if event_type == "thinking_start":
+        return EventThinkingStart(**data)
+    if event_type == "thinking_delta":
+        return EventThinkingDelta(**data)
+    if event_type == "thinking_end":
+        return EventThinkingEnd(**data)
+    if event_type == "toolcall_start":
+        return EventToolCallStart(**data)
+    if event_type == "toolcall_delta":
+        return EventToolCallDelta(**data)
+    if event_type == "toolcall_end":
+        if isinstance(data.get("tool_call"), dict):
+            data["tool_call"] = ToolCall(**data["tool_call"])
+        return EventToolCallEnd(**data)
+    if event_type == "done":
+        return EventDone(**data)
+    if event_type == "error":
+        return EventError(**data)
+    raise ValueError(f"Unknown stream event type: {event_type!r}")
+
+
+def _normalize_assistant_message(message: dict) -> AssistantMessage:
+    data = dict(message)
+    data["usage"] = _normalize_usage(data.get("usage"))
+    data["content"] = [_normalize_content_block(block) for block in data.get("content", [])]
+    return AssistantMessage(**data)
+
+
+def _normalize_usage(value: object) -> Usage:
+    if isinstance(value, Usage):
+        return value
+    if isinstance(value, dict):
+        return Usage(**value)
+    return Usage()
+
+
+def _normalize_content_block(block: object) -> TextContent | ThinkingContent | ToolCall:
+    if isinstance(block, (TextContent, ThinkingContent, ToolCall)):
+        return block
+    if not isinstance(block, dict):
+        return TextContent(type="text", text=str(block))
+    block_type = block.get("type")
+    if block_type == "text":
+        return TextContent(**block)
+    if block_type == "thinking":
+        return ThinkingContent(**block)
+    if block_type == "toolCall":
+        data = dict(block)
+        data.pop("partial_json", None)
+        return ToolCall(**data)
+    return TextContent(type="text", text=str(block))

@@ -94,6 +94,64 @@ class TestExtensionLoader:
         with open(path, "w") as f:
             f.write(content)
 
+    def test_discovers_user_file_and_package_extensions(self, tmp_path, monkeypatch):
+        from pi_coding_agent.core.resource_loader import get_extension_discovery_paths
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        extensions_dir = home / ".pi-py" / "extensions"
+        file_ext = extensions_dir / "file_ext.py"
+        package_ext = extensions_dir / "package_ext" / "__init__.py"
+        project.mkdir()
+        file_ext.parent.mkdir(parents=True)
+        package_ext.parent.mkdir(parents=True)
+        file_ext.write_text("def activate(api):\n    pass\n", encoding="utf-8")
+        package_ext.write_text("def activate(api):\n    pass\n", encoding="utf-8")
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(home)) if p.startswith("~") else p)
+
+        paths = get_extension_discovery_paths(
+            str(project),
+            str(home / ".pi-py" / "agent"),
+            inherit_global=True,
+        )
+
+        assert {os.path.basename(path) for path in paths} == {"file_ext.py", "package_ext"}
+
+    @pytest.mark.asyncio
+    async def test_resource_loader_ignores_extension_paths_from_settings(self, tmp_path, monkeypatch):
+        from pi_coding_agent.core.resource_loader import DefaultResourceLoader, DefaultResourceLoaderOptions
+        from pi_coding_agent.core.settings_manager import SettingsManager
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        discovered = home / ".pi-py" / "extensions" / "discovered.py"
+        settings_only = home / ".pi-py" / "settings_only.py"
+        project.mkdir()
+        discovered.parent.mkdir(parents=True)
+        discovered.write_text("def activate(api):\n    pass\n", encoding="utf-8")
+        settings_only.write_text("def activate(api):\n    raise RuntimeError('settings entry loaded')\n", encoding="utf-8")
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(home)) if p.startswith("~") else p)
+
+        agent_dir = str(home / ".pi-py" / "agent")
+        os.makedirs(agent_dir, exist_ok=True)
+        with open(os.path.join(agent_dir, "settings.json"), "w", encoding="utf-8") as f:
+            f.write(f'{{"extensions":["{settings_only}"]}}')
+        settings_manager = SettingsManager.create(str(project), agent_dir, inherit_global=True)
+
+        loader = DefaultResourceLoader(
+            DefaultResourceLoaderOptions(
+                cwd=str(project),
+                agent_dir=agent_dir,
+                settings_manager=settings_manager,
+                inherit_global=True,
+            )
+        )
+        await loader.reload()
+
+        result = loader.get_extensions()
+        assert [os.path.basename(ext.path) for ext in result["extensions"]] == ["discovered.py"]
+        assert result["diagnostics"] == []
+
     @pytest.mark.asyncio
     async def test_load_valid_extension(self):
         from pi_coding_agent.core.event_bus import EventBus

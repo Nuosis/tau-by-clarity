@@ -19,9 +19,12 @@ CONFIG_DIR_NAME: str = ".pi-py"
 LEGACY_CONFIG_DIR_NAME: str = ".pi"
 
 try:
-    VERSION: str = _pkg_version("pi-coding-agent")
+    VERSION: str = _pkg_version("clarity-pi")
 except Exception:
-    VERSION = "0.53.0"
+    try:
+        VERSION = _pkg_version("pi-coding-agent")
+    except Exception:
+        VERSION = "0.53.3"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -268,6 +271,35 @@ def ensure_memory_store(cwd: str | None = None) -> str | None:
     return db_path if os.path.exists(db_path) else None
 
 
+def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
+    """Seed <cwd>/.pi-py/agent with global auth/model config.
+
+    This makes an initialized project self-contained when launched with
+    PI_CODING_AGENT_DIR pointing at its local agent dir. Idempotent: only
+    copies missing files and never overwrites project-local config.
+    """
+    import shutil
+
+    base = cwd or os.getcwd()
+    global_agent_dir = get_agent_dir()
+    project_agent_dir = get_project_agent_dir(base)
+    if os.path.abspath(global_agent_dir) == os.path.abspath(project_agent_dir):
+        return []
+
+    created: list[str] = []
+    os.makedirs(project_agent_dir, mode=0o700, exist_ok=True)
+    for name in ("auth.json", "auth.json.key", "models.json"):
+        src = os.path.join(global_agent_dir, name)
+        dst = os.path.join(project_agent_dir, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.copy2(src, dst)
+                created.append(dst)
+            except OSError:
+                pass
+    return created
+
+
 def scaffold_project(cwd: str | None = None) -> list[str]:
     """Create the project-local .pi-py structure for a new agent dir.
 
@@ -306,6 +338,8 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
     mem_db = ensure_memory_store(base)
     if mem_db:
         created.append(mem_db)
+
+    created.extend(ensure_project_agent_config(base))
 
     agents_path = os.path.join(base, "AGENTS.md")
     if not os.path.exists(agents_path):

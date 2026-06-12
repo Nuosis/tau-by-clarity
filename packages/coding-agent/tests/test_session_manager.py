@@ -349,6 +349,19 @@ def test_auth_storage_oauth_token():
         assert loaded == token
 
 
+def test_auth_storage_oauth_token_wins_over_later_api_key():
+    auth = AuthStorage.in_memory({})
+    token = {"access_token": "oauth-token", "expires_at": 9999999999}
+
+    auth.set_oauth_token("openai", token)
+    auth.set_api_key("openai", "api-key")
+
+    assert auth.get_oauth_token("openai") == token
+    assert auth.get_api_key("openai") == "api-key"
+    assert auth.is_using_oauth("openai") is True
+    assert auth.resolve_api_key("openai") == "oauth-token"
+
+
 def test_auth_storage_delete_key():
     with tempfile.TemporaryDirectory() as tmpdir:
         auth = AuthStorage()
@@ -360,6 +373,24 @@ def test_auth_storage_delete_key():
         auth.set_api_key("openai", "sk-test")
         auth.delete_api_key("openai")
         assert auth.get_api_key("openai") is None
+
+
+def test_auth_storage_targeted_delete_preserves_other_credential():
+    auth = AuthStorage.in_memory({})
+    token = {"access_token": "oauth-token", "expires_at": 9999999999}
+
+    auth.set_oauth_token("openai", token)
+    auth.set_api_key("openai", "api-key")
+    auth.delete_api_key("openai")
+
+    assert auth.get_api_key("openai") is None
+    assert auth.get_oauth_token("openai") == token
+
+    auth.set_api_key("openai", "api-key")
+    auth.delete_oauth_token("openai")
+
+    assert auth.get_oauth_token("openai") is None
+    assert auth.get_api_key("openai") == "api-key"
 
 
 def test_auth_storage_env_fallback(monkeypatch):
@@ -412,9 +443,25 @@ def test_auth_storage_file_backend_exports_and_legacy_shape(tmp_path):
     assert auth.get("anthropic") == {"type": "api_key", "key": "legacy-key"}
 
     auth.set("openai", {"type": "api_key", "key": "node-key"})
-    loaded = json.loads(auth_path.read_text(encoding="utf-8"))
-    assert loaded["openai"] == {"type": "api_key", "key": "node-key"}
-    assert loaded["api_keys"]["openai"] == "node-key"
+    encrypted = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert encrypted["encrypted"] is True
+    assert "node-key" not in auth_path.read_text(encoding="utf-8")
+    reloaded = AuthStorage.create(str(auth_path))
+    assert reloaded.get("openai") == {"type": "api_key", "key": "node-key"}
 
     auth.remove("anthropic")
     assert auth.get("anthropic") is None
+
+
+def test_auth_storage_file_backend_encrypts_on_write(tmp_path):
+    auth_path = tmp_path / "auth.json"
+    auth = AuthStorage.create(str(auth_path))
+
+    auth.set_api_key("openai", "secret-key")
+
+    raw_text = auth_path.read_text(encoding="utf-8")
+    raw = json.loads(raw_text)
+    assert raw["encrypted"] is True
+    assert "secret-key" not in raw_text
+    reloaded = AuthStorage.create(str(auth_path))
+    assert reloaded.get_api_key("openai") == "secret-key"

@@ -131,10 +131,10 @@ class TestArgParsing:
         args = parse_args(["--thinking", "high"])
         assert args.thinking == "high"
 
-    def test_parse_invalid_thinking_level(self, capsys):
+    def test_parse_custom_thinking_level(self, capsys):
         from pi_coding_agent.cli_sub.args import parse_args
-        args = parse_args(["--thinking", "invalid"])
-        assert args.thinking is None
+        args = parse_args(["--thinking", "adaptive"])
+        assert args.thinking == "adaptive"
 
     def test_parse_no_session(self):
         from pi_coding_agent.cli_sub.args import parse_args
@@ -202,7 +202,8 @@ class TestArgParsing:
     def test_is_valid_thinking_level(self):
         from pi_coding_agent.cli_sub.args import is_valid_thinking_level
         assert is_valid_thinking_level("high") is True
-        assert is_valid_thinking_level("invalid") is False
+        assert is_valid_thinking_level("adaptive") is True
+        assert is_valid_thinking_level("") is False
         assert is_valid_thinking_level("off") is True
 
     def test_print_help_runs(self, capsys):

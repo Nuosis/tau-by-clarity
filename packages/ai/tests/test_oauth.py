@@ -7,6 +7,7 @@ Tests PKCE generation, provider registry, and token refresh (mocked HTTP).
 from __future__ import annotations
 
 import time
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -148,6 +149,73 @@ class TestOAuthRegistry:
         p = get_oauth_provider("custom-test-provider-xyz")
         assert p is not None
         assert p.name == "Custom Test"
+
+
+class TestOpenAICodexOAuthProvider:
+    @pytest.mark.asyncio
+    async def test_login_uses_current_authorize_endpoint_and_state(self):
+        from pi_ai.utils.oauth.openai_codex import login_openai_codex
+        from pi_ai.utils.oauth.types import OAuthLoginCallbacks
+
+        auth_urls: list[str] = []
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        }
+
+        with (
+            patch("pi_ai.utils.oauth.openai_codex.generate_pkce", return_value=("verifier", "challenge")),
+            patch("pi_ai.utils.oauth.openai_codex.secrets.token_urlsafe", return_value="state-123"),
+            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(return_value=("code", "state-123"))),
+            patch("pi_ai.utils.oauth.openai_codex.httpx.AsyncClient") as MockClient,
+        ):
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_ctx.post = AsyncMock(return_value=mock_resp)
+            MockClient.return_value = mock_ctx
+
+            creds = await login_openai_codex(
+                OAuthLoginCallbacks(
+                    on_auth=lambda info: auth_urls.append(info.url),
+                    on_prompt=AsyncMock(return_value=""),
+                )
+            )
+
+        parsed = urlparse(auth_urls[0])
+        query = parse_qs(parsed.query)
+        assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://auth.openai.com/oauth/authorize"
+        assert query["client_id"] == ["app_EMoamEEZ73f0CkXaXp7hrann"]
+        assert query["redirect_uri"] == ["http://localhost:1455/auth/callback"]
+        assert query["scope"] == ["openid profile email offline_access"]
+        assert query["code_challenge"] == ["challenge"]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["id_token_add_organizations"] == ["true"]
+        assert query["codex_cli_simplified_flow"] == ["true"]
+        assert query["originator"] == ["codex_cli"]
+        assert query["state"] == ["state-123"]
+        assert creds.access == "access"
+        assert creds.refresh == "refresh"
+
+    @pytest.mark.asyncio
+    async def test_login_rejects_callback_state_mismatch(self):
+        from pi_ai.utils.oauth.openai_codex import login_openai_codex
+        from pi_ai.utils.oauth.types import OAuthLoginCallbacks
+
+        with (
+            patch("pi_ai.utils.oauth.openai_codex.generate_pkce", return_value=("verifier", "challenge")),
+            patch("pi_ai.utils.oauth.openai_codex.secrets.token_urlsafe", return_value="state-123"),
+            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(return_value=("code", "wrong-state"))),
+        ):
+            with pytest.raises(ValueError, match="OAuth state mismatch"):
+                await login_openai_codex(
+                    OAuthLoginCallbacks(
+                        on_auth=lambda info: None,
+                        on_prompt=AsyncMock(return_value=""),
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------

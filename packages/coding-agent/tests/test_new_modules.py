@@ -529,6 +529,98 @@ class TestModelRegistryExtended:
         assert found is not None
         assert found.id == "custom-test"
 
+    def test_synthesizes_compatible_provider_models(self):
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        registry = ModelRegistry()
+        model = registry.find("openai-compatible", "custom-model-id")
+
+        assert model is not None
+        assert model.provider == "openai-compatible"
+        assert model.id == "custom-model-id"
+        assert model.api == "openai-responses"
+
+    def test_synthesizes_models_for_configured_compatible_provider_without_plaintext_key(self, tmp_path):
+        import json
+
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        models_path = tmp_path / "models.json"
+        models_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "minimax": {
+                            "name": "MiniMax",
+                            "api": "openai-responses",
+                            "baseUrl": "https://api.minimax.example/v1",
+                            "models": [],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        auth_path = tmp_path / "auth.json"
+        auth = AuthStorage.create(str(auth_path))
+        auth.set_api_key("minimax", "secret-key")
+
+        registry = ModelRegistry(auth_storage=auth, models_json_path=str(models_path))
+        model = registry.find("minimax", "MiniMax-M3")
+
+        assert model is not None
+        assert model.provider == "minimax"
+        assert model.id == "MiniMax-M3"
+        assert model.api == "openai-responses"
+        assert model.base_url == "https://api.minimax.example/v1"
+        assert registry.get_api_key("minimax") == "secret-key"
+
+    def test_configured_provider_explicit_model_metadata_beats_synthetic_fallback(self, tmp_path):
+        import json
+
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        models_path = tmp_path / "models.json"
+        models_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "minimax": {
+                            "name": "MiniMax",
+                            "api": "anthropic-messages",
+                            "baseUrl": "https://api.minimax.io/anthropic",
+                            "models": [
+                                {
+                                    "id": "MiniMax-M3",
+                                    "name": "MiniMax M3",
+                                    "contextWindow": 1048576,
+                                    "maxTokens": 16384,
+                                    "reasoning": True,
+                                }
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        auth_path = tmp_path / "auth.json"
+        auth = AuthStorage.create(str(auth_path))
+        auth.set_api_key("minimax", "secret-key")
+
+        registry = ModelRegistry(auth_storage=auth, models_json_path=str(models_path))
+        model = registry.find("minimax", "MiniMax-M3")
+
+        assert model is not None
+        assert model.provider == "minimax"
+        assert model.id == "MiniMax-M3"
+        assert model.api == "anthropic-messages"
+        assert model.base_url == "https://api.minimax.io/anthropic"
+        assert model.context_window == 1048576
+        assert model.max_tokens == 16384
+
     def test_resolve_headers_none(self):
         from pi_coding_agent.core.model_registry import ModelRegistry
         from pi_ai import get_model
@@ -598,6 +690,498 @@ class TestModelRegistryExtended:
         assert find_exact_model_reference_match("openai/shared-model", models) is openai_model
         assert find_exact_model_reference_match("OPENAI/SHARED-MODEL", models) is openai_model
         assert find_exact_model_reference_match("shared-model", models) is None
+
+
+@pytest.mark.asyncio
+async def test_tui_set_command_direct_form_requires_tier(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    history = []
+    await _handle_set_command(
+        "/set openai strong gpt-custom",
+        SimpleNamespace(model_registry=SimpleNamespace(reload=lambda: None)),
+        history.append,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        None,
+        None,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    assert stored["providers"]["openai"]["tiers"]["strong"] == {
+        "model": "gpt-custom",
+        "thinkingLevel": "off",
+    }
+    assert history == ["Set openai strong to gpt-custom (thinking off)."]
+
+
+@pytest.mark.asyncio
+async def test_tui_set_command_prompts_for_reasoning_level(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    history = []
+
+    async def show_select(title, options, opts=None):
+        return "yes"
+
+    async def show_input(title, placeholder=None, opts=None):
+        return "high"
+
+    await _handle_set_command(
+        "/set minimax standard MiniMax-M3",
+        SimpleNamespace(model_registry=SimpleNamespace(reload=lambda: None)),
+        history.append,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        show_select,
+        show_input,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    assert stored["providers"]["minimax"]["tiers"]["standard"] == {
+        "model": "MiniMax-M3",
+        "thinkingLevel": "high",
+    }
+    assert history == ["Set minimax standard to MiniMax-M3 (thinking high)."]
+
+
+@pytest.mark.asyncio
+async def test_tui_set_command_reasoning_no_sets_thinking_off(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    async def show_select(title, options, opts=None):
+        return "no"
+
+    async def show_input(title, placeholder=None, opts=None):
+        return "unused"
+
+    await _handle_set_command(
+        "/set minimax standard MiniMax-M3",
+        SimpleNamespace(model_registry=SimpleNamespace(reload=lambda: None)),
+        lambda message: None,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        show_select,
+        show_input,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    assert stored["providers"]["minimax"]["tiers"]["standard"] == {
+        "model": "MiniMax-M3",
+        "thinkingLevel": "off",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tui_set_compatible_template_offers_configured_provider(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "minimax": {
+                        "name": "MiniMax",
+                        "api": "openai-responses",
+                        "baseUrl": "https://api.minimax.example/v1",
+                        "models": [],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    class Registry:
+        def reload(self):
+            pass
+
+    class Session:
+        def __init__(self):
+            self.model_registry = Registry()
+
+    async def show_select(title, options, opts=None):
+        if title == "Configured provider":
+            assert options == ["MiniMax"]
+            return "MiniMax"
+        if title == "Reasoning":
+            return "yes"
+        raise AssertionError(f"unexpected select: {title}")
+
+    async def show_input(title, placeholder=None, opts=None):
+        assert title == "Thinking level"
+        return "medium"
+
+    session = Session()
+    await _handle_set_command(
+        "/set openai-compatible standard MiniMax-M3",
+        session,
+        lambda message: None,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        show_select,
+        show_input,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    assert stored["providers"]["minimax"]["tiers"]["standard"] == {
+        "model": "MiniMax-M3",
+        "thinkingLevel": "medium",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tui_set_compatible_template_without_configured_provider_reminds_login(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    models_path.write_text(json.dumps({"providers": {}}), encoding="utf-8")
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    history = []
+    await _handle_set_command(
+        "/set anthropic-compatible standard claude-custom",
+        SimpleNamespace(model_registry=SimpleNamespace(find=lambda provider, model_id: None)),
+        history.append,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        lambda title, options, opts=None: None,
+        lambda title, placeholder=None, opts=None: None,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    assert history == ["No Anthropic Compatible providers configured. Run /login and choose Anthropic Compatible first."]
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_uses_configured_tier_mapping(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_model_command
+
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "anthropic": {
+                        "name": "Anthropic",
+                        "tiers": {
+                            "strong": {
+                                "model": "claude-custom-strong",
+                                "thinkingLevel": "adaptive",
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    class Registry:
+        def find(self, provider, model_id):
+            return SimpleNamespace(provider=provider, id=model_id, reasoning=True)
+
+    class Session:
+        def __init__(self):
+            self.model_registry = Registry()
+            self.selected = []
+            self.thinking = None
+
+        async def set_model(self, model):
+            self.selected.append(model)
+
+        def set_thinking_level(self, level):
+            self.thinking = level
+
+    async def show_select(title, options, opts=None):
+        if title == "Provider":
+            return "Anthropic"
+        if title == "Model strength":
+            return "strong"
+        raise AssertionError(f"unexpected select: {title}")
+
+    history = []
+    persisted = []
+    session = Session()
+    await _handle_model_command(
+        "/model",
+        session,
+        history.append,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: persisted.append(updates) or "global",
+        show_select,
+    )
+
+    assert session.selected[0].provider == "anthropic"
+    assert session.selected[0].id == "claude-custom-strong"
+    assert session.thinking == "adaptive"
+    assert persisted == [{
+        "defaultProvider": "anthropic",
+        "defaultModel": "claude-custom-strong",
+        "defaultThinkingLevel": "adaptive",
+    }]
+    assert "claude-custom-strong" in history[0]
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_compatible_template_uses_configured_provider(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_model_command
+
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "minimax": {
+                        "name": "MiniMax",
+                        "api": "openai-responses",
+                        "baseUrl": "https://api.minimax.example/v1",
+                        "tiers": {
+                            "standard": {
+                                "model": "MiniMax-M3",
+                                "thinkingLevel": "adaptive",
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    class Registry:
+        def find(self, provider, model_id):
+            return SimpleNamespace(provider=provider, id=model_id, reasoning=True)
+
+    class Session:
+        def __init__(self):
+            self.model_registry = Registry()
+            self.selected = []
+            self.thinking = None
+
+        async def set_model(self, model):
+            self.selected.append(model)
+
+        def set_thinking_level(self, level):
+            self.thinking = level
+
+    async def show_select(title, options, opts=None):
+        if title == "Provider":
+            return "OpenAI Compatible"
+        if title == "Model strength":
+            return "standard"
+        if title == "Configured provider":
+            assert options == ["MiniMax"]
+            return "MiniMax"
+        raise AssertionError(f"unexpected select: {title}")
+
+    persisted = []
+    session = Session()
+    await _handle_model_command(
+        "/models",
+        session,
+        lambda message: None,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: persisted.append(updates) or "global",
+        show_select,
+    )
+
+    assert session.selected[0].provider == "minimax"
+    assert session.selected[0].id == "MiniMax-M3"
+    assert session.thinking == "adaptive"
+    assert persisted == [{
+        "defaultProvider": "minimax",
+        "defaultModel": "MiniMax-M3",
+        "defaultThinkingLevel": "adaptive",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_tui_set_command_rejects_invalid_direct_tier():
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    history = []
+    await _handle_set_command(
+        "/set openai fast gpt-custom",
+        SimpleNamespace(model_registry=SimpleNamespace(find=lambda provider, model_id: None)),
+        history.append,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        None,
+        None,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    assert "Invalid tier:" in history[0]
+
+
+@pytest.mark.asyncio
+async def test_compatible_provider_login_stores_metadata_and_encrypted_key(tmp_path, monkeypatch):
+    import json
+
+    from pi_coding_agent.core.auth_storage import AuthStorage
+    from pi_coding_agent.modes.interactive import tui as tui_module
+
+    auth_path = tmp_path / "auth.json"
+    models_path = tmp_path / "models.json"
+    auth = AuthStorage.create(str(auth_path))
+    reloaded = []
+    answers = iter(["MiniMax", "api.minimax.example/v1", "secret-key"])
+
+    class Session:
+        auth_storage = auth
+
+        async def reload(self):
+            reloaded.append(True)
+
+    monkeypatch.setattr("pi_coding_agent.config.get_models_path", lambda: str(models_path))
+
+    async def show_input(title, placeholder=None, opts=None):
+        return next(answers)
+
+    provider_id, label = await tui_module._compatible_provider_login(
+        "openai-compatible",
+        Session(),
+        show_input,
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    raw_auth = auth_path.read_text(encoding="utf-8")
+    assert provider_id == "minimax"
+    assert label == "MiniMax"
+    assert stored["providers"]["minimax"] == {
+        "api": "openai-responses",
+        "baseUrl": "https://api.minimax.example/v1",
+        "models": [],
+        "name": "MiniMax",
+    }
+    assert "secret-key" not in raw_auth
+    assert AuthStorage.create(str(auth_path)).get_api_key("minimax") == "secret-key"
+    assert reloaded == [True]
+
+
+@pytest.mark.asyncio
+async def test_tui_logout_without_provider_selects_stored_provider():
+    from types import SimpleNamespace
+
+    from pi_coding_agent.modes.interactive.tui import _handle_logout_command
+
+    history = []
+    rendered = []
+    footer_updates = []
+    logged_out = []
+
+    class Session:
+        auth_storage = SimpleNamespace(
+            list_stored_providers=lambda: ["openai"],
+            get_api_key=lambda provider: "api-key" if provider == "openai" else None,
+            get_oauth_token=lambda provider: {"access_token": "token"} if provider == "openai" else None,
+        )
+
+        def logout_provider(self, provider, credential_type=None):
+            logged_out.append((provider, credential_type))
+
+    async def show_select(title, options, _opts=None):
+        if title == "Logout provider":
+            assert options == ["OpenAI (openai)"]
+            return "OpenAI (openai)"
+        if title == "Credential type":
+            assert options == ["api_key", "token"]
+            return "token"
+        raise AssertionError(f"unexpected select: {title}")
+
+    await _handle_logout_command(
+        "/logout",
+        Session(),
+        history.append,
+        lambda: footer_updates.append(True),
+        SimpleNamespace(request_render=lambda: rendered.append(True)),
+        show_select,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+    )
+
+    assert logged_out == [("openai", "token")]
+    assert history == ["Removed stored token for openai."]
+    assert footer_updates == [True]
+    assert rendered == [True]
 
 
 # ── core/settings_manager extended tests ─────────────────────────────────────

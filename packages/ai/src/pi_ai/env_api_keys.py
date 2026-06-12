@@ -9,6 +9,7 @@ from pathlib import Path
 # Maps provider name → environment variable name
 PROVIDER_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
+    "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
     "google": "GEMINI_API_KEY",
     "google-gemini-cli": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
@@ -27,6 +28,7 @@ PROVIDER_ENV_VARS: dict[str, str] = {
     "kimi-coding": "KIMI_API_KEY",
     "kimi": "KIMI_API_KEY",
     "moonshot": "MOONSHOT_API_KEY",
+    "anthropic-compatible": "ANTHROPIC_COMPATIBLE_API_KEY",
 }
 
 
@@ -89,4 +91,3 @@ def get_env_api_key(provider: str) -> str | None:
         return os.environ.get(env_var)
     
     return None
-

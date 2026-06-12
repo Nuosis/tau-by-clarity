@@ -407,7 +407,31 @@ class AgentSession:
         return messages
 
     async def _resolve_api_key(self, provider: str) -> str | None:
-        return self._auth_storage.resolve_api_key(provider)
+        key = self._auth_storage.resolve_api_key(provider)
+        try:
+            from .cli_debug_log import log_event
+
+            source = "none"
+            oauth = self._auth_storage.get_oauth_token(provider)
+            stored_key = self._auth_storage.get_api_key(provider)
+            if provider in getattr(self._auth_storage, "_runtime_overrides", {}):
+                source = "runtime"
+            elif oauth and key == oauth.get("access_token"):
+                source = "token"
+            elif stored_key and key == stored_key:
+                source = "api_key"
+            elif key:
+                source = "environment_or_fallback"
+            log_event(
+                "auth_resolved",
+                provider=provider,
+                present=bool(key),
+                source=source,
+                length=len(key) if key else 0,
+            )
+        except Exception:
+            pass
+        return key
 
     async def _on_provider_payload(self, payload: Any, model: Model | None = None) -> Any:
         if not self._extension_runner.has_handlers("before_provider_request"):
@@ -1294,7 +1318,12 @@ class AgentSession:
     def set_thinking_level(self, level: ThinkingLevel) -> None:
         """Set thinking level, clamped to model capabilities. Persists to session."""
         available = self.get_available_thinking_levels()
-        effective = level if level in available else _clamp_thinking_level(level, available)
+        if level in available:
+            effective = level
+        elif level and level != "off" and self.supports_thinking():
+            effective = level
+        else:
+            effective = _clamp_thinking_level(level, available)
         is_changing = effective != self._agent.state.thinking_level
         self._agent.set_thinking_level(effective)
         if is_changing:
@@ -1888,12 +1917,13 @@ class AgentSession:
             raise ValueError("API key is required")
         self._auth_storage.set_api_key(cleaned_provider, cleaned_key)
 
-    def logout_provider(self, provider: str) -> None:
+    def logout_provider(self, provider: str, credential_type: str | None = None) -> None:
         """Remove persisted credentials for a provider."""
         cleaned_provider = provider.strip()
         if not cleaned_provider:
             raise ValueError("Provider is required")
-        self._auth_storage.logout(cleaned_provider)
+        cleaned_type = credential_type.strip() if isinstance(credential_type, str) else credential_type
+        self._auth_storage.logout(cleaned_provider, cleaned_type)
 
     def get_project_trust(self) -> ProjectTrustDecision:
         """Return the persisted trust decision for this session cwd."""
@@ -2016,6 +2046,8 @@ class AgentSession:
             "sessionManager": lambda: self._session_manager,
             "modelRegistry": lambda: self._model_registry,
             "model": lambda: self.model,
+            "session_vars": lambda: dict(self._settings.session_vars or {}),
+            "sessionVars": lambda: dict(self._settings.session_vars or {}),
             "signal": bindings.get("signal"),
         }
         # Bind core actions into the shared extension runtime FIRST. bind_core()

@@ -21,7 +21,7 @@ from pi_ai.types import (
 
 # ─── ThinkingLevel ────────────────────────────────────────────────────────────
 
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ThinkingLevel = str
 
 # ─── StreamFn ─────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import hashlib
+import hmac
+import secrets
 from pi_coding_agent.config import CONFIG_DIR_NAME
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -26,6 +30,7 @@ class FileAuthStorageBackend(AuthStorageBackend):
         from pi_coding_agent.config import get_auth_path
 
         self.auth_path = os.path.abspath(os.path.expanduser(auth_path or get_auth_path()))
+        self.encrypted = True
 
     def _ensure_file(self) -> None:
         os.makedirs(os.path.dirname(self.auth_path), mode=0o700, exist_ok=True)
@@ -118,7 +123,77 @@ class AuthStorage:
         raw = json.loads(content)
         if not isinstance(raw, dict):
             return {}
+        if raw.get("encrypted") is True:
+            return self._decrypt_storage(raw)
         return raw
+
+    def _storage_path(self) -> str:
+        if self._storage is not None and hasattr(self._storage, "auth_path"):
+            return str(getattr(self._storage, "auth_path"))
+        return self.AUTH_FILE
+
+    def _storage_uses_encryption(self) -> bool:
+        if self._storage is None:
+            return True
+        return bool(getattr(self._storage, "encrypted", False))
+
+    def _key_path(self) -> str:
+        return f"{self._storage_path()}.key"
+
+    def _load_or_create_key(self) -> bytes:
+        path = self._key_path()
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                key = f.read().strip()
+            if key:
+                return base64.urlsafe_b64decode(key)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        key = secrets.token_bytes(32)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.urlsafe_b64encode(key))
+        return key
+
+    def _keystream(self, key: bytes, nonce: bytes, length: int) -> bytes:
+        chunks: list[bytes] = []
+        counter = 0
+        while sum(len(chunk) for chunk in chunks) < length:
+            chunks.append(hmac.new(key, nonce + counter.to_bytes(8, "big"), hashlib.sha256).digest())
+            counter += 1
+        return b"".join(chunks)[:length]
+
+    def _encrypt_storage(self, data: dict[str, Any]) -> str:
+        plaintext = json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        key = self._load_or_create_key()
+        nonce = secrets.token_bytes(16)
+        stream = self._keystream(key, nonce, len(plaintext))
+        ciphertext = bytes(a ^ b for a, b in zip(plaintext, stream))
+        mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+        envelope = {
+            "version": 2,
+            "encrypted": True,
+            "cipher": "pi-py-xor-hmac-sha256",
+            "nonce": base64.urlsafe_b64encode(nonce).decode("ascii"),
+            "data": base64.urlsafe_b64encode(ciphertext).decode("ascii"),
+            "mac": base64.urlsafe_b64encode(mac).decode("ascii"),
+        }
+        return json.dumps(envelope, indent=2)
+
+    def _decrypt_storage(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        if envelope.get("cipher") != "pi-py-xor-hmac-sha256":
+            raise ValueError("Unsupported encrypted auth storage format")
+        key = self._load_or_create_key()
+        nonce = base64.urlsafe_b64decode(str(envelope.get("nonce", "")))
+        ciphertext = base64.urlsafe_b64decode(str(envelope.get("data", "")))
+        expected = base64.urlsafe_b64decode(str(envelope.get("mac", "")))
+        actual = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, actual):
+            raise ValueError("Encrypted auth storage integrity check failed")
+        stream = self._keystream(key, nonce, len(ciphertext))
+        plaintext = bytes(a ^ b for a, b in zip(ciphertext, stream))
+        decoded = json.loads(plaintext.decode("utf-8"))
+        return decoded if isinstance(decoded, dict) else {}
 
     def _read_storage(self) -> dict[str, Any]:
         if self._storage is not None:
@@ -131,7 +206,7 @@ class AuthStorage:
         return {}
 
     def _write_storage(self, data: dict[str, Any]) -> None:
-        serialized = json.dumps(data, indent=2)
+        serialized = self._encrypt_storage(data) if self._storage_uses_encryption() else json.dumps(data, indent=2)
         if self._storage is not None:
             self._storage.with_lock(lambda current: {"result": None, "next": serialized})
             return
@@ -239,8 +314,12 @@ class AuthStorage:
 
     def get_api_key(self, provider: str) -> str | None:
         """Get the stored API key for a provider."""
-        credential = self.get(provider)
-        if credential and credential.get("type") == "api_key":
+        self._ensure_loaded()
+        api_keys = self._data.get("api_keys", {})
+        if isinstance(api_keys, dict) and provider in api_keys:
+            return api_keys.get(provider)
+        credential = self._data.get(provider)
+        if isinstance(credential, dict) and credential.get("type") == "api_key":
             return credential.get("key")
         return None
 
@@ -250,12 +329,23 @@ class AuthStorage:
 
     def delete_api_key(self, provider: str) -> None:
         """Delete the stored API key for a provider."""
-        self.remove(provider)
+        self._ensure_loaded()
+        api_keys = self._data.get("api_keys", {})
+        if isinstance(api_keys, dict):
+            api_keys.pop(provider, None)
+        credential = self._data.get(provider)
+        if isinstance(credential, dict) and credential.get("type") == "api_key":
+            self._data.pop(provider, None)
+        self._save()
 
     def get_oauth_token(self, provider: str) -> dict[str, Any] | None:
         """Get the stored OAuth token for a provider."""
-        credential = self.get(provider)
-        if credential and credential.get("type") == "oauth":
+        self._ensure_loaded()
+        oauth_tokens = self._data.get("oauth_tokens", {})
+        if isinstance(oauth_tokens, dict) and provider in oauth_tokens:
+            return dict(oauth_tokens[provider])
+        credential = self._data.get(provider)
+        if isinstance(credential, dict) and credential.get("type") == "oauth":
             token = dict(credential)
             token.pop("type", None)
             return token
@@ -267,7 +357,14 @@ class AuthStorage:
 
     def delete_oauth_token(self, provider: str) -> None:
         """Delete the stored OAuth token for a provider."""
-        self.remove(provider)
+        self._ensure_loaded()
+        oauth_tokens = self._data.get("oauth_tokens", {})
+        if isinstance(oauth_tokens, dict):
+            oauth_tokens.pop(provider, None)
+        credential = self._data.get(provider)
+        if isinstance(credential, dict) and credential.get("type") == "oauth":
+            self._data.pop(provider, None)
+        self._save()
 
     def set_runtime_api_key(self, provider: str, api_key: str) -> None:
         """
@@ -327,8 +424,7 @@ class AuthStorage:
 
     def is_using_oauth(self, provider: str) -> bool:
         """Check if provider uses OAuth authentication."""
-        credential = self.get(provider)
-        return bool(credential and credential.get("type") == "oauth")
+        return self.get_oauth_token(provider) is not None
 
     async def login(
         self,
@@ -419,10 +515,16 @@ class AuthStorage:
         self.set_oauth_token(provider, token_data)
         return token_data
 
-    def logout(self, provider: str) -> None:
-        """Logout from a provider by removing stored credentials."""
-        self.delete_api_key(provider)
-        self.delete_oauth_token(provider)
+    def logout(self, provider: str, credential_type: str | None = None) -> None:
+        """Logout from a provider by removing selected stored credentials."""
+        if credential_type in {None, "all"}:
+            self.remove(provider)
+        elif credential_type == "api_key":
+            self.delete_api_key(provider)
+        elif credential_type in {"token", "oauth", "subscription"}:
+            self.delete_oauth_token(provider)
+        else:
+            raise ValueError(f"Unknown credential type: {credential_type}")
 
     def _refresh_oauth_token(self, provider: str) -> str | None:
         """Attempt to refresh an expired OAuth token synchronously."""

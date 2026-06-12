@@ -492,8 +492,7 @@ class Editor:
             (len(data) > 1 and ord(data[0]) == 10) or
             (len(data) > 1 and "\x1b" in data and "\r" in data) or
             data == "\x1b\r" or
-            data == "\x1b[13;2~" or
-            (len(data) == 1 and data == "\n")
+            data == "\x1b[13;2~"
         )
         if is_new_line:
             if self._should_submit_on_backslash_enter(data, kb):
@@ -864,6 +863,7 @@ class Editor:
         for paste_id, paste_content in self._pastes.items():
             pattern = re.compile(rf"\[paste #{paste_id}( (\+\d+ lines|\d+ chars))?\]")
             result = pattern.sub(paste_content, result)
+        self.add_to_history(result)
 
         self._state = _EditorState([""], 0, 0)
         self._pastes.clear()

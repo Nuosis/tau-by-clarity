@@ -27,7 +27,11 @@ from .core.event_bus import create_event_bus
 from .core.extensions.loader import load_extensions
 from .core.model_registry import ModelRegistry
 from .core.package_manager import DefaultPackageManager
-from .core.resource_loader import DefaultResourceLoader, DefaultResourceLoaderOptions
+from .core.resource_loader import (
+    DefaultResourceLoader,
+    DefaultResourceLoaderOptions,
+    get_extension_discovery_paths,
+)
 from .core.agent_session_runtime import (
     CreateAgentSessionRuntimeResult,
     create_agent_session_runtime,
@@ -607,6 +611,15 @@ async def _run(args: Sequence[str]) -> int:
     first_pass = parse_args(list(args))
     event_bus = create_event_bus()
     ext_paths = first_pass.extensions or []
+    if not first_pass.no_extensions:
+        ext_paths = (
+            get_extension_discovery_paths(
+                os.getcwd(),
+                get_agent_dir(),
+                inherit_global=bool(getattr(first_pass, "inherit", False)),
+            )
+            + ext_paths
+        )
     log_event("extension_first_pass_start", extension_paths=ext_paths)
     extensions_result = await load_extensions(ext_paths, os.getcwd(), event_bus)
     log_event(
@@ -913,3 +926,7 @@ def main(args: Sequence[str] | None = None) -> None:
         raise
     log_event("process_exit", exit_code=exit_code)
     sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

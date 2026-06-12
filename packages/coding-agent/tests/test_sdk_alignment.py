@@ -138,6 +138,41 @@ class TestSDKAlignment:
         assert "{ACTIVE_PATH}" not in result.session.system_prompt
 
     @pytest.mark.asyncio
+    async def test_session_vars_are_available_to_extensions(self, tmp_path):
+        from pi_coding_agent.core.extensions.types import Extension
+
+        seen = {}
+
+        def on_start(ctx, event):
+            seen["session_vars"] = getattr(ctx, "session_vars", None)
+            seen["sessionVars"] = getattr(ctx, "sessionVars", None)
+
+        extension = Extension(
+            path="inline.py",
+            resolved_path="inline.py",
+            handlers={"session_start": [on_start]},
+        )
+
+        class Loader(_FakeResourceLoader):
+            def get_extensions(self):
+                return {"extensions": [extension], "diagnostics": []}
+
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
+                cwd=str(tmp_path),
+                model=get_model("anthropic", "claude-3-5-sonnet-20241022"),
+                resource_loader=Loader(),
+                session_vars={"PROJECT": "/repo/app"},
+                tools=[],
+            )
+        )
+
+        await result.session.bind_extensions({})
+
+        assert seen["session_vars"] == {"PROJECT": "/repo/app"}
+        assert seen["sessionVars"] == {"PROJECT": "/repo/app"}
+
+    @pytest.mark.asyncio
     async def test_no_tools_disables_default_tools(self, tmp_path):
         result = await create_agent_session(
             CreateAgentSessionOptions(
@@ -3012,11 +3047,39 @@ class TestInteractiveComponentParity:
         selector.handle_input("down")
         selector.handle_input("\n")
         assert selected[-1] == "b"
+        selector.handle_input("\r")
+        assert selected[-1] == "b"
 
         input_component = ExtensionInputComponent("Ask", on_submit=selected.append)
         input_component.handle_input("x")
         input_component.handle_input("\n")
         assert selected[-1] == "x"
+        input_component = ExtensionInputComponent("Ask", on_submit=selected.append)
+        input_component.handle_input("y")
+        input_component.handle_input("\r")
+        assert selected[-1] == "y"
+        input_component = ExtensionInputComponent("Ask", "Paste value", on_submit=selected.append)
+        assert input_component.render() == ["Ask", "> Paste value "]
+        input_component.focused = True
+        assert "\x1b_pi:c\x07" in input_component.render()[1]
+        input_component.handle_input("z")
+        assert "z" in input_component.render()[1]
+        secret_input = ExtensionInputComponent("Secret", "Paste secret", on_submit=selected.append, opts={"secret": True})
+        secret_input.handle_input("a")
+        secret_input.handle_input("b")
+        assert secret_input.render() == ["Secret", "> ** "]
+        secret_input.handle_input("\n")
+        assert selected[-1] == "ab"
+        secret_input = ExtensionInputComponent("Secret", "Paste secret", on_submit=selected.append, opts={"secret": True})
+        secret_input.handle_input("sk-pasted-key")
+        assert secret_input.render() == ["Secret", "> ************* "]
+        secret_input.handle_input("\n")
+        assert selected[-1] == "sk-pasted-key"
+        secret_input = ExtensionInputComponent("Secret", "Paste secret", on_submit=selected.append, opts={"secret": True})
+        secret_input.handle_input("\x1b[200~sk-bracketed-key\x1b[201~")
+        assert secret_input.render() == ["Secret", "> **************** "]
+        secret_input.handle_input("\r")
+        assert selected[-1] == "sk-bracketed-key"
 
         ticks: list[int] = []
         expired: list[bool] = []

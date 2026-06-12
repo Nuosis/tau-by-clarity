@@ -2,9 +2,9 @@
 Extension loader — mirrors packages/coding-agent/src/core/extensions/loader.ts
 
 Discovers and loads extensions from:
-1. Global: ~/.pi/agent/extensions/
-2. Local: <cwd>/.pi/extensions/
-3. Explicit paths from settings
+1. Global: ~/.pi-py/extensions/
+2. Local: <cwd>/.pi-py/extensions/
+3. Explicit paths from CLI/API options
 """
 from __future__ import annotations
 

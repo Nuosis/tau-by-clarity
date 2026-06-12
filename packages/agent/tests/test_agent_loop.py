@@ -116,6 +116,20 @@ async def test_agent_loop_basic():
     assert "message_end" in event_types
 
 
+def test_agent_loop_config_accepts_provider_specific_reasoning_level():
+    """Provider-compatible models may use non-OpenAI reasoning labels."""
+    from pi_ai import get_model
+
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    config = AgentLoopConfig(
+        model=model,
+        reasoning="adaptive",
+        convert_to_llm=lambda msgs: [m for m in msgs if hasattr(m, "role")],
+    )
+
+    assert config.reasoning == "adaptive"
+
+
 @pytest.mark.asyncio
 async def test_agent_loop_returns_new_messages():
     """Test that agent_loop returns the new messages via result()."""

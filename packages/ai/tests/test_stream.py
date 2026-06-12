@@ -99,6 +99,48 @@ async def test_stream_simple_collects_events():
 
 
 @pytest.mark.asyncio
+async def test_stream_simple_normalizes_legacy_dict_events():
+    import time
+
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    context = make_context("Hello")
+    timestamp = int(time.time() * 1000)
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Hello!"}],
+        "api": model.api,
+        "provider": model.provider,
+        "model": model.id,
+        "usage": {
+            "input": 1,
+            "output": 2,
+            "cache_read": 0,
+            "cache_write": 0,
+            "total_tokens": 3,
+            "cost": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0},
+        },
+        "stop_reason": "stop",
+        "timestamp": timestamp,
+    }
+
+    async def legacy_stream(_model, _context, _options=None):
+        yield {"type": "start", "partial": {**message, "content": []}}
+        yield {"type": "done", "reason": "stop", "message": message}
+
+    provider = type("P", (), {"stream_simple": staticmethod(legacy_stream), "stream": staticmethod(legacy_stream)})()
+    with patch("pi_ai.stream.get_api_provider", return_value=provider):
+        events = []
+        async for event in stream_simple(model, context):
+            events.append(event)
+
+    assert isinstance(events[0], EventStart)
+    assert isinstance(events[1], EventDone)
+    assert isinstance(events[1].message, AssistantMessage)
+    assert isinstance(events[1].message.content[0], TextContent)
+    assert events[1].message.content[0].text == "Hello!"
+
+
+@pytest.mark.asyncio
 async def test_complete_simple_returns_assistant_message():
     model = get_model("anthropic", "claude-3-5-sonnet-20241022")
     context = make_context("Hello")

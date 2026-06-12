@@ -25,6 +25,7 @@ BUILT_IN_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "opencode": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "openai": "OpenAI",
+    "openai-compatible": "OpenAI Compatible",
     "openrouter": "OpenRouter",
     "together": "Together AI",
     "vercel-ai-gateway": "Vercel AI Gateway",
@@ -35,6 +36,7 @@ BUILT_IN_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan (China)",
     "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
     "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
+    "anthropic-compatible": "Anthropic Compatible",
 }
 
 

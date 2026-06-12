@@ -853,6 +853,76 @@ async def test_tui_initial_messages_render_without_text_delta(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tui_chat_command_renders_session_transcript(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(id="model", provider="openai")
+            self.thinking_level = "off"
+
+        def get_context_usage(self):
+            return None
+
+        def get_active_tool_names(self):
+            return []
+
+        def get_session_stats(self):
+            return {
+                "sessionId": "test",
+                "userMessages": 1,
+                "assistantMessages": 1,
+                "toolCalls": 0,
+                "tokens": {"total": 0},
+                "cost": 0.0,
+            }
+
+        def get_messages(self):
+            return [
+                {"role": "user", "content": "What changed?"},
+                {
+                    "role": "assistant",
+                    "content": [SimpleNamespace(type="text", text="The transcript rendered.")],
+                },
+            ]
+
+        def cycle_thinking_level(self):
+            return "minimal"
+
+        async def compact(self, custom_instructions=None):
+            return ""
+
+        async def set_model(self, model):
+            self.model = model
+
+        async def cycle_model(self, direction="forward"):
+            return None
+
+        def subscribe(self, _fn):
+            return lambda: None
+
+        async def prompt(self, _text: str, images=None, source: str | None = None):
+            return None
+
+    terminal = _MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+
+    await _run_pi_tui(FakeSession(), initial_messages=["/chat", "/exit"])
+
+    clean = re.sub(
+        r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;\x07",
+        "",
+        terminal.all_output,
+    )
+    assert "You: What changed?" in clean
+    assert "Assistant: The transcript rendered." in clean
+
+
+@pytest.mark.asyncio
 async def test_tui_extension_can_install_custom_editor_component(monkeypatch):
     from types import SimpleNamespace
 

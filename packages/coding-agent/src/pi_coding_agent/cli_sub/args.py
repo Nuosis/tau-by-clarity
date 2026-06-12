@@ -18,7 +18,7 @@ VALID_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
 def is_valid_thinking_level(level: str) -> bool:
-    return level in VALID_THINKING_LEVELS
+    return bool(level.strip())
 
 
 @dataclass
@@ -66,7 +66,7 @@ class Args:
     verbose: bool = False
     offline: bool = False
     project_trust_override: bool | None = None
-    # Pull in global (~/.pi-py/agent) skills/prompts/extensions/settings.
+    # Pull in global (~/.pi-py/agent) settings/resources and ~/.pi-py/extensions.
     # Default: project-local config only.
     inherit: bool = False
     # Scaffold the project-local .pi-py structure here, then launch.
@@ -182,7 +182,7 @@ def parse_args(
                 result.thinking = level
             else:
                 print(
-                    f'Warning: Invalid thinking level "{level}". Valid values: {", ".join(VALID_THINKING_LEVELS)}',
+                    'Warning: --thinking requires a non-empty value',
                     file=sys.stderr,
                 )
         elif arg in ("--print", "-p"):
@@ -358,7 +358,7 @@ Options:
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --inherit                      Also load global (~/.pi-py/agent) skills, prompts,
-                                   extensions, and settings (default: project-local only)
+                                   settings, and ~/.pi-py/extensions (default: project-local only)
   --init                         Scaffold a .pi-py project (settings, skills/, prompts/,
                                    extensions/, AGENTS.md) in the current dir, then launch
   --help, -h                     Show this help

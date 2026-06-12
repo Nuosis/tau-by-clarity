@@ -178,6 +178,34 @@ class TestSimpleOptionsFull:
         assert budget == 5000
 
 
+class TestAnthropicProviderAuth:
+    def test_custom_anthropic_base_url_sends_explicit_x_api_key_header(self):
+        from pi_ai.providers import anthropic as anthropic_provider
+
+        model = _make_model(provider="minimax", reasoning=True)
+        model.base_url = "https://api.minimax.io/anthropic"
+
+        with patch("pi_ai.providers.anthropic._anthropic.AsyncAnthropic") as client_cls:
+            anthropic_provider._build_client(model, "secret-key")
+
+        _, kwargs = client_cls.call_args
+        assert kwargs["api_key"] == "secret-key"
+        assert kwargs["base_url"] == "https://api.minimax.io/anthropic"
+        assert kwargs["default_headers"]["X-Api-Key"] == "secret-key"
+
+    def test_official_anthropic_base_url_does_not_force_x_api_key_header(self):
+        from pi_ai.providers import anthropic as anthropic_provider
+
+        model = _make_model(provider="anthropic", reasoning=True)
+        model.base_url = "https://api.anthropic.com"
+
+        with patch("pi_ai.providers.anthropic._anthropic.AsyncAnthropic") as client_cls:
+            anthropic_provider._build_client(model, "secret-key")
+
+        _, kwargs = client_cls.call_args
+        assert "X-Api-Key" not in kwargs["default_headers"]
+
+
 # ---------------------------------------------------------------------------
 # Provider stream functions return EventStream
 # ---------------------------------------------------------------------------

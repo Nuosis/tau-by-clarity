@@ -219,6 +219,73 @@ class TestInput:
         inp.handle_input("\x15")  # Ctrl+U
         assert inp.get_value() == ""
 
+
+class TestEditorInput:
+    class _Terminal:
+        rows = 24
+        columns = 80
+        kitty_protocol_active = False
+
+        def write(self, _s: str) -> None:
+            pass
+
+        def start(self, _on_input, _on_resize) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def hide_cursor(self) -> None:
+            pass
+
+        def show_cursor(self) -> None:
+            pass
+
+        def move_by(self, _n: int) -> None:
+            pass
+
+        def clear_line(self) -> None:
+            pass
+
+        def clear_from_cursor(self) -> None:
+            pass
+
+        def clear_screen(self) -> None:
+            pass
+
+        def set_title(self, _title: str) -> None:
+            pass
+
+    def _editor(self):
+        from pi_tui.components.editor import Editor, EditorTheme
+        from pi_tui.tui import TUI
+
+        return Editor(TUI(self._Terminal()), EditorTheme())
+
+    def test_enter_submits_and_arrow_up_recalls_last_message(self):
+        editor = self._editor()
+        submitted = []
+        editor.on_submit = submitted.append
+
+        for char in "last message":
+            editor.handle_input(char)
+        editor.handle_input("\r")
+        editor.handle_input("\x1b[A")
+
+        assert submitted == ["last message"]
+        assert editor.get_text() == "last message"
+
+    def test_shift_enter_adds_new_line(self):
+        editor = self._editor()
+
+        for char in "hello":
+            editor.handle_input(char)
+        editor.handle_input("\x1b[13;2~")
+        for char in "world":
+            editor.handle_input(char)
+
+        assert editor.get_text() == "hello\nworld"
+
     def test_ctrl_k_delete_to_line_end(self):
         inp = Input()
         inp.handle_input("hello")
