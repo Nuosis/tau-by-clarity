@@ -1549,6 +1549,7 @@ async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypat
     from types import SimpleNamespace
 
     import pi_tui
+    import pi_coding_agent.modes.interactive.tui as tui_module
     from pi_coding_agent.modes.interactive.tui import _run_pi_tui
 
     class MockTerminal:
@@ -1599,7 +1600,7 @@ async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypat
             self.thinking_level = "off"
 
         def get_context_usage(self):
-            return None
+            return {"percent": 12, "tokens": 1200, "contextWindow": 128000}
 
         def get_active_tool_names(self):
             return []
@@ -1656,7 +1657,11 @@ async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypat
 
     assert "Extension header" in clean
     assert "Extension footer" in clean
-    assert "working: Indexing project (dots)" in clean
+    assert "ctx: 12% (1k/128k)" in clean
+    assert f"v{tui_module.VERSION}" in clean
+    assert clean.index("ctx: 12% (1k/128k)") < clean.index(f"v{tui_module.VERSION}")
+    assert "working:" in clean
+    assert "Indexing project (dots)" in clean
 
 
 @pytest.mark.asyncio

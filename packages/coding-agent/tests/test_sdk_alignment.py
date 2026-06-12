@@ -2560,6 +2560,7 @@ class TestInteractiveComponentParity:
         from dataclasses import dataclass
 
         from pi_ai.types import Model, ModelCost
+        from pi_coding_agent.config import VERSION
         from pi_coding_agent.modes.interactive.components import FooterComponent
 
         @dataclass
@@ -2634,6 +2635,8 @@ class TestInteractiveComponentParity:
         assert "↑1.2k" in lines[1]
         assert "↓3.4k" in lines[1]
         assert "(openai) gpt-5.4-nano" in lines[1]
+        assert f"v{VERSION}" in lines[1]
+        assert lines[1].index("12.5%/400k") < lines[1].index(f"v{VERSION}")
         assert lines[2] == "Alpha status Beta status"
 
     def test_basic_selector_components_select_and_cancel(self):

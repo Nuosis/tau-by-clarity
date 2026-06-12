@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable
 from typing import TYPE_CHECKING
 
+from pi_coding_agent.config import VERSION
 from pi_coding_agent.core.extensions.types import ExtensionUIContext
 
 if TYPE_CHECKING:
@@ -992,6 +993,7 @@ async def _run_pi_tui(
             tkn = _fmt_tokens(ctx.get("tokens", 0))
             cw = _fmt_tokens(ctx.get("contextWindow", 0))
             parts.append(f"ctx: {pct:.0f}% ({tkn}/{cw})")
+        parts.append(f"v{VERSION}")
         for key, text in sorted(extension_statuses.items()):
             parts.append(f"{key}: {text}")
         if working_visible and working_message:

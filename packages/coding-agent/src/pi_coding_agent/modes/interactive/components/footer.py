@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pi_coding_agent.config import VERSION
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -163,6 +165,7 @@ class FooterComponent:
             stats_parts.append(f"?/{format_tokens(context_window)}{auto_indicator}")
         else:
             stats_parts.append(f"{float(percent):.1f}%/{format_tokens(context_window)}{auto_indicator}")
+        stats_parts.append(f"v{VERSION}")
 
         stats_left = " ".join(stats_parts)
         model_name = _get_attr_or_key(model, "id", "no-model") if model else "no-model"
