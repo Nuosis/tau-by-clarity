@@ -26,7 +26,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.3"
+        VERSION = "0.54.4"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -352,6 +352,52 @@ def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
     return created
 
 
+_ZSH_ALIAS_BEGIN = "# >>> pi-py managed shell function >>>"
+_ZSH_ALIAS_END = "# <<< pi-py managed shell function <<<"
+
+
+def _pi_py_zsh_function_block() -> str:
+    return "\n".join(
+        [
+            _ZSH_ALIAS_BEGIN,
+            "pi-py() {",
+            '  if [ -f "pyproject.toml" ] && grep -q "clarity-pi" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
+            '    uv run pi-py "$@"',
+            "  else",
+            '    command pi-py "$@"',
+            "  fi",
+            "}",
+            _ZSH_ALIAS_END,
+            "",
+        ]
+    )
+
+
+def ensure_zsh_pi_py_alias(zshrc_path: str | None = None) -> str | None:
+    """Install the zsh helper that prefers project-local ``uv run pi-py``.
+
+    The block is marker-managed and idempotent. It intentionally lives behind
+    ``--init`` instead of package installation so pip never mutates shell config
+    without the user explicitly initializing an agent workspace.
+    """
+    path = zshrc_path or os.path.join(os.path.expanduser("~"), ".zshrc")
+    block = _pi_py_zsh_function_block()
+    try:
+        existing = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                existing = f.read()
+        if _ZSH_ALIAS_BEGIN in existing and _ZSH_ALIAS_END in existing:
+            return None
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        prefix = "" if not existing or existing.endswith("\n") else "\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(prefix + block)
+        return path
+    except OSError:
+        return None
+
+
 def scaffold_project(cwd: str | None = None) -> list[str]:
     """Create the project-local .pi-py structure for a new agent dir.
 
@@ -393,6 +439,9 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
 
     created.extend(ensure_project_agent_config(base))
     created.extend(ensure_project_uv_runner(base))
+    alias_path = ensure_zsh_pi_py_alias()
+    if alias_path:
+        created.append(alias_path)
 
     agents_path = os.path.join(base, "AGENTS.md")
     if not os.path.exists(agents_path):

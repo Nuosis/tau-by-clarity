@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -126,6 +127,43 @@ def test_ensure_project_uv_runner_preserves_existing_root_project(tmp_path, monk
     assert str(pyproject) not in created
     assert str(proj / ".venv") not in created
     assert pyproject.read_text(encoding="utf-8") == "# existing project\n"
+
+
+def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
+    from pi_coding_agent import config
+
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_text("# existing\n", encoding="utf-8")
+
+    created = config.ensure_zsh_pi_py_alias(str(zshrc))
+    created_again = config.ensure_zsh_pi_py_alias(str(zshrc))
+
+    text = zshrc.read_text(encoding="utf-8")
+    assert created == str(zshrc)
+    assert created_again is None
+    assert text.count("pi-py managed shell function") == 2
+    assert 'grep -q "clarity-pi" "pyproject.toml"' in text
+    assert 'uv run pi-py "$@"' in text
+    assert 'command pi-py "$@"' in text
+
+
+def test_scaffold_installs_zsh_alias_once(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(home)) if p.startswith("~") else p)
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    created = config.scaffold_project(str(proj))
+    created_again = config.scaffold_project(str(proj))
+
+    zshrc = home / ".zshrc"
+    assert str(zshrc) in created
+    assert str(zshrc) not in created_again
+    assert zshrc.read_text(encoding="utf-8").count("pi-py()") == 1
 
 
 @pytest.mark.asyncio
