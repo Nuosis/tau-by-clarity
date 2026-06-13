@@ -97,6 +97,8 @@ class TestExtensionLoader:
     def test_discovers_user_file_and_package_extensions(self, tmp_path, monkeypatch):
         from pi_coding_agent.core.resource_loader import get_extension_discovery_paths
 
+        # Isolate from the always-on Clarity PII built-in (covered by its own tests).
+        monkeypatch.setenv("PI_CLARITY_PII_DISABLED", "1")
         home = tmp_path / "home"
         project = tmp_path / "project"
         extensions_dir = home / ".pi-py" / "extensions"
@@ -122,6 +124,8 @@ class TestExtensionLoader:
         from pi_coding_agent.core.resource_loader import DefaultResourceLoader, DefaultResourceLoaderOptions
         from pi_coding_agent.core.settings_manager import SettingsManager
 
+        # Isolate from the always-on Clarity PII built-in (covered by its own tests).
+        monkeypatch.setenv("PI_CLARITY_PII_DISABLED", "1")
         home = tmp_path / "home"
         project = tmp_path / "project"
         discovered = home / ".pi-py" / "extensions" / "discovered.py"
