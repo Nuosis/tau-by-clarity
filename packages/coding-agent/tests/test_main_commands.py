@@ -143,7 +143,8 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     assert created_again is None
     assert text.count("pi-py managed shell function") == 2
     assert 'grep -q "clarity-pi" "pyproject.toml"' in text
-    assert 'command pi-py update "$@"' in text
+    assert 'uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync' in text
+    assert "command pi-py update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert 'command pi-py "$@"' in text
 
@@ -171,7 +172,8 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     assert "# before" in text
     assert "# after" in text
     assert text.count("pi-py()") == 1
-    assert 'command pi-py update "$@"' in text
+    assert 'uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync' in text
+    assert "command pi-py update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert '  uv run pi-py "$@"\n}' not in text
 
@@ -297,7 +299,7 @@ def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None
     assert env["PI_PY_LOCAL_DISPATCH"] == "1"
 
 
-def test_dispatch_to_local_project_reexecs_update_as_uv_add(tmp_path, monkeypatch) -> None:
+def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypatch) -> None:
     from pi_coding_agent import main as main_mod
 
     proj = tmp_path / "proj"
@@ -308,18 +310,34 @@ def test_dispatch_to_local_project_reexecs_update_as_uv_add(tmp_path, monkeypatc
     )
     calls: list[list[str]] = []
 
-    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+    class _Result:
+        returncode = 0
+
+    def fake_run(args: list[str], env: dict[str, str]):
+        assert env["PI_PY_LOCAL_DISPATCH"] == "1"
         calls.append(args)
-        raise RuntimeError("exec")
+        return _Result()
 
     monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
-    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "clarity-pi==0.54.10")
-    monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "clarity-pi==0.54.12")
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
-    with pytest.raises(RuntimeError, match="exec"):
+    with pytest.raises(SystemExit) as exc:
         main_mod._dispatch_to_local_project(["update"], str(proj))
 
-    assert calls == [["uv", "add", "--project", str(proj), "clarity-pi==0.54.10"]]
+    assert exc.value.code == 0
+    assert calls == [
+        [
+            "uv",
+            "add",
+            "--project",
+            str(proj),
+            "--upgrade-package",
+            "clarity-pi",
+            "clarity-pi==0.54.12",
+        ],
+        ["uv", "sync", "--project", str(proj)],
+    ]
 
 
 def test_dispatch_to_local_project_skips_init(tmp_path, monkeypatch) -> None:
@@ -499,6 +517,7 @@ async def test_handle_package_command_update_all_updates_extensions_then_self(mo
 @pytest.mark.asyncio
 async def test_package_manager_self_update_invokes_python_pip(monkeypatch, tmp_path) -> None:
     import sys
+
     from pi_coding_agent.core.package_manager import DefaultPackageManager
 
     commands: list[list[str]] = []

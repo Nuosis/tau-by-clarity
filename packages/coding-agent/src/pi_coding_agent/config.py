@@ -11,7 +11,6 @@ import subprocess
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
-
 # App metadata (mirrors piConfig in package.json)
 APP_NAME: str = "pi"
 # The Python harness uses its OWN config dir so it never reads the Node `.pi`
@@ -26,7 +25,7 @@ except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
     except Exception:
-        VERSION = "0.54.12"
+        VERSION = "0.54.13"
 
 ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
@@ -364,7 +363,17 @@ def _pi_py_zsh_function_block() -> str:
             '  if [ -f "pyproject.toml" ] && grep -q "clarity-pi" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
             '    if [ "${1:-}" = "update" ]; then',
             '      shift',
-            '      command pi-py update "$@"',
+            '      local _pi_py_latest',
+            "      _pi_py_latest=\"$(python3 - <<'PY'",
+            "import json",
+            "import urllib.request",
+            "",
+            'with urllib.request.urlopen("https://pypi.org/pypi/clarity-pi/json", timeout=20) as response:',
+            "    data = json.load(response)",
+            'print(data["info"]["version"])',
+            "PY",
+            ')"',
+            '      uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync',
             "    else",
             '      uv run python -m pi_coding_agent.main "$@"',
             "    fi",

@@ -4,19 +4,25 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+
+from pi_ai.env_api_keys import PROVIDER_ENV_VARS
 
 from .cli_sub.args import parse_args, print_help
 from .cli_sub.file_processor import process_file_arguments
 from .cli_sub.list_models import list_models
 from .cli_sub.session_picker import select_session
-from pi_ai import get_model
-from pi_ai.env_api_keys import PROVIDER_ENV_VARS
-
 from .config import APP_NAME, get_agent_dir
+from .core.agent_session_runtime import (
+    CreateAgentSessionRuntimeResult,
+    create_agent_session_runtime,
+)
+from .core.agent_session_services import AgentSessionServices
 from .core.auth_storage import AuthStorage
 from .core.cli_debug_log import (
     attach_session_event_logging,
@@ -34,11 +40,6 @@ from .core.resource_loader import (
     DefaultResourceLoaderOptions,
     get_extension_discovery_paths,
 )
-from .core.agent_session_runtime import (
-    CreateAgentSessionRuntimeResult,
-    create_agent_session_runtime,
-)
-from .core.agent_session_services import AgentSessionServices
 from .core.sdk import CreateAgentSessionOptions, create_agent_session
 from .core.session_manager import SessionManager
 from .core.settings_manager import SettingsManager
@@ -90,11 +91,26 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     env[_LOCAL_DISPATCH_ENV] = "1"
     if args and args[0] == "update":
         requirement = _latest_clarity_pi_requirement()
-        os.execvpe(
-            "uv",
-            ["uv", "add", "--project", project_root, requirement, *args[1:]],
-            env,
+        update_result = subprocess.run(
+            [
+                "uv",
+                "add",
+                "--project",
+                project_root,
+                "--upgrade-package",
+                "clarity-pi",
+                requirement,
+                *args[1:],
+            ],
+            env=env,
         )
+        if update_result.returncode != 0:
+            raise SystemExit(update_result.returncode)
+        sync_result = subprocess.run(
+            ["uv", "sync", "--project", project_root],
+            env=env,
+        )
+        raise SystemExit(sync_result.returncode)
     os.execvpe(
         "uv",
         ["uv", "run", "--project", project_root, "python", "-m", "pi_coding_agent.main", *args],
