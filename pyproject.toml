@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clarity-pi"
-version = "0.54.13"
+version = "0.55.0"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -82,6 +82,7 @@ Issues = "https://github.com/Nuosis/pi-mono-python/issues"
 "packages/agent/src/pi_agent" = "pi_agent"
 "packages/coding-agent/src/pi_coding_agent" = "pi_coding_agent"
 "packages/tui/src/pi_tui" = "pi_tui"
+"packages/loop/src/pi_loop" = "pi_loop"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -89,6 +90,7 @@ include = [
     "packages/agent/src/pi_agent",
     "packages/coding-agent/src/pi_coding_agent",
     "packages/tui/src/pi_tui",
+    "packages/loop/src/pi_loop",
     "README.md",
     "LICENSE",
     "pyproject.toml",
@@ -109,7 +111,7 @@ exclude = [
 
 # Keep the uv workspace for local dev (sub-packages remain independent).
 [tool.uv.workspace]
-members = ["packages/ai", "packages/agent", "packages/coding-agent", "packages/tui"]
+members = ["packages/ai", "packages/agent", "packages/coding-agent", "packages/tui", "packages/loop"]
 
 [tool.ruff]
 line-length = 120
