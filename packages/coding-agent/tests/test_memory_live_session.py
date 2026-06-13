@@ -4,6 +4,7 @@ the store and the recall hook re-injects it. Exercises the session methods direc
 from __future__ import annotations
 
 import json
+import os
 
 from pi_ai import get_model
 from pi_ai.types import ToolResultMessage, UserMessage
@@ -43,6 +44,35 @@ async def test_memory_attached_via_setting(tmp_path, monkeypatch):
     # settings.json memory_enabled=true (no env var) attaches memory
     s = _session(tmp_path, monkeypatch, memory=True)
     assert s._memory is not None and s._memory_store is not None
+
+
+async def test_memory_roots_at_session_cwd_not_process_cwd(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("PI_MEMORY_ENABLED", raising=False)
+    monkeypatch.setenv("PI_MEMORY_EMBED", "deterministic")
+    project = tmp_path / "project"
+    ambient = tmp_path / "ambient"
+    project.mkdir()
+    ambient.mkdir()
+    monkeypatch.chdir(ambient)
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    sm = SessionManager.create(cwd=str(project), session_dir=str(project / "sessions"))
+
+    s = AgentSession(
+        cwd=str(project),
+        model=model,
+        settings=Settings(auto_compact=False, memory_enabled=True),
+        session_manager=sm,
+    )
+
+    assert s._memory_store is not None
+    assert s._memory_store.project_root == os.path.abspath(project)
+    assert s._memory_store.db_path == os.path.join(
+        os.path.abspath(project),
+        ".pi-py",
+        "memory",
+        "memory.db",
+    )
 
 
 async def test_live_curation_then_recall(tmp_path, monkeypatch):

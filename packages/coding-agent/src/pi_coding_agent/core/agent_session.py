@@ -17,8 +17,8 @@ import shutil
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from pi_agent import Agent, AgentOptions
 from pi_agent.types import (
@@ -31,6 +31,7 @@ from pi_ai import get_model, is_context_overflow
 from pi_ai.types import AssistantMessage, ImageContent, Model, TextContent, UserMessage
 
 from pi_coding_agent.config import get_share_viewer_url
+
 from .auth_storage import AuthStorage
 from .compaction import compact_context, should_compact
 from .extensions.runner import ExtensionRunner
@@ -39,18 +40,18 @@ from .model_registry import ModelRegistry
 from .session_manager import SessionManager
 from .settings_manager import Settings, SettingsManager
 from .system_prompt import build_system_prompt
-from .trust_manager import ProjectTrustDecision, ProjectTrustStore
 from .tools import (
-    create_tool_definition_from_agent_tool,
     create_bash_tool,
     create_edit_tool,
     create_find_tool,
     create_grep_tool,
     create_ls_tool,
     create_read_tool,
+    create_tool_definition_from_agent_tool,
     create_write_tool,
     wrap_tool_definition,
 )
+from .trust_manager import ProjectTrustDecision, ProjectTrustStore
 
 # ── Thinking levels (mirrors TS constants) ────────────────────────────────────
 _THINKING_LEVELS: list[ThinkingLevel] = ["off", "minimal", "low", "medium", "high"]
@@ -179,23 +180,60 @@ class AgentSession:
         self._bind_extension_context({})
 
         # ── Project-local memory (P5) — flag-gated, default off ───────────────
-        # When PI_MEMORY_ENABLED=1, attach the project-local store so the recall hook
-        # in _transform_context fires. Live auto-curation + compaction replacement are
-        # validated end-to-end by P6; default-off keeps existing behaviour unchanged.
+        # When settings.json memory_enabled=true or PI_MEMORY_ENABLED=1, attach
+        # the project-local store so the recall hook in _transform_context fires.
+        # Live auto-curation + compaction replacement are validated end-to-end by
+        # P6; default-off keeps existing behaviour unchanged.
         self._memory = None
         self._memory_store = None
         self._memory_scope = None
         try:
+            from .cli_debug_log import log_event
             from .memory.integration import MemoryIntegration, memory_enabled
-            # settings.json `memory_enabled` is the CLI home; env var forces on (tests/CI)
-            enabled = getattr(self._settings, "memory_enabled", False) or memory_enabled()
+
+            # settings.json `memory_enabled` is the normal control plane; env
+            # vars force on for tests/CI and one-off diagnostics.
+            settings_enabled = bool(getattr(self._settings, "memory_enabled", False))
+            env_enabled = memory_enabled()
+            enabled = settings_enabled or env_enabled
+            memory_root = os.path.abspath(os.path.expanduser(self.cwd))
+            log_event(
+                "memory.attach_decision",
+                enabled=enabled,
+                settings_enabled=settings_enabled,
+                env_enabled=env_enabled,
+                session_cwd=self.cwd,
+                memory_root=memory_root,
+                process_cwd=os.getcwd(),
+                session_id=self.session_id,
+            )
             if enabled:
                 model_name = getattr(getattr(self._agent.state, "model", None), "id", None)
                 self._memory = MemoryIntegration(
-                    os.getcwd(), allm_fn=self._memory_acomplete, model=model_name)
+                    memory_root, allm_fn=self._memory_acomplete, model=model_name)
                 self._memory_store = self._memory.store
                 self._memory_scope = self._memory.scope
-        except Exception:
+                log_event(
+                    "memory.attached",
+                    session_id=self.session_id,
+                    memory_root=memory_root,
+                    db_path=getattr(self._memory_store, "db_path", None),
+                    scope_project=getattr(self._memory_scope, "project", None),
+                    model_id=model_name,
+                )
+        except Exception as exc:
+            try:
+                from .cli_debug_log import log_exception
+
+                log_exception(
+                    "memory.attach_failed",
+                    exc,
+                    session_id=getattr(self, "session_id", None),
+                    session_cwd=getattr(self, "cwd", None),
+                    process_cwd=os.getcwd(),
+                )
+            except Exception:
+                pass
             self._memory = None  # never let memory wiring break session construction
         self._memory_cursor = 0  # index of last message curated into memory
 
@@ -580,6 +618,17 @@ class AgentSession:
     async def _curate_turn(self) -> None:
         """Extract atomic memories from messages added since the last curation."""
         if self._memory is None:
+            try:
+                from .cli_debug_log import log_event
+
+                log_event(
+                    "memory.curate_skipped",
+                    reason="memory_not_attached",
+                    session_id=self.session_id,
+                    cursor=self._memory_cursor,
+                )
+            except Exception:
+                pass
             return
         from .memory.curator import Evidence
         msgs = self._agent.state.messages
@@ -595,11 +644,63 @@ class AgentSession:
             text = _message_text(m)
             if text:
                 evidence.append(Evidence(f"m{i}", kind, text[:4000]))
+        try:
+            from .cli_debug_log import log_event
+
+            log_event(
+                "memory.curate_begin",
+                session_id=self.session_id,
+                db_path=getattr(getattr(self._memory, "store", None), "db_path", None),
+                cursor_start=start,
+                cursor_end=self._memory_cursor,
+                message_count=len(msgs),
+                evidence_count=len(evidence),
+                evidence_kinds=[e.kind for e in evidence],
+            )
+        except Exception:
+            pass
         if not any(e.kind in ("user_turn", "tool_result") for e in evidence):
+            try:
+                from .cli_debug_log import log_event
+
+                log_event(
+                    "memory.curate_skipped",
+                    reason="no_user_or_tool_evidence",
+                    session_id=self.session_id,
+                    evidence_count=len(evidence),
+                    evidence_kinds=[e.kind for e in evidence],
+                )
+            except Exception:
+                pass
             return
         try:
-            await self._memory.arecord_turn(evidence)
-        except Exception:
+            committed_ids = await self._memory.arecord_turn(evidence)
+            try:
+                from .cli_debug_log import log_event
+
+                log_event(
+                    "memory.curate_committed",
+                    session_id=self.session_id,
+                    db_path=getattr(getattr(self._memory, "store", None), "db_path", None),
+                    evidence_count=len(evidence),
+                    committed_count=len(committed_ids or []),
+                    committed_ids=committed_ids or [],
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                from .cli_debug_log import log_exception
+
+                log_exception(
+                    "memory.curate_failed",
+                    exc,
+                    session_id=self.session_id,
+                    db_path=getattr(getattr(self._memory, "store", None), "db_path", None),
+                    evidence_count=len(evidence),
+                )
+            except Exception:
+                pass
             pass  # curation must never break the turn
 
     def _emit(self, event: dict | Any) -> None:
@@ -1039,7 +1140,7 @@ class AgentSession:
 
         return {"cancelled": False, "editorText": editor_text}
 
-    async def create_branched_session(self, branch_point_id: str) -> "AgentSession":
+    async def create_branched_session(self, branch_point_id: str) -> AgentSession:
         """
         Create a new session branching from a specific entry.
         Mirrors createBranchedSession() via SessionManager.branch().
@@ -1434,7 +1535,7 @@ class AgentSession:
 
     # ── Session management ────────────────────────────────────────────────────
 
-    async def fork(self, entry_id: str | None = None) -> "AgentSession":
+    async def fork(self, entry_id: str | None = None) -> AgentSession:
         """
         Fork the session from a specific entry (or current leaf).
         Mirrors fork() in TypeScript.
@@ -1613,7 +1714,6 @@ class AgentSession:
         # Case 2: Threshold
         if getattr(msg, "stop_reason", "") == "error":
             return  # non-overflow errors have no usage data
-        tokens = self._estimate_context_tokens()
         reserve = settings.get("reserveTokens", 16384)
         if context_window > 0 and should_compact(
             self._agent.state.messages,

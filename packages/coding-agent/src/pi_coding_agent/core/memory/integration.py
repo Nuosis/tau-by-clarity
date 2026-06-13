@@ -1,7 +1,8 @@
 """
 Memory integration (P5) — bundle store + recall + curator + compression for a session.
 
-Flag-gated (PI_MEMORY_ENABLED=1, default off, kill-switch retained). When enabled,
+Flag-gated (settings.json memory_enabled=true or PI_MEMORY_ENABLED=1, default off,
+kill-switch retained). When enabled,
 AgentSession: attaches the store (recall read-path fires in _transform_context); curates
 each turn's evidence into the store via the async curator (_curate_turn in
 _post_turn_checks); and curates-before-compacting so facts survive the lossy summary and
@@ -20,7 +21,10 @@ from .working_context import CtxBlock, WorkingContextConfig, compress_working_co
 
 
 def memory_enabled() -> bool:
-    return os.environ.get("PI_MEMORY_ENABLED", "") == "1"
+    return (
+        os.environ.get("PI_MEMORY_ENABLED", "") == "1"
+        or os.environ.get("PI_CODING_AGENT_MEMORY_ENABLED", "") == "1"
+    )
 
 
 class MemoryIntegration:

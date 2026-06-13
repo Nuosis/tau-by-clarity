@@ -27,10 +27,14 @@ def _integration(tmp_path):
 
 def test_flag_default_off():
     os.environ.pop("PI_MEMORY_ENABLED", None)
+    os.environ.pop("PI_CODING_AGENT_MEMORY_ENABLED", None)
     assert memory_enabled() is False
     os.environ["PI_MEMORY_ENABLED"] = "1"
     assert memory_enabled() is True
     os.environ.pop("PI_MEMORY_ENABLED", None)
+    os.environ["PI_CODING_AGENT_MEMORY_ENABLED"] = "1"
+    assert memory_enabled() is True
+    os.environ.pop("PI_CODING_AGENT_MEMORY_ENABLED", None)
 
 
 def test_record_then_recall(tmp_path):
