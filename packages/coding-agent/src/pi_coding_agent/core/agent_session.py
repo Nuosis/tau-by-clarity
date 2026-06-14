@@ -169,38 +169,6 @@ class AgentSession:
         self._listeners: list[Callable[[AgentEvent], None]] = []
         self._agent.subscribe(self._on_agent_event)
 
-    def _initial_goal_from_settings(self) -> str | None:
-        session_vars = self._settings.session_vars or {}
-        goal = session_vars.get("GOAL")
-        if isinstance(goal, str) and goal.strip():
-            return goal.strip()
-        return None
-
-    def _effective_system_prompt(self) -> str:
-        if not self._current_goal:
-            return self._base_system_prompt
-        return (
-            f"{self._base_system_prompt}\n\n"
-            "# Active Goal\n\n"
-            f"{self._current_goal}\n\n"
-            "Treat this as the current session goal until it is cleared or changed."
-        )
-
-    def set_current_goal(self, goal: str | None) -> str | None:
-        value = (goal or "").strip()
-        self._current_goal = value or None
-        if self._settings.session_vars is None:
-            self._settings.session_vars = {}
-        if self._current_goal:
-            self._settings.session_vars["GOAL"] = self._current_goal
-        else:
-            self._settings.session_vars.pop("GOAL", None)
-        self._agent.set_system_prompt(self._effective_system_prompt())
-        return self._current_goal
-
-    def get_current_goal(self) -> str | None:
-        return self._current_goal
-
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
         self._retry_event: asyncio.Event | None = None      # set when retry resolves/fails
@@ -280,6 +248,38 @@ class AgentSession:
                 pass
             self._memory = None  # never let memory wiring break session construction
         self._memory_cursor = 0  # index of last message curated into memory
+
+    def _initial_goal_from_settings(self) -> str | None:
+        session_vars = self._settings.session_vars or {}
+        goal = session_vars.get("GOAL")
+        if isinstance(goal, str) and goal.strip():
+            return goal.strip()
+        return None
+
+    def _effective_system_prompt(self) -> str:
+        if not self._current_goal:
+            return self._base_system_prompt
+        return (
+            f"{self._base_system_prompt}\n\n"
+            "# Active Goal\n\n"
+            f"{self._current_goal}\n\n"
+            "Treat this as the current session goal until it is cleared or changed."
+        )
+
+    def set_current_goal(self, goal: str | None) -> str | None:
+        value = (goal or "").strip()
+        self._current_goal = value or None
+        if self._settings.session_vars is None:
+            self._settings.session_vars = {}
+        if self._current_goal:
+            self._settings.session_vars["GOAL"] = self._current_goal
+        else:
+            self._settings.session_vars.pop("GOAL", None)
+        self._agent.set_system_prompt(self._effective_system_prompt())
+        return self._current_goal
+
+    def get_current_goal(self) -> str | None:
+        return self._current_goal
 
     # ── Tool construction ─────────────────────────────────────────────────────
 
