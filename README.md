@@ -28,8 +28,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### Clone and Install
 
 ```bash
-git clone https://github.com/openxjarvis/pi-mono-python.git
-cd pi-mono-python
+git clone https://github.com/Nuosis/tau-by-clarity.git
+cd tau-by-clarity
 
 # Install all workspace packages + their dependencies in one step
 uv sync
@@ -332,7 +332,7 @@ LIVE_TESTS=1 uv run pytest packages/ai/tests/ -v
 ## Project Structure
 
 ```
-pi-mono-python/
+tau-by-clarity/
 ├── .env                          ← API keys (never commit)
 ├── pyproject.toml                ← uv workspace root
 ├── conftest.py                   ← global pytest config (.env loader)
