@@ -22,8 +22,19 @@ def _registry_path() -> str:
     return os.path.join(get_agent_dir(), _REGISTRY_NAME)
 
 
-def _read() -> list[dict[str, Any]]:
-    path = _registry_path()
+def _registry_paths(include_nested: bool = False, root: str | None = None) -> list[str]:
+    paths = [os.path.abspath(_registry_path())]
+    if include_nested:
+        base = Path(root or os.getcwd()).resolve()
+        for candidate in (base / ".tau").rglob(_REGISTRY_NAME):
+            resolved = str(candidate.resolve())
+            if resolved not in paths:
+                paths.append(resolved)
+    return paths
+
+
+def _read(path: str | None = None) -> list[dict[str, Any]]:
+    path = path or _registry_path()
     if not os.path.exists(path):
         return []
     try:
@@ -34,8 +45,8 @@ def _read() -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def _write(entries: list[dict[str, Any]]) -> None:
-    path = _registry_path()
+def _write(entries: list[dict[str, Any]], path: str | None = None) -> None:
+    path = path or _registry_path()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -93,10 +104,15 @@ def unregister_process(token: str) -> None:
         pass
 
 
-def list_processes() -> list[dict[str, Any]]:
-    entries = _pruned(_read())
-    _write(entries)
-    return entries
+def list_processes(*, include_nested: bool = False, root: str | None = None) -> list[dict[str, Any]]:
+    all_entries: list[dict[str, Any]] = []
+    for path in _registry_paths(include_nested=include_nested, root=root):
+        entries = _pruned(_read(path))
+        _write(entries, path)
+        for entry in entries:
+            entry["_registry_path"] = path
+        all_entries.extend(entries)
+    return all_entries
 
 
 def _child_pids(pid: int) -> list[int]:
@@ -149,9 +165,14 @@ def _terminate_pid_tree(pid: int) -> None:
         pass
 
 
-def kill_processes(target: str | None = None) -> list[dict[str, Any]]:
+def kill_processes(
+    target: str | None = None,
+    *,
+    include_nested: bool = True,
+    root: str | None = None,
+) -> list[dict[str, Any]]:
     current_pid = os.getpid()
-    entries = list_processes()
+    entries = list_processes(include_nested=include_nested, root=root)
     selected: list[dict[str, Any]] = []
     if target:
         needle = target.strip()
@@ -172,7 +193,18 @@ def kill_processes(target: str | None = None) -> list[dict[str, Any]]:
         _terminate_pid_tree(pid)
         killed.append(entry)
 
-    remaining_tokens = {entry.get("token") for entry in killed}
-    _write([entry for entry in _read() if entry.get("token") not in remaining_tokens and _alive(int(entry.get("pid") or 0))])
+    killed_by_registry: dict[str, set[str]] = {}
+    for entry in killed:
+        registry_path = str(entry.get("_registry_path") or _registry_path())
+        killed_by_registry.setdefault(registry_path, set()).add(str(entry.get("token")))
+    for registry_path, tokens in killed_by_registry.items():
+        _write(
+            [
+                entry
+                for entry in _read(registry_path)
+                if str(entry.get("token")) not in tokens
+                and _alive(int(entry.get("pid") or 0))
+            ],
+            registry_path,
+        )
     return killed
-

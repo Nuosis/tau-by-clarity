@@ -1047,6 +1047,7 @@ async def _run_pi_tui(
         ("logout", "Remove provider authentication"),
         ("new", "Start a new session"),
         ("compact", "Compact conversation context"),
+        ("kill", "Kill running tau sessions and subagents"),
         ("resume", "Resume a different session"),
         ("reload", "Reload resources"),
         ("quit", "Quit the agent"),
@@ -1500,6 +1501,34 @@ async def _run_pi_tui(
             tui.request_render()
             return
 
+        if stripped == "/kill" or stripped.startswith("/kill "):
+            target = stripped[6:].strip() if stripped.startswith("/kill ") else None
+            try:
+                from pi_coding_agent.core.runtime_registry import kill_processes
+
+                killed = kill_processes(target or None, root=session.cwd)
+                if target and not killed:
+                    append_history(dim(f"No running tau session matched: {target}"))
+                elif not killed:
+                    append_history(dim("No running tau sessions."))
+                else:
+                    lines = [green(f"Killed {len(killed)} tau session(s).")]
+                    for entry in killed[:20]:
+                        lines.append(
+                            "  "
+                            + dim(
+                                f"{entry.get('kind')} {entry.get('session_id')} "
+                                f"(pid {entry.get('pid')})"
+                            )
+                        )
+                    if len(killed) > 20:
+                        lines.append(dim(f"  ... {len(killed) - 20} more"))
+                    append_history("\n".join(lines))
+            except Exception as exc:
+                append_history(f"{red('Kill failed:')} {exc}")
+            tui.request_render()
+            return
+
         if stripped == "/help":
             lines = [
                 bold("Available commands:"),
@@ -1514,6 +1543,7 @@ async def _run_pi_tui(
                 f"  {cyan('/new')}      — Clear conversation and start a fresh session view",
                 f"  {cyan('/reload')}   — Reload settings and resources",
                 f"  {cyan('/compact')}  — Compact context to free tokens",
+                f"  {cyan('/kill')}     — Kill running tau sessions and subagents",
                 f"  {cyan('/thinking')} — Cycle thinking level",
                 f"  {cyan('/session')}  — Show session statistics",
                 f"  {cyan('/tools')}    — List active tools",

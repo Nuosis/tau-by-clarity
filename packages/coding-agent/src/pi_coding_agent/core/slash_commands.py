@@ -50,6 +50,7 @@ BUILTIN_SLASH_COMMANDS: list[BuiltinSlashCommand] = [
     BuiltinSlashCommand("logout", "Logout from OAuth provider"),
     BuiltinSlashCommand("new", "Start a new session"),
     BuiltinSlashCommand("compact", "Manually compact the session context"),
+    BuiltinSlashCommand("kill", "Kill running tau sessions and subagents"),
     BuiltinSlashCommand("resume", "Resume a different session"),
     BuiltinSlashCommand("reload", "Reload extensions, skills, prompts, and themes"),
     BuiltinSlashCommand("quit", "Quit pi"),
