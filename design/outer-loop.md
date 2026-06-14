@@ -1,4 +1,4 @@
-# Outer Loop (`pi_loop`) — judge-driven continuation/completion harness
+# Outer Loop (`tau_loop`) — judge-driven continuation/completion harness
 
 ## What this is
 
@@ -7,7 +7,7 @@ agent turn by turn, define a goal and let a loop re-prompt the agent until a
 judge-verified done-condition holds. The skill moves from the prompt to the
 harness — verification, termination, state, voice.
 
-`pi_loop` is agent-agnostic. It drives **any** tau agent; the agent supplies
+`tau_loop` is agent-agnostic. It drives **any** tau agent; the agent supplies
 only its domain rubric and voice via `<agent_dir>/.tau/loop_profile.json`.
 Devin is one consumer, not the owner.
 
@@ -16,7 +16,7 @@ Devin is one consumer, not the owner.
 1. **Agent's own internal loop** (e.g. DevFlow drain) — exists.
 2. **Agent orchestration loop** — one turn fans out to subagents — exists.
 3. **Outer continuation loop** — re-invokes the agent against a standing goal
-   until done. **This is `pi_loop`.** Stop/continue is judge-driven, not a
+   until done. **This is `tau_loop`.** Stop/continue is judge-driven, not a
    predicate and not a counter.
 
 ## Hard rules (locked)
@@ -95,7 +95,7 @@ agent/domain specifics live — the harness never names an agent.
 ## Package layout
 
 ```
-packages/loop/src/pi_loop/
+packages/loop/src/tau_loop/
   models.py        # Pydantic contracts
   llm.py           # config-driven model via pi_ai.get_model + call_json (parse + 1 re-ask, no fallback)
   profile.py       # load_profile(agent_dir) -> LoopProfile
@@ -105,7 +105,7 @@ packages/loop/src/pi_loop/
   loop.py          # the driver;  __main__.py the CLI
 ```
 
-Run: `python -m pi_loop --agent-dir <X> "<goal>"`.
+Run: `python -m tau_loop --agent-dir <X> "<goal>"`.
 
 ## Tests & evals
 

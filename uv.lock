@@ -7,9 +7,9 @@ members = [
     "pi-agent",
     "pi-ai",
     "pi-coding-agent",
-    "pi-loop",
     "pi-tui",
     "tau-by-clarity",
+    "tau-loop",
 ]
 
 [[package]]
@@ -909,30 +909,6 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "pi-loop"
-version = "0.1.0"
-source = { editable = "packages/loop" }
-dependencies = [
-    { name = "pi-ai" },
-    { name = "pi-coding-agent" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pi-ai", editable = "packages/ai" },
-    { name = "pi-coding-agent", editable = "packages/coding-agent" },
-    { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "pi-tui"
 version = "0.1.0"
 source = { editable = "packages/tui" }
@@ -1455,7 +1431,7 @@ wheels = [
 
 [[package]]
 name = "tau-by-clarity"
-version = "0.55.3"
+version = "0.55.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -1504,6 +1480,30 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "typer", specifier = ">=0.12.0" },
     { name = "wcwidth", specifier = ">=0.2.13" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "tau-loop"
+version = "0.1.0"
+source = { editable = "packages/loop" }
+dependencies = [
+    { name = "pi-ai" },
+    { name = "pi-coding-agent" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pi-ai", editable = "packages/ai" },
+    { name = "pi-coding-agent", editable = "packages/coding-agent" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
 ]
 provides-extras = ["dev"]
 

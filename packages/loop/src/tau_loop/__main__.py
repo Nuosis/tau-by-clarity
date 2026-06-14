@@ -1,6 +1,6 @@
 """CLI entrypoint: drive any tau agent on a goal until the judges stop it.
 
-    python -m pi_loop --agent-dir /path/to/agent "Build a parts catalog site"
+    python -m tau_loop --agent-dir /path/to/agent --goal "Build a parts catalog site"
 
 There is intentionally no --max-iterations flag: the loop runs until
 goal_accomplished or churn_detector fires.
@@ -19,14 +19,18 @@ from .steering import SteeringInbox
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="pi_loop",
+        prog="tau_loop",
         description="Drive a tau agent on a goal until the judge suite stops it (no max loops).",
     )
-    parser.add_argument("goal", help="The user-owned goal (the WHAT) to drive to completion.")
+    parser.add_argument(
+        "--goal",
+        required=True,
+        help="The explicit user-owned goal (the WHAT) to drive to completion.",
+    )
     parser.add_argument(
         "--agent-dir",
-        default=os.environ.get("PI_LOOP_AGENT_DIR") or os.getcwd(),
-        help="Target agent root (dir containing .tau/). Defaults to $PI_LOOP_AGENT_DIR or cwd.",
+        default=os.environ.get("TAU_LOOP_AGENT_DIR") or os.getcwd(),
+        help="Target agent root (dir containing .tau/). Defaults to $TAU_LOOP_AGENT_DIR or cwd.",
     )
     parser.add_argument(
         "--project-root", default=None, help="Project the work targets. Defaults to the agent dir."
@@ -59,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if sys.stdin and not sys.stdin.closed:
         threading.Thread(target=_reader, daemon=True).start()
+
+    try:
+        from pi_coding_agent.core.runtime_registry import register_process
+
+        register_process(
+            kind="tau_loop",
+            session_id=f"tau-loop-{os.getpid()}",
+            cwd=os.getcwd(),
+            agent_dir=args.agent_dir,
+            goal=args.goal,
+        )
+    except Exception:
+        pass
 
     result = run_loop(
         args.goal,

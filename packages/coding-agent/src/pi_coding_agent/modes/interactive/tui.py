@@ -1026,6 +1026,7 @@ async def _run_pi_tui(
     built_in_slash_specs = [
         ("settings", "Open settings menu"),
         ("chat", "Render chat transcript"),
+        ("goal", "Show, set, or clear the current session goal"),
         ("model", "Select provider and model strength"),
         ("models", "Alias for /model"),
         ("set", "Set provider tier model mapping"),
@@ -1478,12 +1479,34 @@ async def _run_pi_tui(
             tui.request_render()
             return
 
+        if stripped == "/goal" or stripped.startswith("/goal "):
+            arg = stripped[6:].strip() if stripped.startswith("/goal ") else ""
+            getter = getattr(session, "get_current_goal", None)
+            setter = getattr(session, "set_current_goal", None)
+            if arg.lower() in {"clear", "unset", "reset", "off"}:
+                if callable(setter):
+                    setter(None)
+                append_history(dim("Goal cleared."))
+            elif arg:
+                if callable(setter):
+                    setter(arg)
+                    append_history(f"{green('Goal:')} {arg}")
+                else:
+                    append_history(dim("This session does not support goals."))
+            else:
+                current = getter() if callable(getter) else None
+                append_history(f"{cyan('Goal:')} {current}" if current else dim("No goal set."))
+            update_footer()
+            tui.request_render()
+            return
+
         if stripped == "/help":
             lines = [
                 bold("Available commands:"),
                 f"  {cyan('/exit')}     — Exit the agent",
                 f"  {cyan('/clear')}    — Clear conversation history",
                 f"  {cyan('/chat')}     — Render the session chat transcript",
+                f"  {cyan('/goal')}     — Show, set, or clear current session goal",
                 f"  {cyan('/model')}    — List available models / switch model",
                 f"  {cyan('/copy')}     — Copy last assistant message",
                 f"  {cyan('/name')}     — Set session display name",

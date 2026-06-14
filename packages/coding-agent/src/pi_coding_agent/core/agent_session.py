@@ -122,6 +122,7 @@ class AgentSession:
         self._extension_bindings: dict[str, Any] = {}
         self._steering_mode_override: str | None = None
         self._follow_up_mode_override: str | None = None
+        self._current_goal = self._initial_goal_from_settings()
 
         if session_manager is not None:
             self._session_manager = session_manager
@@ -161,12 +162,44 @@ class AgentSession:
         )
         self._agent = Agent(opts)
         self._agent.set_model(resolved_model)
-        self._agent.set_system_prompt(self._base_system_prompt)
+        self._agent.set_system_prompt(self._effective_system_prompt())
         self._agent.set_tools(active_tools)
         self._agent.set_thinking_level(self._settings.thinking_level)
 
         self._listeners: list[Callable[[AgentEvent], None]] = []
         self._agent.subscribe(self._on_agent_event)
+
+    def _initial_goal_from_settings(self) -> str | None:
+        session_vars = self._settings.session_vars or {}
+        goal = session_vars.get("GOAL")
+        if isinstance(goal, str) and goal.strip():
+            return goal.strip()
+        return None
+
+    def _effective_system_prompt(self) -> str:
+        if not self._current_goal:
+            return self._base_system_prompt
+        return (
+            f"{self._base_system_prompt}\n\n"
+            "# Active Goal\n\n"
+            f"{self._current_goal}\n\n"
+            "Treat this as the current session goal until it is cleared or changed."
+        )
+
+    def set_current_goal(self, goal: str | None) -> str | None:
+        value = (goal or "").strip()
+        self._current_goal = value or None
+        if self._settings.session_vars is None:
+            self._settings.session_vars = {}
+        if self._current_goal:
+            self._settings.session_vars["GOAL"] = self._current_goal
+        else:
+            self._settings.session_vars.pop("GOAL", None)
+        self._agent.set_system_prompt(self._effective_system_prompt())
+        return self._current_goal
+
+    def get_current_goal(self) -> str | None:
+        return self._current_goal
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -860,7 +893,7 @@ class AgentSession:
                 self._pending_next_turn_messages = []
 
             # Reset system prompt to base
-            self._agent.set_system_prompt(self._base_system_prompt)
+            self._agent.set_system_prompt(self._effective_system_prompt())
 
             if current_text is not None and self._extension_runner.has_handlers("before_agent_start"):
                 before_result = await self._extension_runner.emit_before_agent_start(
@@ -1375,7 +1408,7 @@ class AgentSession:
         self._agent.set_tools(active)
         valid_names = [t.name for t in active]
         self._base_system_prompt = self._build_system_prompt(valid_names)
-        self._agent.set_system_prompt(self._base_system_prompt)
+        self._agent.set_system_prompt(self._effective_system_prompt())
 
     # ── Model management (2g) ─────────────────────────────────────────────────
 
@@ -2283,7 +2316,7 @@ class AgentSession:
         )
         extend_resources(paths)
         self._base_system_prompt = self._build_system_prompt(self.get_active_tool_names())
-        self._agent.set_system_prompt(self._base_system_prompt)
+        self._agent.set_system_prompt(self._effective_system_prompt())
 
     def _build_extension_resource_paths(self, entries: list[Any]) -> list[dict[str, Any]]:
         paths: list[dict[str, Any]] = []

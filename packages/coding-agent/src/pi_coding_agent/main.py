@@ -345,6 +345,24 @@ async def _create_session_manager(parsed: Any, cwd: str) -> SessionManager | Non
     return None
 
 
+def _register_runtime_session(session: Any, cwd: str) -> None:
+    try:
+        from .core.runtime_registry import register_process
+
+        session_id = getattr(session, "session_id", None) or getattr(session, "sessionId", None)
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
+        register_process(
+            kind="session",
+            session_id=session_id,
+            cwd=cwd,
+            agent_dir=get_agent_dir(),
+        )
+        log_event("runtime_session_registered", session_id=session_id, cwd=cwd)
+    except Exception as exc:
+        log_exception("runtime_session_register_failed", exc)
+
+
 def _report_settings_errors(settings_manager: SettingsManager, context: str) -> None:
     for item in settings_manager.drain_errors():
         scope = item.get("scope", "unknown")
@@ -742,6 +760,25 @@ async def _run(args: Sequence[str]) -> int:
         log_event("help_printed")
         return 0
 
+    if parsed.kill is not None:
+        from .core.runtime_registry import kill_processes
+
+        target = parsed.kill if isinstance(parsed.kill, str) else None
+        killed = kill_processes(target)
+        if target and not killed:
+            print(f"No running tau session matched: {target}", file=sys.stderr)
+            log_event("kill_no_match", target=target)
+            return 1
+        for entry in killed:
+            print(
+                f"Killed {entry.get('kind')} {entry.get('session_id')} "
+                f"(pid {entry.get('pid')})"
+            )
+        if not killed:
+            print("No running tau sessions.")
+        log_event("kill_complete", target=target, count=len(killed))
+        return 0
+
     # Read piped stdin for non-rpc mode
     if parsed.mode != "rpc":
         stdin_content = await _read_piped_stdin()
@@ -884,6 +921,7 @@ async def _run(args: Sequence[str]) -> int:
 
     if parsed.mode == "rpc":
         log_event("mode_start", mode="rpc")
+        _register_runtime_session(session, cwd)
         runtime_host = await _create_runtime_host(
             parsed,
             cwd=cwd,
@@ -912,6 +950,7 @@ async def _run(args: Sequence[str]) -> int:
             print("No prompt provided. Use --help for usage.", file=sys.stderr)
             log_event("print_mode_missing_prompt")
             return 1
+        _register_runtime_session(session, cwd)
         exit_code = await run_print_mode(
             session,
             prompt,
@@ -984,6 +1023,7 @@ async def _run(args: Sequence[str]) -> int:
         thinking=thinking,
     )
     log_event("mode_start", mode="interactive", initial_message_count=len(initial_messages or []))
+    _register_runtime_session(session, session.session_manager.get_cwd())
     await run_interactive_mode(runtime_host, initial_messages=initial_messages or None)
     log_event("mode_end", mode="interactive")
     if event_unsub:

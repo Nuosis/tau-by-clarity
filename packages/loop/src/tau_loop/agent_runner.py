@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from .models import IterationOutput
 
 _TOOL_EVENT_LIMIT = 12
 _TOOL_DETAIL_CHARS = 4000
+_SIGTERM_GRACE_SECONDS = 5
 
 
 def _resolve_pi_py_invocation() -> list[str]:
@@ -78,7 +80,7 @@ def run_agent(
     env["PYTHONUNBUFFERED"] = "1"
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv,
             cwd=agent_dir,
             env=env,
@@ -86,15 +88,72 @@ def run_agent(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
+    except OSError as e:
+        return IterationOutput(exit_code=1, error=f"agent launch failed: {e}")
+
+    def _kill_process_group(sig: int) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                proc.send_signal(sig)
+            except ProcessLookupError:
+                return
+
+    previous_handlers: dict[int, object] = {}
+
+    def _handle_parent_signal(signum: int, frame: object) -> None:
+        del frame
+        _kill_process_group(signal.SIGTERM)
+        try:
+            proc.wait(timeout=_SIGTERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(signal.SIGKILL)
+            proc.wait()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _handle_parent_signal)
+        except ValueError:
+            previous_handlers.clear()
+            break
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
+        _kill_process_group(signal.SIGTERM)
+        try:
+            stdout, stderr = proc.communicate(timeout=_SIGTERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(signal.SIGKILL)
+            stdout, stderr = proc.communicate()
         return IterationOutput(exit_code=124, error=f"agent timed out after {timeout}s: {e}")
+    except KeyboardInterrupt:
+        _kill_process_group(signal.SIGTERM)
+        try:
+            proc.wait(timeout=_SIGTERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(signal.SIGKILL)
+            proc.wait()
+        raise
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
     final_text = ""
     tool_events: list[dict] = []
 
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
             continue
@@ -125,7 +184,7 @@ def run_agent(
 
     error = None
     if proc.returncode != 0:
-        error = (proc.stderr or "").strip()[:1000] or f"exit {proc.returncode}"
+        error = (stderr or "").strip()[:1000] or f"exit {proc.returncode}"
 
     return IterationOutput(
         final_text=final_text,

@@ -42,7 +42,7 @@ def _settings(agent_dir: str) -> dict:
 
 
 def _resolve_key(provider: str) -> str:
-    env = os.environ.get(f"{provider.upper()}_API_KEY") or os.environ.get("PI_LOOP_API_KEY")
+    env = os.environ.get(f"{provider.upper()}_API_KEY") or os.environ.get("TAU_LOOP_API_KEY")
     if env:
         return env.strip()
     try:

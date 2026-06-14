@@ -32,6 +32,7 @@ class Args:
     provider: str | None = None
     model: str | None = None
     api_key: str | None = None
+    goal: str | None = None
     system_prompt: str | None = None
     append_system_prompt: list[str] = field(default_factory=list)
     thinking: str | None = None
@@ -39,6 +40,7 @@ class Args:
     resume: bool = False
     help: bool = False
     version: bool = False
+    kill: str | bool | None = None
     mode: Mode | None = None
     name: str | None = None
     no_session: bool = False
@@ -108,6 +110,13 @@ def parse_args(
             result.help = True
         elif arg in ("--version", "-v"):
             result.version = True
+        elif arg == "--kill":
+            next_arg = args[i + 1] if i + 1 < len(args) else None
+            if next_arg is not None and not next_arg.startswith("-") and not next_arg.startswith("@"):
+                i += 1
+                result.kill = args[i]
+            else:
+                result.kill = True
         elif arg == "--mode" and i + 1 < len(args):
             i += 1
             m = args[i]
@@ -126,6 +135,11 @@ def parse_args(
         elif arg == "--api-key" and i + 1 < len(args):
             i += 1
             result.api_key = args[i]
+        elif arg == "--goal" and i + 1 < len(args):
+            i += 1
+            result.goal = args[i]
+            if result.goal.strip():
+                result.session_vars["GOAL"] = result.goal.strip()
         elif arg == "--system-prompt" and i + 1 < len(args):
             i += 1
             result.system_prompt = args[i]
@@ -324,6 +338,7 @@ Options:
   --provider <name>              Provider name (default: google)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
+  --goal <text>                  Set explicit session goal; does not start the outer loop
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --var KEY=VALUE                Set an arbitrary session variable for prompt templates
@@ -364,6 +379,7 @@ Options:
                                    extensions/, AGENTS.md) in the current dir, then launch
   --help, -h                     Show this help
   --version, -v                  Show version number
+  --kill [session]               Kill a running tau session by id/pid, or all sessions if omitted
 
 Environment Variables:
   ANTHROPIC_API_KEY                - Anthropic Claude API key
