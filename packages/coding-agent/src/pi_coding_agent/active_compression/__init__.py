@@ -22,7 +22,20 @@ from .compressor import compress as _compress_text
 SETTING = "active_compression"
 DISABLE_ENV = "PI_ACTIVE_COMPRESSION_DISABLED"
 
-__all__ = ["is_enabled", "compress", "retrieve", "register_with_pi_ai", "SETTING", "DISABLE_ENV"]
+__all__ = [
+    "is_enabled",
+    "compress",
+    "retrieve",
+    "register_with_pi_ai",
+    "builtin_extension_path",
+    "SETTING",
+    "DISABLE_ENV",
+]
+
+
+def builtin_extension_path() -> str:
+    """Absolute path to the bundled ccr_retrieve extension, for the loader."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension.py")
 
 
 def _settings_paths() -> list[str]:

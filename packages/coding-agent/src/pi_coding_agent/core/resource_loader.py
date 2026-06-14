@@ -68,19 +68,21 @@ def get_extension_discovery_paths(
     paths: list[str] = []
     seen: set[str] = set()
 
-    # Clarity PII is a first-class, on-by-default feature: its bundled extension
-    # loads for every agent unless explicitly disabled (env PI_CLARITY_PII_DISABLED).
-    try:
-        from pi_coding_agent.clarity_pii import builtin_extension_path, is_enabled
+    # First-class, on-by-default bundled extensions: their extension modules load
+    # for every agent unless explicitly disabled (each owns its own kill-switch).
+    for _module in ("pi_coding_agent.clarity_pii", "pi_coding_agent.active_compression"):
+        try:
+            import importlib
 
-        if is_enabled():
-            pii_path = builtin_extension_path()
-            resolved = os.path.abspath(pii_path)
-            if os.path.exists(pii_path) and resolved not in seen:
-                seen.add(resolved)
-                paths.append(pii_path)
-    except Exception:
-        pass
+            mod = importlib.import_module(_module)
+            if mod.is_enabled():
+                bpath = mod.builtin_extension_path()
+                resolved = os.path.abspath(bpath)
+                if os.path.exists(bpath) and resolved not in seen:
+                    seen.add(resolved)
+                    paths.append(bpath)
+        except Exception:
+            pass
 
     for directory in dirs:
         for path in discover_extensions_in_dir(directory):
