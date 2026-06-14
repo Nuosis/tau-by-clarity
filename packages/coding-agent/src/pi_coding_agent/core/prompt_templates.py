@@ -180,13 +180,14 @@ def load_prompt_templates(
     2. Project (cwd/{CONFIG_DIR_NAME}/prompts/)
     3. Explicit paths
     """
-    from pi_coding_agent.config import CONFIG_DIR_NAME, get_prompts_dir
+    from pi_coding_agent.config import CONFIG_DIR_NAME, agent_dir_env, get_prompts_dir
 
     opts = options or LoadPromptTemplatesOptions()
     cwd = opts.cwd or os.getcwd()
     prompts_dir = opts.agent_dir if opts.agent_dir else get_prompts_dir()
     prompt_paths = opts.prompt_paths or []
     include_defaults = opts.include_defaults
+    explicit_agent_dir = bool(agent_dir_env())
 
     templates: list[PromptTemplate] = []
 
@@ -201,13 +202,14 @@ def load_prompt_templates(
             lambda p: create_synthetic_source_info(p, source="local", scope="user", base_dir=global_dir),
         ))
 
-        project_dir = os.path.join(cwd, CONFIG_DIR_NAME, "prompts")
-        templates.extend(_load_templates_from_dir(
-            project_dir,
-            "project",
-            "(project)",
-            lambda p: create_synthetic_source_info(p, source="local", scope="project", base_dir=project_dir),
-        ))
+        if not explicit_agent_dir:
+            project_dir = os.path.join(cwd, CONFIG_DIR_NAME, "prompts")
+            templates.extend(_load_templates_from_dir(
+                project_dir,
+                "project",
+                "(project)",
+                lambda p: create_synthetic_source_info(p, source="local", scope="project", base_dir=project_dir),
+            ))
 
     user_prompts_dir = (
         os.path.join(opts.agent_dir, "prompts") if opts.agent_dir else prompts_dir

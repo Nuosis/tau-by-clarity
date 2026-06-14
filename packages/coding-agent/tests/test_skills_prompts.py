@@ -79,6 +79,19 @@ class TestSkills:
         result = load_skills_from_dir("/nonexistent/path/here", "user")
         assert len(result.skills) == 0
 
+    def test_system_prompt_includes_skills_without_read_tool(self):
+        from pi_coding_agent.core.system_prompt import build_system_prompt
+
+        prompt = build_system_prompt(
+            "/tmp/project",
+            custom_prompt="Agent identity.",
+            selected_tools=["runner"],
+            skills=[{"name": "health-ping", "content": "Run /goal clear first."}],
+        )
+
+        assert "### health-ping" in prompt
+        assert "Run /goal clear first." in prompt
+
 
 # ============================================================================
 # Prompt Templates

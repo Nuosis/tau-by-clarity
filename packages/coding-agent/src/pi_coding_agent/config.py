@@ -40,7 +40,7 @@ ENV_SESSION_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_SESSION_DIR"
 # caller using either prefix is honored consistently. Writes always set
 # ENV_AGENT_DIR (the canonical PI_ name) so child processes resolve it via
 # get_agent_dir().
-_ENV_AGENT_DIR_ALIASES: tuple[str, ...] = (ENV_AGENT_DIR, f"{APP_NAME.upper()}_CODING_AGENT_DIR")
+_ENV_AGENT_DIR_ALIASES: tuple[str, ...] = (f"{APP_NAME.upper()}_CODING_AGENT_DIR", ENV_AGENT_DIR)
 
 
 def agent_dir_env() -> str | None:

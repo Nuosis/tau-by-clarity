@@ -44,26 +44,26 @@ def get_extension_discovery_paths(
     inherit_global: bool = True,
 ) -> list[str]:
     """Return extension module paths discovered from configured extensions dirs."""
-    from pi_coding_agent.config import CONFIG_DIR_NAME, ENV_AGENT_DIR, get_agent_dir
+    from pi_coding_agent.config import CONFIG_DIR_NAME, agent_dir_env, get_agent_dir
     from pi_coding_agent.core.extensions.loader import discover_extensions_in_dir
 
     resolved_cwd = os.path.abspath(cwd or os.getcwd())
     resolved_agent_dir = os.path.abspath(os.path.expanduser(agent_dir or get_agent_dir()))
-    explicit_agent_dir = bool(os.environ.get(ENV_AGENT_DIR))
+    explicit_agent_dir = bool(agent_dir_env())
 
     project_dir = os.path.join(resolved_cwd, CONFIG_DIR_NAME, "extensions")
     dirs: list[str] = []
 
-    if inherit_global or explicit_agent_dir:
-        if explicit_agent_dir:
-            global_dir = os.path.join(resolved_agent_dir, "extensions")
-        else:
-            # get_agent_dir() is ~/.tau/agent; Python extensions live in
-            # ~/.tau/extensions so they are not mixed with agent internals.
-            global_dir = os.path.join(os.path.dirname(resolved_agent_dir), "extensions")
+    if explicit_agent_dir:
+        dirs.append(os.path.join(resolved_agent_dir, "extensions"))
+    elif inherit_global:
+        # get_agent_dir() is ~/.tau/agent; Python extensions live in
+        # ~/.tau/extensions so they are not mixed with agent internals.
+        global_dir = os.path.join(os.path.dirname(resolved_agent_dir), "extensions")
         dirs.append(global_dir)
 
-    dirs.append(project_dir)
+    if not explicit_agent_dir:
+        dirs.append(project_dir)
 
     paths: list[str] = []
     seen: set[str] = set()
@@ -253,6 +253,7 @@ class DefaultResourceLoader:
         # without --inherit.
         from pi_coding_agent.config import agent_dir_env
         explicit_agent_dir = bool(agent_dir_env())
+        self._explicit_agent_dir = explicit_agent_dir
         if opts.inherit_global or explicit_agent_dir:
             self._agent_dir = opts.agent_dir or get_agent_dir()
         else:
@@ -392,7 +393,9 @@ class DefaultResourceLoader:
             []
             if self._no_context_files
             else _load_project_context_files(
-                self._cwd, self._agent_dir, project_trusted,
+                self._cwd,
+                self._agent_dir,
+                False if self._explicit_agent_dir else project_trusted,
                 walk_ancestors=self._inherit_global,
             )
         )
@@ -677,10 +680,12 @@ class DefaultResourceLoader:
     def _discover_system_prompt_file(self) -> str | None:
         from pi_coding_agent.config import CONFIG_DIR_NAME
 
+        global_path = os.path.join(self._agent_dir, "SYSTEM.md")
+        if self._explicit_agent_dir and os.path.exists(global_path):
+            return global_path
         project_path = os.path.join(self._cwd, CONFIG_DIR_NAME, "SYSTEM.md")
         if os.path.exists(project_path):
             return project_path
-        global_path = os.path.join(self._agent_dir, "SYSTEM.md")
         if os.path.exists(global_path):
             return global_path
         return None
@@ -688,10 +693,12 @@ class DefaultResourceLoader:
     def _discover_append_system_prompt_file(self) -> str | None:
         from pi_coding_agent.config import CONFIG_DIR_NAME
 
+        global_path = os.path.join(self._agent_dir, "APPEND_SYSTEM.md")
+        if self._explicit_agent_dir and os.path.exists(global_path):
+            return global_path
         project_path = os.path.join(self._cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md")
         if os.path.exists(project_path):
             return project_path
-        global_path = os.path.join(self._agent_dir, "APPEND_SYSTEM.md")
         if os.path.exists(global_path):
             return global_path
         return None

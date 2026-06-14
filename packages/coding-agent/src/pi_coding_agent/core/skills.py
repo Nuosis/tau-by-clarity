@@ -284,13 +284,14 @@ class LoadSkillsOptions:
 
 def load_skills(options: LoadSkillsOptions | None = None) -> LoadSkillsResult:
     """Load skills from all configured locations."""
-    from pi_coding_agent.config import CONFIG_DIR_NAME, get_agent_dir
+    from pi_coding_agent.config import CONFIG_DIR_NAME, agent_dir_env, get_agent_dir
 
     opts = options or LoadSkillsOptions()
     cwd = opts.cwd or os.getcwd()
     agent_dir = opts.agent_dir or get_agent_dir()
     skill_paths = opts.skill_paths or []
     include_defaults = opts.include_defaults
+    explicit_agent_dir = bool(agent_dir_env())
 
     skill_map: dict[str, Skill] = {}
     real_path_set: set[str] = set()
@@ -332,11 +333,12 @@ def load_skills(options: LoadSkillsOptions | None = None) -> LoadSkillsResult:
                 os.path.join(agent_dir, "skills"), "user", True
             )
         )
-        add_skills(
-            _load_skills_from_dir_internal(
-                os.path.join(cwd, CONFIG_DIR_NAME, "skills"), "project", True
+        if not explicit_agent_dir:
+            add_skills(
+                _load_skills_from_dir_internal(
+                    os.path.join(cwd, CONFIG_DIR_NAME, "skills"), "project", True
+                )
             )
-        )
 
     user_skills_dir = os.path.join(agent_dir, "skills")
     project_skills_dir = os.path.join(cwd, CONFIG_DIR_NAME, "skills")

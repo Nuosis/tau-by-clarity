@@ -46,7 +46,7 @@ def build_system_prompt(
     1. Default prompt with tool list and guidelines
     2. Appended by append_system_prompt / APPEND_SYSTEM.md
     3. Context files (AGENTS.md / CLAUDE.md / explicit list)
-    4. Skills section (if read tool is active)
+    4. Skills section
     5. date/time + cwd appended last
     """
     resolved_cwd = cwd
@@ -84,9 +84,7 @@ def build_system_prompt(
             for cf in _ctx_files:
                 prompt += f"## {cf['path']}\n\n{cf['content']}\n\n"
 
-        # Append skills (only if read tool is available)
-        has_read = selected_tools is None or "read" in selected_tools
-        if has_read and _skills:
+        if _skills:
             prompt += _format_skills(selected_tools, _skills)
 
         prompt += f"\nCurrent date and time: {date_time}"
@@ -177,7 +175,7 @@ def build_system_prompt(
             prompt += f"## {cf['path']}\n\n{cf['content']}\n\n"
 
     # Skills
-    if has_read and _skills:
+    if _skills:
         prompt += _format_skills(selected_tools, _skills)
 
     prompt += f"\nCurrent date and time: {date_time}"
