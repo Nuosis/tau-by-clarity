@@ -2,7 +2,7 @@
 
 Same chokepoint shape as the PII filter (pii.py): a registered, default-no-op
 compressor transforms the outbound `Context` before dispatch, so large payloads
-are compressed for ALL calls regardless of source. clarity-pi registers the real
+are compressed for ALL calls regardless of source. tau-by-clarity registers the real
 content-aware compressor (which also caches the original in a CCR store so it can
 be retrieved out-of-band).
 
@@ -25,7 +25,7 @@ _compressor: Optional[CompressFn] = None
 
 
 def register_compressor(fn: CompressFn) -> None:
-    """Install the universal outbound compressor. Called by clarity-pi on import."""
+    """Install the universal outbound compressor. Called by tau-by-clarity on import."""
     global _compressor
     _compressor = fn
 

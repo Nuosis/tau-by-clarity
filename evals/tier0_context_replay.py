@@ -7,7 +7,7 @@ relevance-shaped context-management model WITHOUT a single LLM call.
 
 For each user turn in a real session it reassembles the context two ways:
 
-    baseline   = full append-only transcript (what pi-py sends today)
+    baseline   = full append-only transcript (what tau sends today)
     candidate  = relevance-shaped fidelity gradient (the §7 proposal)
 
 and measures, with pure string/lexical math:

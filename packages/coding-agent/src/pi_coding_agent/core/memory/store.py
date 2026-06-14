@@ -151,7 +151,7 @@ class MemoryStore:
     def invalidate_stale(self) -> list[str]:
         """Re-check active file-scoped memories against current file content. A changed
         file → 'superseded' (the fact may be wrong); a missing file → 'archived'.
-        Returns the invalidated memory ids. This is the pi-py-specific hazard Claire
+        Returns the invalidated memory ids. This is the tau-specific hazard Claire
         doesn't face: code facts rot when files change."""
         rows = self._conn.execute(
             "SELECT id, file_path, content_hash FROM semantic_memory "

@@ -65,7 +65,7 @@ from .stream import complete, complete_simple, stream, stream_simple
 # Universal PII filter hook (registered by clarity_pii; no-op otherwise)
 from .pii import has_pii_filter, register_pii_filter, unregister_pii_filter
 
-# Universal active-compression hook (registered by clarity-pi; no-op otherwise)
+# Universal active-compression hook (registered by tau-by-clarity; no-op otherwise)
 from .compression import compress_context, has_compressor, register_compressor, unregister_compressor
 
 # Utilities

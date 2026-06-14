@@ -1,4 +1,4 @@
-"""Project-local atomic memory for pi-py (design doc §8). P0: store + scaffolding."""
+"""Project-local atomic memory for tau (design doc §8). P0: store + scaffolding."""
 from .embeddings import (
     DeterministicEmbeddingProvider,
     EmbeddingProvider,
@@ -21,7 +21,6 @@ from .store import MemoryStore
 from .working_context import (
     CtxBlock,
     WorkingContextConfig,
-    compress_working_context,
     profile_for,
 )
 
@@ -32,5 +31,5 @@ __all__ = [
     "embedding_provider_from_env", "cosine",
     "Curator", "Evidence", "CommitDecision",
     "build_recall_block", "latest_user_query",
-    "compress_working_context", "WorkingContextConfig", "CtxBlock", "profile_for",
+    "WorkingContextConfig", "CtxBlock", "profile_for",
 ]

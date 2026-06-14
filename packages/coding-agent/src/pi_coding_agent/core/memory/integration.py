@@ -17,7 +17,7 @@ from .curator import AsyncLlmFn, Curator, Evidence, LlmFn
 from .models import Scope
 from .recall import build_recall_block
 from .store import MemoryStore
-from .working_context import CtxBlock, WorkingContextConfig, compress_working_context, profile_for
+from .working_context import CtxBlock, WorkingContextConfig, profile_for
 
 
 def memory_enabled() -> bool:
@@ -57,9 +57,8 @@ class MemoryIntegration:
             return []
         return await self.curator.acurate_and_commit(evidence)
 
-    # working-context management
-    def compress(self, blocks: list[CtxBlock], query: str) -> list[CtxBlock]:
-        return compress_working_context(blocks, self.store, query, self.config, self.scope)
+    # NOTE: working-context positional compression was dropped (design §12): active
+    # compression (Headroom/CCR) replaces it. Memory now only records + recalls.
 
     def close(self) -> None:
         self.store.close()

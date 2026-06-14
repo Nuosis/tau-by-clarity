@@ -1,7 +1,7 @@
 """
-Pier custom-agent adapter for pi-py (P6) — SCAFFOLD.
+Pier custom-agent adapter for tau (P6) — SCAFFOLD.
 
-Lets deep-swe drive the pi-py coding agent so we can compare baseline (memory off) vs
+Lets deep-swe drive the tau coding agent so we can compare baseline (memory off) vs
 memory-augmented (PI_MEMORY_ENABLED=1) on the same tasks/model. Plug in via:
 
     pier run -p deep-swe/tasks --n-tasks 10 --sample-seed 0 \
@@ -13,8 +13,8 @@ STATUS: scaffold. Mirrors pier.agents.installed.mini_swe_agent (setup installs t
 agent into the sandbox; run shells it headless against the instruction via
 environment.exec). Three OPEN ISSUES must be resolved before a real pass@1 run — see
 evals/deep_swe/README.md:
-  1. headless pi-py invocation (exact print-mode flags + diff/output contract);
-  2. M3 model wiring inside pi-py (provider/base-url/key) + sandbox network allowlist
+  1. headless tau invocation (exact print-mode flags + diff/output contract);
+  2. M3 model wiring inside tau (provider/base-url/key) + sandbox network allowlist
      so the agent can reach api.minimax.io;
   3. EMBEDDINGS IN SANDBOX — memory recall uses local Ollama, absent in the isolated
      env. Options: run a tiny embed model in-container, allowlist a remote embedder, or
@@ -36,13 +36,13 @@ class PiPyAgent(BaseAgent):
 
     @staticmethod
     def name() -> str:
-        return "pi-py"
+        return "tau"
 
     def version(self) -> str:
         return "0.0.1-scaffold"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        # TODO(P6-1): install pi-py into the sandbox. Either `uv pip install` the built
+        # TODO(P6-1): install tau into the sandbox. Either `uv pip install` the built
         # wheel or upload the source tree (environment.upload_file) and `pip install -e`.
         # TODO(P6-3): provision embeddings (Ollama tiny model or deterministic fallback).
         # Memory store is project-local (cwd/.pi-py/memory) — committed in the task repo,
@@ -54,8 +54,8 @@ class PiPyAgent(BaseAgent):
         memory_on = (context_env(context).get("PI_MEMORY_ENABLED", "0") == "1")
         model = self.model_name or "MiniMax-M3"
         task = shlex.quote(instruction)
-        # TODO(P6-1/2): replace with the real headless pi-py invocation + model wiring.
-        # Shape (mirrors mini-swe-agent): run pi-py print-mode against the repo with the
+        # TODO(P6-1/2): replace with the real headless tau invocation + model wiring.
+        # Shape (mirrors mini-swe-agent): run tau print-mode against the repo with the
         # task as the prompt; PI_MEMORY_ENABLED gates the memory subsystem (P5).
         env_prefix = f"PI_MEMORY_ENABLED={'1' if memory_on else '0'}"
         cmd = f"{env_prefix} pi --print --model {shlex.quote(model)} --task {task}"

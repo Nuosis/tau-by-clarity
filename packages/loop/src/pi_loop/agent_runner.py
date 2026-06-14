@@ -1,6 +1,6 @@
-"""Invoke a pi-py agent for one iteration and observe the result.
+"""Invoke a tau agent for one iteration and observe the result.
 
-Deterministic plumbing only. We spawn `pi-py --mode json -p` rooted at the
+Deterministic plumbing only. We spawn `tau --mode json -p` rooted at the
 target agent's dir and parse the newline-delimited JSON event stream, extracting:
   - `final_text`: the assistant's final message (the agent's narration), and
   - `tool_events`: factual tool_execution_end outputs (the observation seam the
@@ -26,9 +26,9 @@ _TOOL_DETAIL_CHARS = 4000
 
 
 def _resolve_pi_py_invocation() -> list[str]:
-    """Prefer the explicit `pi-py` binary; never the Node `pi` on PATH. Fall back
+    """Prefer the explicit `tau` binary; never the Node `pi` on PATH. Fall back
     to the current interpreter running the module (works under `uv run`/venv)."""
-    pi_py = shutil.which("pi-py")
+    pi_py = shutil.which("tau")
     if pi_py:
         return [pi_py]
     return [sys.executable, "-m", "pi_coding_agent.main"]

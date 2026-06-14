@@ -1,4 +1,4 @@
-"""Clarity Custom Software startup banner for the pi harness.
+"""Tau by Clarity startup banner for the tau harness.
 
 Self-contained: the block lettering is embedded (no figlet dependency at
 runtime). Renders in cyan on truecolor terminals, degrades to plain text
@@ -9,15 +9,15 @@ from __future__ import annotations
 import os
 import sys
 
-# "CLARITY" — figlet `standard` font.
-_CLARITY = r"""  ____ _        _    ____  ___ _______   __
- / ___| |      / \  |  _ \|_ _|_   _\ \ / /
-| |   | |     / _ \ | |_) || |  | |  \ V /
-| |___| |___ / ___ \|  _ < | |  | |   | |
- \____|_____/_/   \_\_| \_\___| |_|   |_|"""
+# "TAU" — figlet `standard` font.
+_TAU = r""" _____     _     _   _
+|_   _|   / \   | | | |
+  | |    / _ \  | | | |
+  | |   / ___ \ | |_| |
+  |_|  /_/   \_\ \___/ """
 
 _LINE1 = "claritycustomsoftware.com"
-_LINE2 = "pi... but now in python"
+_LINE2 = "tau · by clarity"
 
 # 256-color cyan — renders in Terminal.app AND iTerm2/kitty (truecolor 38;2 is
 # silently dropped by Terminal.app, which is why it showed gray).
@@ -39,7 +39,7 @@ def _supports_color(stream: object) -> bool:
 
 def render_banner(color: bool = True) -> str:
     """Return the banner as a string (ANSI-colored when color=True)."""
-    art_lines = _CLARITY.split("\n")
+    art_lines = _TAU.split("\n")
     width = max(len(line) for line in art_lines)
 
     def center(text: str) -> str:

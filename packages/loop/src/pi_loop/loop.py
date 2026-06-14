@@ -1,4 +1,4 @@
-"""The outer driver — drives any pi-py agent to a judge-determined stop.
+"""The outer driver — drives any tau agent to a judge-determined stop.
 
 Flow:
     agent runs → continuation suite (stop if ANY fired)

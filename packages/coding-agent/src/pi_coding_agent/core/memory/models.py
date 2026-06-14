@@ -1,5 +1,5 @@
 """
-Memory domain models — project-local atomic memory for pi-py.
+Memory domain models — project-local atomic memory for tau.
 
 The store is rooted in the project (cwd) and committed to git; the project root is the
 poisoning boundary (an agent in another project cannot reach it). See

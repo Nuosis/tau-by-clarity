@@ -102,7 +102,7 @@ def test_ensure_project_uv_runner_creates_root_pyproject_and_venv(tmp_path, monk
     pyproject = proj / "pyproject.toml"
     assert str(pyproject) in created
     assert str(proj / ".venv") in created
-    assert "clarity-pi==" in pyproject.read_text(encoding="utf-8")
+    assert "tau-by-clarity==" in pyproject.read_text(encoding="utf-8")
     assert calls == [(["/usr/local/bin/uv", "sync", "--project", str(proj), "--quiet"], str(proj))]
 
 
@@ -141,12 +141,12 @@ def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
     text = zshrc.read_text(encoding="utf-8")
     assert created == str(zshrc)
     assert created_again is None
-    assert text.count("pi-py managed shell function") == 2
-    assert 'grep -q "clarity-pi" "pyproject.toml"' in text
-    assert 'uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync' in text
-    assert "command pi-py update" not in text
+    assert text.count("tau managed shell function") == 2
+    assert 'grep -q "tau-by-clarity" "pyproject.toml"' in text
+    assert 'uv add --upgrade-package tau-by-clarity "tau-by-clarity==${_pi_py_latest}" "$@" && uv sync' in text
+    assert "command tau update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
-    assert 'command pi-py "$@"' in text
+    assert 'command tau "$@"' in text
 
 
 def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> None:
@@ -154,11 +154,11 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
 
     old_block = "\n".join(
         [
-            "# >>> pi-py managed shell function >>>",
-            "pi-py() {",
-            '  uv run pi-py "$@"',
+            "# >>> tau managed shell function >>>",
+            "tau() {",
+            '  uv run tau "$@"',
             "}",
-            "# <<< pi-py managed shell function <<<",
+            "# <<< tau managed shell function <<<",
             "",
         ]
     )
@@ -171,11 +171,11 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     assert changed == str(zshrc)
     assert "# before" in text
     assert "# after" in text
-    assert text.count("pi-py()") == 1
-    assert 'uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync' in text
-    assert "command pi-py update" not in text
+    assert text.count("tau()") == 1
+    assert 'uv add --upgrade-package tau-by-clarity "tau-by-clarity==${_pi_py_latest}" "$@" && uv sync' in text
+    assert "command tau update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
-    assert '  uv run pi-py "$@"\n}' not in text
+    assert '  uv run tau "$@"\n}' not in text
 
 
 def test_scaffold_installs_zsh_alias_once(tmp_path, monkeypatch) -> None:
@@ -194,7 +194,7 @@ def test_scaffold_installs_zsh_alias_once(tmp_path, monkeypatch) -> None:
     zshrc = home / ".zshrc"
     assert str(zshrc) in created
     assert str(zshrc) not in created_again
-    assert zshrc.read_text(encoding="utf-8").count("pi-py()") == 1
+    assert zshrc.read_text(encoding="utf-8").count("tau()") == 1
 
 
 def test_ensure_project_gitignore_adds_agent_sensitive_paths(tmp_path) -> None:
@@ -265,7 +265,7 @@ def test_find_local_project_root_detects_parent_clarity_project(tmp_path) -> Non
     subdir = proj / "nested"
     subdir.mkdir(parents=True)
     (proj / "pyproject.toml").write_text(
-        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        '[project]\ndependencies = ["tau-by-clarity==0.54.3"]\n',
         encoding="utf-8",
     )
 
@@ -278,7 +278,7 @@ def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "pyproject.toml").write_text(
-        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        '[project]\ndependencies = ["tau-by-clarity==0.54.3"]\n',
         encoding="utf-8",
     )
     calls: list[tuple[str, list[str], dict[str, str]]] = []
@@ -305,7 +305,7 @@ def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypa
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "pyproject.toml").write_text(
-        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        '[project]\ndependencies = ["tau-by-clarity==0.54.3"]\n',
         encoding="utf-8",
     )
     calls: list[list[str]] = []
@@ -319,7 +319,7 @@ def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypa
         return _Result()
 
     monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
-    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "clarity-pi==0.54.12")
+    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "tau-by-clarity==0.54.12")
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
     with pytest.raises(SystemExit) as exc:
@@ -333,8 +333,8 @@ def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypa
             "--project",
             str(proj),
             "--upgrade-package",
-            "clarity-pi",
-            "clarity-pi==0.54.12",
+            "tau-by-clarity",
+            "tau-by-clarity==0.54.12",
         ],
         ["uv", "sync", "--project", str(proj)],
     ]
@@ -346,7 +346,7 @@ def test_dispatch_to_local_project_skips_init(tmp_path, monkeypatch) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "pyproject.toml").write_text(
-        '[project]\ndependencies = ["clarity-pi==0.54.3"]\n',
+        '[project]\ndependencies = ["tau-by-clarity==0.54.3"]\n',
         encoding="utf-8",
     )
 
@@ -537,7 +537,7 @@ async def test_package_manager_self_update_invokes_python_pip(monkeypatch, tmp_p
         "install",
         "--upgrade",
         "--force-reinstall",
-        "clarity-pi",
+        "tau-by-clarity",
     ]]
 
 

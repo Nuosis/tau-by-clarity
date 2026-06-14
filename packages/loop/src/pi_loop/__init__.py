@@ -1,4 +1,4 @@
-"""pi_loop — judge-driven outer loop that drives any pi-py agent to completion.
+"""pi_loop — judge-driven outer loop that drives any tau agent to completion.
 
 Loop engineering as harness infrastructure: a deterministic driver wrapped around
 genuine LLM judges (no max loops, no deterministic stubs). The agent supplies its

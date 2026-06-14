@@ -1,4 +1,4 @@
-"""Clarity PII — first-class, on-by-default PII tokenization for pi-py.
+"""Tau by Clarity — first-class, on-by-default PII tokenization for tau.
 
 Ships inside pi_coding_agent and is auto-loaded for every agent via
 `resource_loader` (kill-switch: env `PI_CLARITY_PII_DISABLED=1`). Real PII never
@@ -39,7 +39,7 @@ def builtin_extension_path() -> str:
 
 
 def register_with_pi_ai() -> None:
-    """Install Clarity PII as pi_ai's universal outbound filter, so EVERY LLM call
+    """Install Tau by Clarity as pi_ai's universal outbound filter, so EVERY LLM call
     — agent sessions, the outer loop, evals, any direct pi_ai use — tokenizes PII
     before it reaches the provider, regardless of source.
 

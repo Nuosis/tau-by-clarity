@@ -51,7 +51,7 @@ _LOCAL_DISPATCH_ENV = "PI_PY_LOCAL_DISPATCH"
 
 
 def _find_local_project_root(cwd: str) -> str | None:
-    """Return the nearest uv project that pins clarity-pi."""
+    """Return the nearest uv project that pins tau-by-clarity."""
     current = Path(cwd).resolve()
     for path in (current, *current.parents):
         pyproject = path / "pyproject.toml"
@@ -61,23 +61,23 @@ def _find_local_project_root(cwd: str) -> str | None:
             text = pyproject.read_text(encoding="utf-8")
         except OSError:
             continue
-        if "clarity-pi" in text:
+        if "tau-by-clarity" in text:
             return str(path)
     return None
 
 
 def _latest_clarity_pi_requirement() -> str:
-    with urllib.request.urlopen("https://pypi.org/pypi/clarity-pi/json", timeout=20) as response:
+    with urllib.request.urlopen("https://pypi.org/pypi/tau-by-clarity/json", timeout=20) as response:
         data = json.load(response)
     version = str(data["info"]["version"])
-    return f"clarity-pi=={version}"
+    return f"tau-by-clarity=={version}"
 
 
 def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
-    """Re-exec into the project-pinned clarity-pi when launched globally.
+    """Re-exec into the project-pinned tau-by-clarity when launched globally.
 
     A CLI process cannot source ~/.zshrc into its parent shell. This makes the
-    global pi-py wrapper prefer the initialized project's uv environment even
+    global tau wrapper prefer the initialized project's uv environment even
     when the user's current terminal has not sourced the zsh helper yet.
     """
     if os.environ.get(_LOCAL_DISPATCH_ENV):
@@ -98,7 +98,7 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
                 "--project",
                 project_root,
                 "--upgrade-package",
-                "clarity-pi",
+                "tau-by-clarity",
                 requirement,
                 *args[1:],
             ],
@@ -459,7 +459,7 @@ def _parse_package_command(args: Sequence[str]) -> dict[str, Any] | None:
             update_target = {"type": "extensions", "source": extension_flag_source}
         elif source:
             source_is_all = source == "all"
-            source_is_self = source in {"self", "pi", "pi-py"}
+            source_is_self = source in {"self", "pi", "tau"}
             if source_is_all:
                 update_target = {"type": "all", "source": None}
             if source_is_self:
@@ -502,7 +502,7 @@ def _package_usage(command: str) -> str:
         return f"{APP_NAME} remove <source> [-l] [--approve|--no-approve]"
     if command == "update":
         return (
-            f"{APP_NAME} update [source|self|pi|pi-py|all] [--self] [--extensions] "
+            f"{APP_NAME} update [source|self|pi|tau|all] [--self] [--extensions] "
             "[--extension <source>] [--approve|--no-approve] [--force]"
         )
     return f"{APP_NAME} list [--approve|--no-approve]"
@@ -517,7 +517,7 @@ def _print_package_help(command: str) -> None:
     elif command == "update":
         print(
             f"Usage:\n  {usage}\n\n"
-            "Update pi-py by default. Use --extensions, --extension <source>, or all to update installed packages.\n"
+            "Update tau by default. Use --extensions, --extension <source>, or all to update installed packages.\n"
         )
     else:
         print(f"Usage:\n  {usage}\n\nList installed packages from user and project settings.\n")
@@ -792,7 +792,7 @@ async def _run(args: Sequence[str]) -> int:
         parsed.session_dir = get_project_sessions_dir(cwd)
         log_event("session_dir_defaulted", session_dir=parsed.session_dir)
     # Every launch (not just --init) leaves a populated, visible project config
-    # so a normal `pi-py` run never produces a half-empty .pi-py (sessions dir
+    # so a normal `tau` run never produces a half-empty .pi-py (sessions dir
     # but no settings.json). Inherited global defaults are written in.
     if not parsed.inherit:
         from .config import ensure_project_settings

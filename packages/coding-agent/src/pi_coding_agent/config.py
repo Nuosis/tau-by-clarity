@@ -20,7 +20,7 @@ CONFIG_DIR_NAME: str = ".pi-py"
 LEGACY_CONFIG_DIR_NAME: str = ".pi"
 
 try:
-    VERSION: str = _pkg_version("clarity-pi")
+    VERSION: str = _pkg_version("tau-by-clarity")
 except Exception:
     try:
         VERSION = _pkg_version("pi-coding-agent")
@@ -230,7 +230,7 @@ def _global_default_seed() -> dict:
 
 def ensure_project_settings(cwd: str | None = None) -> str | None:
     """Guarantee <cwd>/.pi-py/settings.json exists, seeded from the global
-    defaults, on EVERY launch — so a normal `pi-py` run never leaves a
+    defaults, on EVERY launch — so a normal `tau` run never leaves a
     half-empty .pi-py (sessions dir but no visible config). Returns the path if
     it was just created, else None. Never overwrites an existing file."""
     import json
@@ -302,10 +302,10 @@ def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
 
 
 def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
-    """Create a project-local uv environment for pi-py.
+    """Create a project-local uv environment for tau.
 
     For fresh agent directories, this writes a root ``pyproject.toml`` so plain
-    ``uv run pi-py`` works from the active directory. It is intentionally
+    ``uv run tau`` works from the active directory. It is intentionally
     non-destructive: existing project files and venvs are left alone.
     """
     base = cwd or os.getcwd()
@@ -318,10 +318,10 @@ def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
                 "\n".join(
                     [
                         "[project]",
-                        'name = "pi-py-agent-runner"',
+                        'name = "tau-agent-runner"',
                         'version = "0.1.0"',
                         'requires-python = ">=3.11,<3.14"',
-                        f'dependencies = ["clarity-pi=={VERSION}"]',
+                        f'dependencies = ["tau-by-clarity=={VERSION}"]',
                         "",
                         "[tool.uv]",
                         "package = false",
@@ -351,16 +351,16 @@ def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
     return created
 
 
-_ZSH_ALIAS_BEGIN = "# >>> pi-py managed shell function >>>"
-_ZSH_ALIAS_END = "# <<< pi-py managed shell function <<<"
+_ZSH_ALIAS_BEGIN = "# >>> tau managed shell function >>>"
+_ZSH_ALIAS_END = "# <<< tau managed shell function <<<"
 
 
 def _pi_py_zsh_function_block() -> str:
     return "\n".join(
         [
             _ZSH_ALIAS_BEGIN,
-            "pi-py() {",
-            '  if [ -f "pyproject.toml" ] && grep -q "clarity-pi" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
+            "tau() {",
+            '  if [ -f "pyproject.toml" ] && grep -q "tau-by-clarity" "pyproject.toml" && command -v uv >/dev/null 2>&1; then',
             '    if [ "${1:-}" = "update" ]; then',
             '      shift',
             '      local _pi_py_latest',
@@ -368,17 +368,17 @@ def _pi_py_zsh_function_block() -> str:
             "import json",
             "import urllib.request",
             "",
-            'with urllib.request.urlopen("https://pypi.org/pypi/clarity-pi/json", timeout=20) as response:',
+            'with urllib.request.urlopen("https://pypi.org/pypi/tau-by-clarity/json", timeout=20) as response:',
             "    data = json.load(response)",
             'print(data["info"]["version"])',
             "PY",
             ')"',
-            '      uv add --upgrade-package clarity-pi "clarity-pi==${_pi_py_latest}" "$@" && uv sync',
+            '      uv add --upgrade-package tau-by-clarity "tau-by-clarity==${_pi_py_latest}" "$@" && uv sync',
             "    else",
             '      uv run python -m pi_coding_agent.main "$@"',
             "    fi",
             "  else",
-            '    command pi-py "$@"',
+            '    command tau "$@"',
             "  fi",
             "}",
             _ZSH_ALIAS_END,
@@ -388,7 +388,7 @@ def _pi_py_zsh_function_block() -> str:
 
 
 def ensure_zsh_pi_py_alias(zshrc_path: str | None = None) -> str | None:
-    """Install the zsh helper that prefers project-local ``uv run pi-py``.
+    """Install the zsh helper that prefers project-local ``uv run tau``.
 
     The block is marker-managed and idempotent. It intentionally lives behind
     ``--init`` instead of package installation so pip never mutates shell config

@@ -34,6 +34,17 @@ from pi_coding_agent.config import get_share_viewer_url
 
 from .auth_storage import AuthStorage
 from .compaction import compact_context, should_compact
+
+
+def _active_compression_on() -> bool:
+    """True when active compression (Headroom/CCR) is enabled — in which case
+    proactive summarization compaction stands down (it's the fallback)."""
+    try:
+        from pi_coding_agent.active_compression import is_enabled
+
+        return is_enabled()
+    except Exception:
+        return False
 from .extensions.runner import ExtensionRunner
 from .messages import CustomMessage, wrap_convert_to_llm
 from .model_registry import ModelRegistry
@@ -1715,10 +1726,18 @@ class AgentSession:
         if getattr(msg, "stop_reason", "") == "error":
             return  # non-overflow errors have no usage data
         reserve = settings.get("reserveTokens", 16384)
-        if context_window > 0 and should_compact(
-            self._agent.state.messages,
-            context_window,
-            (context_window - reserve) / context_window,
+        # Proactive summarization compaction is the FALLBACK: it runs only when
+        # active compression (Headroom/CCR) is off. When active compression is on,
+        # it owns context reduction. (Emergency overflow compaction above is the
+        # hard-limit safety net and stays unconditional.) See design §12 / README.
+        if (
+            context_window > 0
+            and not _active_compression_on()
+            and should_compact(
+                self._agent.state.messages,
+                context_window,
+                (context_window - reserve) / context_window,
+            )
         ):
             await self._run_auto_compaction("threshold", will_retry=False)
 

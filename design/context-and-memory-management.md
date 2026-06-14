@@ -1,11 +1,11 @@
 # Context & Memory Management — Design Thinking
 
-Status: design + offline/Tier-1 evidence in hand; **not yet wired into `pi-py`**.
-Direction (decided): **replace pi-py's native compaction with a proper memory system
+Status: design + offline/Tier-1 evidence in hand; **not yet wired into `tau`**.
+Direction (decided): **replace tau's native compaction with a proper memory system
 modeled on Claire's production implementation** (atomic extraction + hybrid local
 recall — see §8 "Reference architecture"). Still validating the compression policy that
 feeds it.
-Scope: how `pi-py` assembles per-call context today, and the planned **"active
+Scope: how `tau` assembles per-call context today, and the planned **"active
 compression"** strategy for managing it.
 
 This document captures both the plan (next section) and the reasoning that produced
@@ -49,9 +49,9 @@ Decided by the evidence in §9. If you only read one section, read this.
 
 **Seam:** `transform_context()` in `core/agent_session.py` (currently an identity stub).
 **Substrate:** an atomic-memory store + extractor (this is the Claire/Oracle pattern —
-the open design work is how pi-py extracts atomic memories as content ages).
+the open design work is how tau extracts atomic memories as content ages).
 
-**Open questions:** (1) the **extractor** — what atomic units pi-py pulls from aging
+**Open questions:** (1) the **extractor** — what atomic units tau pulls from aging
 context and how (the curator step); (2) end-to-end non-inferiority of compressed-context
 **with atomic-memory semantic recovery wired in** (every eval so far tested the wrong
 unit — coarse blocks — or the abandoned model-driven path).
@@ -124,7 +124,7 @@ model's hands**: on-demand `read`s (the filesystem is the store), sub-agents tha
 absorb a noisy sub-task and return only the conclusion, explicit `/compact`. The
 agent selects on purpose instead of the harness guessing.
 
-## 3. What pi-py does today
+## 3. What tau does today
 
 - **Cold store:** `.pi-py/agent/sessions/*.jsonl` — append-only tree of entries
   (`message`, `compaction`, `branch_summary`, ...) linked by `parentId`. Durable,
@@ -359,7 +359,7 @@ whole transcript cache every turn. Rule: **stable prefix = system prompt +
 (persistently-compressed) transcript; churning tail = recovered blocks + new turn.**
 Recovered full-text and the new turn go at the bottom.
 
-## 8. Where this plugs into pi-py
+## 8. Where this plugs into tau
 
 One strategy (the TL;DR plan), three seams:
 
@@ -386,15 +386,15 @@ What this is **not**: a "cache mode vs lean mode" toggle, and **not** model-driv
 expand. The append-like behaviour in coding and the middle-compression in long dialogue
 both *emerge* from position-compression — nothing selects them.
 
-### Reference architecture (ADOPT): Claire's memory system replaces pi-py compaction
+### Reference architecture (ADOPT): Claire's memory system replaces tau compaction
 
-**Decision:** pi-py's native compaction is **replaced** by a proper memory system
+**Decision:** tau's native compaction is **replaced** by a proper memory system
 **modeled on Claire's production implementation** — canonical
 `/Users/marcusswift/python/clarify_voice`, doc `docs/agent-memory-system.md`. Claire is
-the existence proof the pattern works; pi-py adapts it for a **local, single-user coding
+the existence proof the pattern works; tau adapts it for a **local, single-user coding
 agent**. Build against this map, not from scratch:
 
-| Claire (canonical) | role | pi-py adaptation |
+| Claire (canonical) | role | tau adaptation |
 | --- | --- | --- |
 | `agent_semantic_memory` / `SemanticMemoryRow` — pgvector(1536) + HNSW cosine, typed (preference/workflow/entity/knowledge/toolbox), scope keys, `key` dedup, `active`, audit metadata (`agent_memory/db_models.py`) | atomic durable memories | SQLite + **LOCAL** embeddings (Ollama `nomic-embed-text`, 768-d); same typed rows; scope simplifies to project/session/cwd (no tenant/workspace/user) |
 | `agent_conversation_memory` / `agent_summary_memory` / `agent_tool_log_memory` — exact turns; summaries (full text retained via `summary_id`); offloaded tool outputs | transcript + compaction substrate | adopt all three — **this is what replaces native compaction**: summarize-and-retain (not discard), offload verbose tool dumps |
@@ -418,8 +418,8 @@ the model while that validation continues.
 
 ### Full memory system (project-local) — compression is one consumer
 
-The §8 Claire-mapping table is the component blueprint; this is the *whole system* pi-py
-builds, with the deltas that are pi-py-specific. **Active compression (§§6–7) is one
+The §8 Claire-mapping table is the component blueprint; this is the *whole system* tau
+builds, with the deltas that are tau-specific. **Active compression (§§6–7) is one
 consumer of the store, not the system.** The system = **store + scope + curator +
 lifecycle + retrieval**, and the defining choice is **project-local**:
 
@@ -435,7 +435,7 @@ lifecycle + retrieval**, and the defining choice is **project-local**:
   **Open decision:** `./.pi-py/memory/` **gitignored** (per-clone, fully isolated —
   recommended) vs **committed** (team/CI share, but memories mix). Default isolate +
   explicit export.
-- **Formation = the curator** (§8 writer-of-record). pi-py triggers add post-tool-result
+- **Formation = the curator** (§8 writer-of-record). tau triggers add post-tool-result
   and post-decision to Claire's post-turn/session. Coding atomic taxonomy: decisions,
   constraints, file/API facts, task-state, error→fix, preferences. Dedup via canonical
   keys + supersession.
@@ -470,7 +470,7 @@ default off until its gate passes.
   *Gate:* TDD + add curator to the BASIC eval runner with curator-specific requirements
   (atom-extraction precision, assistant-output-ineligible, grounding) — never excluded.
 - **P3 — Lifecycle + staleness.** active/superseded/archived/deleted; **file-fact
-  content-hash invalidation** (the pi-py-specific hazard). *Gate:* stale-file
+  content-hash invalidation** (the tau-specific hazard). *Gate:* stale-file
   invalidation test.
 - **P4 — Active compression consumer.** Position-compress middle above floor **F** to
   breadcrumb+ref; recover atomic memories into the lean tail; cache discipline (§7);
@@ -478,7 +478,7 @@ default off until its gate passes.
   cache-stability + recall on the live path.
 - **P5 — Replace native compaction.** Swap the compaction path; flag default-on once
   validated, kill-switch retained; lossless ⇒ prod-A/B-able (TL;DR).
-- **P6 — Acceptance.** Plug pi-py into Pier as a Harbor agent; **deep-swe micro run**
+- **P6 — Acceptance.** Plug tau into Pier as a Harbor agent; **deep-swe micro run**
   (`--n-tasks 10 --sample-seed 0`) baseline vs memory-augmented on M3 → fast pass@1
   estimate; full 113 once the micro delta looks right.
 
@@ -727,7 +727,7 @@ The evals above verify the recall *mechanism*. The end-to-end question — *does
 harness outperform a simple one?* — needs a task-success metric, and **deep-swe**
 (`github.com/datacurve-ai/deep-swe`) fits: **113 long-horizon SWE tasks** (TS/Go/Python/
 JS/Rust), **test-based pass/fail**, run via the **Pier** runner (`--agent`/`--model`).
-Plan: plug pi-py in as a Harbor/Pier agent and run **baseline pi-py vs memory-augmented
+Plan: plug tau in as a Harbor/Pier agent and run **baseline tau vs memory-augmented
 pi-py, same model (M3), same tasks → pass@1 delta.** Long-horizon = the realistic
 context accumulation our micro-evals lacked; pass/fail = objective (no judge). This is
 the **acceptance test run after the system is built** (113 long tasks × 2 harnesses × M3
@@ -745,7 +745,7 @@ delta looks right.**
 `BaseAgent` interface mapped (`name/version/setup/run`, `env.exec/upload_file`). The
 pi-py adapter is **scaffolded** (`pi_py_agent.py`, mirrors `mini_swe_agent`). The actual
 pass@1 micro run is the **remaining step**, gated on three open issues (see
-`evals/deep_swe/README.md`): (1) headless pi-py invocation contract, (2) M3 wiring +
+`evals/deep_swe/README.md`): (1) headless tau invocation contract, (2) M3 wiring +
 sandbox network allowlist for `api.minimax.io`, (3) **embeddings in the sandbox** —
 memory recall uses local Ollama, absent in the isolated env; until that's solved the
 memory arm isn't a fair test. No pass@1 number is claimed until the run is real.
@@ -756,7 +756,7 @@ Two layers in the literature; keep them distinct:
 
 - **Serving/KV layer** (token-level, inside the model server — *we do not control
   this through the API*): StreamingLLM, H2O, cache-aware eviction. They validate the
-  *shape* but are not things pi-py implements.
+  *shape* but are not things tau implements.
 - **Harness/application layer** (what tokens we put in the prompt — *our layer*):
   MemGPT, LLMLingua, Generative Agents, RECOMP, compaction.
 

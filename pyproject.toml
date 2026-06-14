@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "clarity-pi"
+name = "tau-by-clarity"
 version = "0.55.0"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
@@ -62,21 +62,15 @@ Homepage = "https://github.com/Nuosis/pi-mono-python"
 Repository = "https://github.com/Nuosis/pi-mono-python"
 Issues = "https://github.com/Nuosis/pi-mono-python/issues"
 
-# No [project.scripts] here by design.
-#
-# The Python port's `pi-coding-agent` package historically registered both
-# `pi` and `pi-py` console scripts. The `pi` slot on PATH collides with the
-# Node.js `pi-mono` CLI (https://github.com/badlogic/pi-mono) — installing
-# both packages would shadow one. The `pi-py` slot was kept as a workaround.
-#
-# Decision (2026-06-11): ship the package as an importable library only.
-# Users who want the CLI can invoke `python -m pi_coding_agent.main`
-# or `python -c "from pi_coding_agent.main import main; main()"` after
-# `pip install clarity-pi`. This keeps Node `pi` and Python `pi-py`
-# cleanly side-by-side, with zero PATH contention.
+[project.scripts]
+tau = "pi_coding_agent.main:main"
 
-# Bundle all 4 sub-packages into a single wheel (namespace distribution).
-# Users get: import pi_ai, pi_agent, pi_coding_agent, pi_tui, plus the pi-py CLI.
+# Historical note: the old `pi` / `tau` console scripts were dropped (the `pi`
+# slot collides with the Node.js pi-mono CLI). The rebrand ships a single `tau`
+# entry point; `python -m pi_coding_agent.main` also still works.
+
+# Bundle the sub-packages into a single wheel (namespace distribution).
+# Users get: import pi_ai, pi_agent, pi_coding_agent, pi_tui, pi_loop, plus the `tau` CLI.
 [tool.hatch.build.targets.wheel.force-include]
 "packages/ai/src/pi_ai" = "pi_ai"
 "packages/agent/src/pi_agent" = "pi_agent"

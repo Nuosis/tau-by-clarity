@@ -1,4 +1,4 @@
-"""Clarity PII — bidirectional, reversible PII tokenizer for pi-py.
+"""Tau by Clarity — bidirectional, reversible PII tokenizer for tau.
 
 A first-class, on-by-default feature: real PII values are tokenized
 (`[PII:EMAIL:1]`) before any message reaches the model provider, and restored
@@ -27,7 +27,7 @@ from pi_coding_agent.clarity_pii.walk import (
     dict_string_slots,
 )
 
-BRAND = "Clarity PII"
+BRAND = "Tau by Clarity"
 FLAG_NAME = "pii-filter"
 
 

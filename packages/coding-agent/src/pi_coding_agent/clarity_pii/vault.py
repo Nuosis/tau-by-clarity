@@ -21,7 +21,7 @@ from typing import Any
 
 from .detect import TOKEN_RE, detect, label_for, make_token
 
-ARTIFACT_SCHEMA = "clarity-pii/vault@1"
+ARTIFACT_SCHEMA = "tau-by-clarity/pii-vault@1"
 
 
 class Vault:

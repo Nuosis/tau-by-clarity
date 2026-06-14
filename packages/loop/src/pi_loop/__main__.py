@@ -1,4 +1,4 @@
-"""CLI entrypoint: drive any pi-py agent on a goal until the judges stop it.
+"""CLI entrypoint: drive any tau agent on a goal until the judges stop it.
 
     python -m pi_loop --agent-dir /path/to/agent "Build a parts catalog site"
 
@@ -20,7 +20,7 @@ from .steering import SteeringInbox
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pi_loop",
-        description="Drive a pi-py agent on a goal until the judge suite stops it (no max loops).",
+        description="Drive a tau agent on a goal until the judge suite stops it (no max loops).",
     )
     parser.add_argument("goal", help="The user-owned goal (the WHAT) to drive to completion.")
     parser.add_argument(

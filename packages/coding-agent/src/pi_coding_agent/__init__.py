@@ -394,7 +394,7 @@ __all__ = [
 ]
 
 
-# Install Clarity PII as pi_ai's universal outbound filter on import, so every
+# Install Tau by Clarity as pi_ai's universal outbound filter on import, so every
 # LLM call made anywhere in this distribution tokenizes PII regardless of source.
 try:
     from .clarity_pii import register_with_pi_ai as _register_clarity_pii

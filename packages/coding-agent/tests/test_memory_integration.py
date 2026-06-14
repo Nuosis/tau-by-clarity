@@ -48,14 +48,5 @@ def test_record_then_recall(tmp_path):
     mi.close()
 
 
-def test_compress_uses_store_recall(tmp_path):
-    from pi_coding_agent.core.memory import Evidence
-    mi = _integration(tmp_path)
-    mi.record_turn([Evidence("e1", "tool_result", "MAX_RECONNECT_ATTEMPTS = 7741")])
-    blocks = [CtxBlock("user" if i % 2 == 0 else "assistant",
-                       f"turn{i} " + "lorem ipsum dolor sit amet " * 14, eid=f"b{i}")
-              for i in range(12)]
-    out = mi.compress(blocks, "what is MAX_RECONNECT_ATTEMPTS?")
-    assert any(o.text.startswith("[compressed") for o in out)   # middle compressed
-    assert out[-1].eid == "recall" and "7741" in out[-1].text    # store recall appended
-    mi.close()
+# test_compress_uses_store_recall removed: working-context positional compression
+# was dropped (design §12); active compression (Headroom/CCR) replaces it.

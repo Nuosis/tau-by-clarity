@@ -1,4 +1,4 @@
-# P6 — deep-swe acceptance (baseline vs memory-augmented pi-py)
+# P6 — deep-swe acceptance (baseline vs memory-augmented tau)
 
 Status: **infra validated + adapter scaffolded; the pass@1 micro run is the remaining
 step.** Not a fabricated result — the run itself is sustained and has open issues below.
@@ -30,9 +30,9 @@ pier run -p tasks --n-tasks 10 --sample-seed 0 \
 ```
 
 ## OPEN ISSUES (must resolve before the run is real/fair)
-1. **Headless pi-py invocation** — confirm the print/non-interactive CLI flags and the
+1. **Headless tau invocation** — confirm the print/non-interactive CLI flags and the
    diff/output contract Pier's verifier expects.
-2. **M3 model wiring + network** — wire MiniMax-M3 (provider/base-url/key) inside pi-py,
+2. **M3 model wiring + network** — wire MiniMax-M3 (provider/base-url/key) inside tau,
    and add `api.minimax.io` to the task's per-agent network allowlist (Pier isolates
    the sandbox).
 3. **Embeddings in the sandbox** — memory recall uses local Ollama, absent in the

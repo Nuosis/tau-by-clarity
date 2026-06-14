@@ -7,7 +7,7 @@ agent turn by turn, define a goal and let a loop re-prompt the agent until a
 judge-verified done-condition holds. The skill moves from the prompt to the
 harness — verification, termination, state, voice.
 
-`pi_loop` is agent-agnostic. It drives **any** pi-py agent; the agent supplies
+`pi_loop` is agent-agnostic. It drives **any** tau agent; the agent supplies
 only its domain rubric and voice via `<agent_dir>/.pi-py/loop_profile.json`.
 Devin is one consumer, not the owner.
 
@@ -101,7 +101,7 @@ packages/loop/src/pi_loop/
   profile.py       # load_profile(agent_dir) -> LoopProfile
   judges.py        # goal_accomplished, churn_detector, pure aggregate_verdicts
   artifacts.py     # ledger / user_feedback / new_prompt / terminal_report
-  agent_runner.py  # spawn `pi-py --mode json`, parse events -> IterationOutput
+  agent_runner.py  # spawn `tau --mode json`, parse events -> IterationOutput
   loop.py          # the driver;  __main__.py the CLI
 ```
 

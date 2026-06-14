@@ -27,7 +27,7 @@ dev = [
 # No [project.scripts] here either. See the top-level pyproject.toml for
 # the rationale (avoid shadowing the Node.js `pi` CLI on PATH). When the
 # coding-agent is developed in isolation, run it via
-# `python -m pi_coding_agent.main` instead of the removed `pi` / `pi-py`
+# `python -m pi_coding_agent.main` instead of the removed `pi` / `tau`
 # console scripts.
 
 [build-system]
