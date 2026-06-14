@@ -1,7 +1,7 @@
 """Loop profile — the agent-specific seam.
 
 The harness is agent-agnostic: it never names a particular agent or domain. Each
-agent supplies its own profile at `<agent_dir>/.pi-py/loop_profile.json`, which
+agent supplies its own profile at `<agent_dir>/.tau/loop_profile.json`, which
 injects:
 
   - `done_rubric`: domain hints for goal_accomplished ("what 'done' looks like
@@ -40,7 +40,7 @@ class LoopProfile(BaseModel):
 
 def load_profile(agent_dir: str) -> LoopProfile:
     """Load the agent's loop profile, or generic defaults if none is present."""
-    path = os.path.join(agent_dir, ".pi-py", "loop_profile.json")
+    path = os.path.join(agent_dir, ".tau", "loop_profile.json")
     try:
         data = json.loads(Path(path).read_text())
         if isinstance(data, dict):

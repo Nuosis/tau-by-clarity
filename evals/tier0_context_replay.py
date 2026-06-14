@@ -32,7 +32,7 @@ Anchor (first turn) and frontier (last --frontier turns) are always verbatim
 so nothing is destroyed — exactly the fidelity-gradient design.
 
 Usage:
-    python evals/tier0_context_replay.py .pi-py/agent/sessions/*.jsonl
+    python evals/tier0_context_replay.py .tau/agent/sessions/*.jsonl
     python evals/tier0_context_replay.py SESSION.jsonl --floor 0 --json out.json
     python evals/tier0_context_replay.py SESSION.jsonl --needle   # synthetic needle
 

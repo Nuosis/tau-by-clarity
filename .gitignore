@@ -17,7 +17,7 @@ uv.lock
 build/
 *.egg-info/
 dist/
-.pi-py/
+.tau/
 
 # IDE
 .vscode/

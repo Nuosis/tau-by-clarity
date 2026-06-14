@@ -2256,7 +2256,7 @@ async def _run_pi_tui(
             else:
                 append_history("\n" + yellow(
                     "No provider configured yet. Run /login to set up a provider and "
-                    "credentials (saved globally to ~/.pi-py/agent)."
+                    "credentials (saved globally to ~/.tau/agent)."
                 ))
             tui.request_render()
     except Exception:

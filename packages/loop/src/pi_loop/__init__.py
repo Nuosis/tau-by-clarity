@@ -2,7 +2,7 @@
 
 Loop engineering as harness infrastructure: a deterministic driver wrapped around
 genuine LLM judges (no max loops, no deterministic stubs). The agent supplies its
-domain rubric and voice via `<agent_dir>/.pi-py/loop_profile.json`; everything
+domain rubric and voice via `<agent_dir>/.tau/loop_profile.json`; everything
 else is agent-agnostic.
 """
 

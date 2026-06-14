@@ -171,7 +171,7 @@ def test_settings_manager_load_save():
 def test_settings_manager_accepts_trailing_commas():
     with tempfile.TemporaryDirectory() as tmpdir:
         project_root = tmpdir
-        settings_dir = os.path.join(project_root, ".pi-py")
+        settings_dir = os.path.join(project_root, ".tau")
         os.makedirs(settings_dir)
         with open(os.path.join(settings_dir, "settings.json"), "w", encoding="utf-8") as f:
             f.write(

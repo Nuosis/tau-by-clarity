@@ -3,8 +3,6 @@
 > A multi-provider AI coding agent **and** agent-building framework for Python —
 > an interactive TUI, a headless CLI (`tau`), an agent loop, file tools, and
 > built-in **Tau by Clarity** PII tokenization and active context compression.
->
-> **[中文 README →](README_CN.md)**
 
 Run it (`tau`), embed it (`import pi_coding_agent`), or build your own agents on it
 (see [Building agents](#building-agents--tau-as-an-agent-framework)). Tau builds on
@@ -14,29 +12,30 @@ the **PI** project — see [Credits & lineage](#credits--lineage).
 
 ## Installation
 
-### Prerequisites
-
-- **Python 3.11+** — Check with `python3 --version`
-- **[uv](https://docs.astral.sh/uv/)** — Fast Python package manager
-
-Install `uv` if you don't have it:
+Install the `tau` CLI from PyPI ([tau-by-clarity](https://pypi.org/project/tau-by-clarity/)):
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install tau-by-clarity      # recommended — puts `tau` on your PATH
+# or:  pipx install tau-by-clarity
+# or:  pip install tau-by-clarity
 ```
 
-### Clone and Install
+Requires **Python 3.11+**. Verify with `tau --help`.
+
+To embed the library instead of the CLI, `pip install tau-by-clarity` then
+`import pi_coding_agent` (or the Tau alias `import tau_coding_agent`).
+
+<details>
+<summary><b>From source (development)</b></summary>
 
 ```bash
 git clone https://github.com/Nuosis/tau-by-clarity.git
 cd tau-by-clarity
-
-# Install all workspace packages + their dependencies in one step
-uv sync
+uv sync               # workspace + dev deps
+uv run tau            # run from the checkout
 ```
 
-The workspace builds the merged **`tau-by-clarity`** distribution from five packages:
-`pi-ai`, `pi-agent`, `pi-coding-agent`, `pi-tui`, and `pi-loop`.
+</details>
 
 ### Dependencies
 
@@ -59,28 +58,22 @@ Dev/test extras (`pytest`, `pytest-asyncio`, …) install with `uv sync --extra 
 
 ## Quick Start
 
-### 1. Configure API Keys
+### 1. Set a provider key
 
-Create `.env` in the project root:
+Tau reads provider keys from environment variables:
 
 ```bash
-# Google Gemini (recommended default)
-GEMINI_API_KEY=your_key_here
-
-# Optional — add whichever providers you need
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-GOOGLE_API_KEY=        # alternative to GEMINI_API_KEY
-AWS_ACCESS_KEY_ID=     # for AWS Bedrock
-AWS_SECRET_ACCESS_KEY=
+export ANTHROPIC_API_KEY=...     # or  OPENAI_API_KEY · GEMINI_API_KEY · GOOGLE_API_KEY
+# AWS Bedrock: export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...
 ```
 
-> **Important:** `.env` is loaded automatically at runtime. **Never commit it to git.**
+Add the export to your shell profile to persist it. (A project-local `.env` is
+also auto-loaded when running from a source checkout — convenient for development.)
 
 ### 2. Launch the Interactive TUI
 
 ```bash
-uv run tau
+tau
 ```
 
 This opens the full-featured terminal UI where you can chat with the coding agent.
@@ -115,7 +108,7 @@ The agent will write the code and save it to your current directory.
 For scripting or quick tasks:
 
 ```bash
-uv run tau --print "Write a quicksort in Python"
+tau --print "Write a quicksort in Python"
 ```
 
 The agent's response prints to stdout and exits.
@@ -124,23 +117,23 @@ The agent's response prints to stdout and exits.
 
 ```bash
 # Use a specific model
-uv run tau --model gemini-2.5-pro-preview
+tau --model gemini-2.5-pro-preview
 
 # Use a provider + model name
-uv run tau --provider google --model gemini-2.0-flash
+tau --provider google --model gemini-2.0-flash
 
 # List all available models
-uv run tau --list-models
+tau --list-models
 ```
 
 ### Resume Previous Sessions
 
 ```bash
 # Continue the most recent session
-uv run tau --continue
+tau --continue
 
 # Pick from a list of previous sessions
-uv run tau --resume
+tau --resume
 ```
 
 ### Slash Commands in TUI
@@ -158,7 +151,7 @@ Type `/` in the interactive TUI to see available commands:
 ### Full CLI Help
 
 ```bash
-uv run tau --help
+tau --help
 ```
 
 ---
@@ -174,7 +167,7 @@ tools, skills, subagents, and evals all live inside it.
 ```
 my-agent/
 ├── OBJECTIVES.md             # user stories, success conditions, I/O artifact contracts
-└── .pi-py/
+└── .tau/
     ├── settings.json         # provider/model, tool allow-list, extensions, name
     ├── SYSTEM.md             # brief system prompt: identity, hard rules, voice
     ├── extensions/           # your tools (extension_factory) — auto-discovered
@@ -182,12 +175,12 @@ my-agent/
     └── subagents/<name>/     # each subagent is itself a full agent dir
 ```
 
-Point the runtime at it with `PI_CODING_AGENT_DIR=/path/to/my-agent/.pi-py`, then
+Point the runtime at it with `PI_CODING_AGENT_DIR=/path/to/my-agent/.tau`, then
 run headless (`tau --mode json -p "..."`) or in the TUI.
 
 ### Tools are extensions
 
-Register a tool from an `extension_factory(pi)` in `.pi-py/extensions/*.py`, with a
+Register a tool from an `extension_factory(pi)` in `.tau/extensions/*.py`, with a
 typed parameter schema and structured result:
 
 ```python
@@ -209,7 +202,7 @@ empty `tools` list is a deliberate denial of the default tools, not a hint.
 
 ### Subagents
 
-A subagent is a full tau agent under `.pi-py/subagents/<name>/`. The parent spawns
+A subagent is a full tau agent under `.tau/subagents/<name>/`. The parent spawns
 it in isolation (its own settings, `SYSTEM.md`, extensions), hands it a typed input
 artifact, and reads back a typed output artifact.
 
@@ -268,7 +261,7 @@ absent**. Disable per-project with `"active_compression": false`, or process-wid
 with the env var `PI_ACTIVE_COMPRESSION_DISABLED=1`.
 
 ```jsonc
-// .pi-py/settings.json
+// .tau/settings.json
 { "active_compression": true }   // omit entirely for the same (default-on) effect
 ```
 

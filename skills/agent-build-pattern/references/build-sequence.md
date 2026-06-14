@@ -11,11 +11,11 @@ callable, validate malformed handoffs, or prove model behavior under eval.
 
 The pi-py build order forces the durable pieces into the places that own them:
 
-1. Directory and `.pi-py/` scaffold establish the deployment unit.
+1. Directory and `.tau/` scaffold establish the deployment unit.
 2. `OBJECTIVES.md` defines what the agent is expected to do.
 3. Extensions and Pydantic models define executable capability.
 4. Agent-local skills hold reusable procedural knowledge.
-5. `.pi-py/SYSTEM.md` stays small because the other planes carry their own
+5. `.tau/SYSTEM.md` stays small because the other planes carry their own
    responsibilities.
 6. Artifact contracts and return tools make handoffs machine-checkable.
 7. Evals prove the expectations against real model behavior.
@@ -62,7 +62,7 @@ Each tool should have:
 - validation strict enough to reject malformed calls early
 - concise descriptions that do not carry hidden policy
 
-Tool availability belongs in `.pi-py/settings.json` or the runtime tools array.
+Tool availability belongs in `.tau/settings.json` or the runtime tools array.
 Do not list non-callable tool names in prompt prose, objectives examples, memory
 context, or scenario text. Models pattern-match names and can emit calls for
 tools that the current turn did not offer.
@@ -70,13 +70,13 @@ tools that the current turn did not offer.
 ## Step 4 — Add skills only when useful
 
 Use agent-local skills for reusable process knowledge, domain workflow, or large
-instructions that should not live in `.pi-py/SYSTEM.md`.
+instructions that should not live in `.tau/SYSTEM.md`.
 
 Skills are not a substitute for contracts. If behavior affects the agent's
 artifact or capability boundary, document it in `OBJECTIVES.md`, enforce it in
 models/settings/tools where possible, and add eval coverage.
 
-## Step 5 — Write `.pi-py/SYSTEM.md`
+## Step 5 — Write `.tau/SYSTEM.md`
 
 Write the system prompt late. Keep it brief.
 
@@ -112,7 +112,7 @@ unions, and `oneOf`.
 ## Step 7 — Add eval infrastructure and scenarios
 
 For core agents, copy the root eval extension from
-`/Users/marcusswift/.pi-py/extensions/evals/` plus required dependencies. For
+`/Users/marcusswift/.tau/extensions/evals/` plus required dependencies. For
 non-core agents, reuse the core agents or existing harness when that avoids
 duplicating infrastructure.
 
@@ -158,7 +158,7 @@ the trace.
 - Using loose dictionaries instead of Pydantic models for tool/artifact
   contracts.
 - Listing non-callable tool names in prose.
-- Stuffing artifact schemas into `.pi-py/SYSTEM.md`.
+- Stuffing artifact schemas into `.tau/SYSTEM.md`.
 - Claiming the agent works from compile/unit tests alone.
 - Skipping failure-mode evals.
 - Running live evals without raw response instrumentation.

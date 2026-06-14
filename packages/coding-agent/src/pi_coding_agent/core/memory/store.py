@@ -1,7 +1,7 @@
 """
 Project-local memory store (SQLite) — P0.
 
-Rooted at <project>/.pi-py/memory/memory.db, committed to git, the project root being
+Rooted at <project>/.tau/memory/memory.db, committed to git, the project root being
 the poisoning boundary. Hybrid recall = max(lexical, local-semantic) per design doc §9
 (settles lexical-vs-semantic: use both). Embeddings stored as JSON; cosine in Python
 (fine at project scale; swap for sqlite-vec later if needed).

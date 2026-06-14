@@ -66,10 +66,10 @@ class Args:
     verbose: bool = False
     offline: bool = False
     project_trust_override: bool | None = None
-    # Pull in global (~/.pi-py/agent) settings/resources and ~/.pi-py/extensions.
+    # Pull in global (~/.tau/agent) settings/resources and ~/.tau/extensions.
     # Default: project-local config only.
     inherit: bool = False
-    # Scaffold the project-local .pi-py structure here, then launch.
+    # Scaffold the project-local .tau structure here, then launch.
     init: bool = False
 
 
@@ -358,9 +358,9 @@ Options:
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
-  --inherit                      Also load global (~/.pi-py/agent) skills, prompts,
-                                   settings, and ~/.pi-py/extensions (default: project-local only)
-  --init                         Scaffold a .pi-py project (settings, skills/, prompts/,
+  --inherit                      Also load global (~/.tau/agent) skills, prompts,
+                                   settings, and ~/.tau/extensions (default: project-local only)
+  --init                         Scaffold a .tau project (settings, skills/, prompts/,
                                    extensions/, AGENTS.md) in the current dir, then launch
   --help, -h                     Show this help
   --version, -v                  Show version number

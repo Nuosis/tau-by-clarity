@@ -79,7 +79,7 @@ def test_package_help_mentions_uninstall_alias(capsys) -> None:
     _print_package_help("remove")
 
     out = capsys.readouterr().out
-    assert "Alias: pi uninstall <source> [-l]" in out
+    assert "Alias: tau uninstall <source> [-l]" in out
 
 
 def test_ensure_project_uv_runner_creates_root_pyproject_and_venv(tmp_path, monkeypatch) -> None:
@@ -210,26 +210,26 @@ def test_ensure_project_gitignore_adds_agent_sensitive_paths(tmp_path) -> None:
     lines = text.splitlines()
     assert changed == str(proj / ".gitignore")
     assert changed_again is None
-    assert ".pi-py/agent/auth.json.key" in text
-    assert ".pi-py/agent/pii_vault" in text
-    assert ".pi-py/agent/sessions" in text
-    assert ".pi-py/evals/results/" in text
-    assert "**/.pi-py/agent/auth.json.key" in text
-    assert "**/.pi-py/agent/pii_vault" in text
-    assert "**/.pi-py/agent/sessions" in text
-    assert "~/.pi-py/agent/auth.json.key" in text
-    assert "~/.pi-py/agent/pii_vault" in text
-    assert "~/.pi-py/agent/sessions" in text
-    assert lines.count(".pi-py/agent/auth.json.key") == 1
-    assert lines.count(".pi-py/agent/pii_vault") == 1
-    assert lines.count(".pi-py/agent/sessions") == 1
-    assert lines.count(".pi-py/evals/results/") == 1
-    assert lines.count("**/.pi-py/agent/auth.json.key") == 1
-    assert lines.count("**/.pi-py/agent/pii_vault") == 1
-    assert lines.count("**/.pi-py/agent/sessions") == 1
-    assert lines.count("~/.pi-py/agent/auth.json.key") == 1
-    assert lines.count("~/.pi-py/agent/pii_vault") == 1
-    assert lines.count("~/.pi-py/agent/sessions") == 1
+    assert ".tau/agent/auth.json.key" in text
+    assert ".tau/agent/pii_vault" in text
+    assert ".tau/agent/sessions" in text
+    assert ".tau/evals/results/" in text
+    assert "**/.tau/agent/auth.json.key" in text
+    assert "**/.tau/agent/pii_vault" in text
+    assert "**/.tau/agent/sessions" in text
+    assert "~/.tau/agent/auth.json.key" in text
+    assert "~/.tau/agent/pii_vault" in text
+    assert "~/.tau/agent/sessions" in text
+    assert lines.count(".tau/agent/auth.json.key") == 1
+    assert lines.count(".tau/agent/pii_vault") == 1
+    assert lines.count(".tau/agent/sessions") == 1
+    assert lines.count(".tau/evals/results/") == 1
+    assert lines.count("**/.tau/agent/auth.json.key") == 1
+    assert lines.count("**/.tau/agent/pii_vault") == 1
+    assert lines.count("**/.tau/agent/sessions") == 1
+    assert lines.count("~/.tau/agent/auth.json.key") == 1
+    assert lines.count("~/.tau/agent/pii_vault") == 1
+    assert lines.count("~/.tau/agent/sessions") == 1
 
 
 def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
@@ -238,7 +238,7 @@ def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
     gitignore = proj / ".gitignore"
-    gitignore.write_text(".venv\n~/.pi-py/agent/sessions\n", encoding="utf-8")
+    gitignore.write_text(".venv\n~/.tau/agent/sessions\n", encoding="utf-8")
 
     changed = config.ensure_project_gitignore(str(proj))
 
@@ -246,16 +246,16 @@ def test_ensure_project_gitignore_preserves_existing_entries(tmp_path) -> None:
     lines = text.splitlines()
     assert changed == str(gitignore)
     assert ".venv" in text
-    assert lines.count(".pi-py/agent/auth.json.key") == 1
-    assert lines.count(".pi-py/agent/pii_vault") == 1
-    assert lines.count(".pi-py/agent/sessions") == 1
-    assert lines.count(".pi-py/evals/results/") == 1
-    assert lines.count("**/.pi-py/agent/auth.json.key") == 1
-    assert lines.count("**/.pi-py/agent/pii_vault") == 1
-    assert lines.count("**/.pi-py/agent/sessions") == 1
-    assert lines.count("~/.pi-py/agent/auth.json.key") == 1
-    assert lines.count("~/.pi-py/agent/sessions") == 1
-    assert lines.count("~/.pi-py/agent/pii_vault") == 1
+    assert lines.count(".tau/agent/auth.json.key") == 1
+    assert lines.count(".tau/agent/pii_vault") == 1
+    assert lines.count(".tau/agent/sessions") == 1
+    assert lines.count(".tau/evals/results/") == 1
+    assert lines.count("**/.tau/agent/auth.json.key") == 1
+    assert lines.count("**/.tau/agent/pii_vault") == 1
+    assert lines.count("**/.tau/agent/sessions") == 1
+    assert lines.count("~/.tau/agent/auth.json.key") == 1
+    assert lines.count("~/.tau/agent/sessions") == 1
+    assert lines.count("~/.tau/agent/pii_vault") == 1
 
 
 def test_find_local_project_root_detects_parent_clarity_project(tmp_path) -> None:
@@ -474,7 +474,7 @@ async def test_handle_package_command_update_self_runs_self_update(monkeypatch, 
     assert handled is True
     assert code == 0
     assert calls == [("self_update", True)]
-    assert "Updated pi" in out
+    assert "Updated tau" in out
 
 
 @pytest.mark.asyncio
@@ -511,7 +511,7 @@ async def test_handle_package_command_update_all_updates_extensions_then_self(mo
     assert code == 0
     assert calls == [("update", None), ("self_update", False)]
     assert "Updated packages" in out
-    assert "Updated pi" in out
+    assert "Updated tau" in out
 
 
 @pytest.mark.asyncio

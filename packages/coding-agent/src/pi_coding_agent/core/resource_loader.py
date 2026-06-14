@@ -58,8 +58,8 @@ def get_extension_discovery_paths(
         if explicit_agent_dir:
             global_dir = os.path.join(resolved_agent_dir, "extensions")
         else:
-            # get_agent_dir() is ~/.pi-py/agent; Python extensions live in
-            # ~/.pi-py/extensions so they are not mixed with agent internals.
+            # get_agent_dir() is ~/.tau/agent; Python extensions live in
+            # ~/.tau/extensions so they are not mixed with agent internals.
             global_dir = os.path.join(os.path.dirname(resolved_agent_dir), "extensions")
         dirs.append(global_dir)
 

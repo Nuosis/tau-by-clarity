@@ -126,7 +126,7 @@ agent selects on purpose instead of the harness guessing.
 
 ## 3. What tau does today
 
-- **Cold store:** `.pi-py/agent/sessions/*.jsonl` — append-only tree of entries
+- **Cold store:** `.tau/agent/sessions/*.jsonl` — append-only tree of entries
   (`message`, `compaction`, `branch_summary`, ...) linked by `parentId`. Durable,
   episodic, per-session.
 - **Hot assembly:** `build_session_context()` → `convert_to_llm()` →
@@ -423,7 +423,7 @@ builds, with the deltas that are tau-specific. **Active compression (§§6–7) 
 consumer of the store, not the system.** The system = **store + scope + curator +
 lifecycle + retrieval**, and the defining choice is **project-local**:
 
-- **Storage / persistence.** `./.pi-py/memory/memory.db` in the **cwd** — SQLite + local
+- **Storage / persistence.** `./.tau/memory/memory.db` in the **cwd** — SQLite + local
   768-d embeddings (§8 table; local per §10 Oracle-divergence note). Tables as in §8
   (semantic / conversation / summary / tool_log). Cross-session persistence per project
   is the continuity pi lacks today (§3).
@@ -432,7 +432,7 @@ lifecycle + retrieval**, and the defining choice is **project-local**:
   scope by session / task / file-module + a project-global lane. Every memory carries a
   **provenance tag** (which session wrote it) → read-side trust filter; the curator's
   grounding-verification (§8, assistant output ineligible) is the write-side gate.
-  **Open decision:** `./.pi-py/memory/` **gitignored** (per-clone, fully isolated —
+  **Open decision:** `./.tau/memory/` **gitignored** (per-clone, fully isolated —
   recommended) vs **committed** (team/CI share, but memories mix). Default isolate +
   explicit export.
 - **Formation = the curator** (§8 writer-of-record). tau triggers add post-tool-result
@@ -456,7 +456,7 @@ Build the *proven core first* (store → retrieval → curator), compression las
 existing `evals/` harnesses — do not rebuild them. Each phase ships behind the same flag,
 default off until its gate passes.
 
-- **P0 — Store & scaffolding.** `core/memory/` package; SQLite at **`./.pi-py/memory/
+- **P0 — Store & scaffolding.** `core/memory/` package; SQLite at **`./.tau/memory/
   memory.db`** (cwd-rooted §8); typed tables (§8 Claire map); scope + provenance model;
   local embedding provider (Ollama `nomic-embed-text` 768-d) + deterministic test
   fallback. *Gate:* schema + write/read round-trip tests.
@@ -486,7 +486,7 @@ default off until its gate passes.
 task-state · error→fix · preferences. (Canonical-keyed where the unit has identity,
 e.g. `decision:db_choice`, `fileapi:config/net.py`; superseded on change.)
 
-**Store persistence (DECIDED):** `./.pi-py/memory/` is **committed to git** — tracked
+**Store persistence (DECIDED):** `./.tau/memory/` is **committed to git** — tracked
 and versioned with the project. The anti-poisoning boundary is the **cwd / project root
 itself** (an agent in another project cannot reach it); committing just versions and
 shares the store *within* this project. No open decisions remain before P0.

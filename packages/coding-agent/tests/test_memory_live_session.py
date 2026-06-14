@@ -69,7 +69,7 @@ async def test_memory_roots_at_session_cwd_not_process_cwd(tmp_path, monkeypatch
     assert s._memory_store.project_root == os.path.abspath(project)
     assert s._memory_store.db_path == os.path.join(
         os.path.abspath(project),
-        ".pi-py",
+        ".tau",
         "memory",
         "memory.db",
     )

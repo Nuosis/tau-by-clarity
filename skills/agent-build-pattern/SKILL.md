@@ -1,6 +1,6 @@
 ---
 name: agent-build-pattern
-description: Use when designing, scoping, or building a new pi-py/PyPi LLM-backed agent or subagent — including creating /Users/marcusswift/agents/<AgentName>, running py-py/pi-py init, writing OBJECTIVES.md and .pi-py/SYSTEM.md, building extension tools with Pydantic contracts, adding agent-local skills, defining input/output artifacts, compiling the agent as an importable Python function, and sequencing unit tests plus live evals. Forces prompt-last control-plane discipline, instrumentation before iteration, and clear separation between stub tests and live-LLM evals.
+description: Use when designing, scoping, or building a new pi-py/PyPi LLM-backed agent or subagent — including creating /Users/marcusswift/agents/<AgentName>, running py-py/pi-py init, writing OBJECTIVES.md and .tau/SYSTEM.md, building extension tools with Pydantic contracts, adding agent-local skills, defining input/output artifacts, compiling the agent as an importable Python function, and sequencing unit tests plus live evals. Forces prompt-last control-plane discipline, instrumentation before iteration, and clear separation between stub tests and live-LLM evals.
 ---
 
 # Agent Build Pattern
@@ -31,14 +31,14 @@ Use companion skills when they apply:
 4. Build extensions that provide the tools the agent needs. Every tool gets
    robust Pydantic input and output models.
 5. Decide whether agent-local skills are useful. If yes, compose them with the
-   skill-creation workflow and place them under the agent's `.pi-py/skills/`.
-6. Write an extremely brief `.pi-py/SYSTEM.md`: identity, role, hard rules, and
+   skill-creation workflow and place them under the agent's `.tau/skills/`.
+6. Write an extremely brief `.tau/SYSTEM.md`: identity, role, hard rules, and
    voice only.
 7. Return to `OBJECTIVES.md` and document input artifacts, output artifacts, and
    subagent handoff contracts. Enforce the input artifact and provide a return
    tool that emits the output artifact.
 8. Add eval support. For core agents, copy the root eval extension from
-   `/Users/marcusswift/.pi-py/extensions/evals/` and required dependencies; for
+   `/Users/marcusswift/.tau/extensions/evals/` and required dependencies; for
    non-core agents, leverage the core agents/eval harness already available.
 9. Compile the agent so it is importable as a Python function object.
 10. Write and run basic unit tests.
@@ -48,18 +48,18 @@ Use companion skills when they apply:
 
 - `OBJECTIVES.md`: user stories, capabilities, success conditions, artifact
   contracts, subagent handoff contracts, eval expectations.
-- `.pi-py/SYSTEM.md`: concise durable instruction. Do not list tool names,
+- `.tau/SYSTEM.md`: concise durable instruction. Do not list tool names,
   artifact schemas, scenario data, project paths, or per-call facts here.
-- `.pi-py/extensions/`: executable tools. Tools own capability and must expose
+- `.tau/extensions/`: executable tools. Tools own capability and must expose
   typed input/output models.
-- `.pi-py/settings.json`: tool availability and structural access control. An
+- `.tau/settings.json`: tool availability and structural access control. An
   empty tools list is a structural denial of default tools, not prompt guidance.
-- `.pi-py/skills/`: agent-local procedural knowledge that is too large,
+- `.tau/skills/`: agent-local procedural knowledge that is too large,
   reusable, or domain-specific for the system prompt.
-- `.pi-py/evals/`: scenarios that validate the expectations in `OBJECTIVES.md`.
+- `.tau/evals/`: scenarios that validate the expectations in `OBJECTIVES.md`.
 
 In pi-py, a subagent is a full agent. It needs its own initialized directory,
-`OBJECTIVES.md`, `.pi-py/SYSTEM.md`, extensions, settings, tests, and evals.
+`OBJECTIVES.md`, `.tau/SYSTEM.md`, extensions, settings, tests, and evals.
 The parent agent owns delegation policy; the subagent owns its own success
 conditions and return artifact.
 
@@ -90,7 +90,7 @@ Provider tolerance for deep nesting, recursive refs, unions, and `oneOf` varies.
 Build tools as extensions only after the objective and artifact boundary are
 clear.
 
-- Tool availability belongs in `.pi-py/settings.json` or the runtime tools
+- Tool availability belongs in `.tau/settings.json` or the runtime tools
   array, not in prompt prose.
 - Tool descriptions should be short and operational; the Pydantic schema carries
   field-level constraints.
@@ -109,7 +109,7 @@ Create an agent-local skill when behavior is reusable, procedural, or too large
 for the system prompt. Do not use skills to hide core contracts.
 
 - Use `skill-creator` for new or updated skills.
-- Keep skills under `.pi-py/skills/` for agent-specific knowledge.
+- Keep skills under `.tau/skills/` for agent-specific knowledge.
 - Put stable domain process in skills; keep per-run facts in the user message or
   input artifact.
 - If a skill changes agent behavior, add or update eval scenarios that prove the
@@ -117,7 +117,7 @@ for the system prompt. Do not use skills to hide core contracts.
 
 ## System Prompt Rules
 
-Write `.pi-py/SYSTEM.md` late and keep it brief.
+Write `.tau/SYSTEM.md` late and keep it brief.
 
 The system prompt owns:
 - identity and role
@@ -163,7 +163,7 @@ Name tests by the plane they prove.
 - Live-LLM evals: real model, real prompt, real tools, real instrumentation.
 
 For core agents, copy the root eval extension from
-`/Users/marcusswift/.pi-py/extensions/evals/` plus dependent directories before
+`/Users/marcusswift/.tau/extensions/evals/` plus dependent directories before
 writing scenarios. For non-core agents, use the core agents or existing harness
 rather than duplicating infrastructure unnecessarily.
 
@@ -214,7 +214,7 @@ handling truncates the body.
 - **Thin extension schemas** — accepting loose dictionaries or strings where a
   Pydantic model should reject malformed tool calls.
 - **Listing dotted tool names in prompt prose without offering them as real tools** — models pattern-match and call them, violating the tools-array contract.
-- **Stuffing artifact shape into `.pi-py/SYSTEM.md`** — output shape belongs to
+- **Stuffing artifact shape into `.tau/SYSTEM.md`** — output shape belongs to
   Pydantic models, forced return tools, or strict response schemas.
 - **Skipping instrumentation until something fails** — by the time you need it, the response that broke is lost.
 - **Conflating stub-adapter test green with "the agent works"** — stub tests prove the harness, not the model.

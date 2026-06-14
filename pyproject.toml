@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tau-by-clarity"
-version = "0.55.0"
+version = "0.55.1"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -77,6 +77,11 @@ tau = "pi_coding_agent.main:main"
 "packages/coding-agent/src/pi_coding_agent" = "pi_coding_agent"
 "packages/tui/src/pi_tui" = "pi_tui"
 "packages/loop/src/pi_loop" = "pi_loop"
+"packages/aliases/tau_ai" = "tau_ai"
+"packages/aliases/tau_agent" = "tau_agent"
+"packages/aliases/tau_coding_agent" = "tau_coding_agent"
+"packages/aliases/tau_tui" = "tau_tui"
+"packages/aliases/tau_loop" = "tau_loop"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -85,6 +90,11 @@ include = [
     "packages/coding-agent/src/pi_coding_agent",
     "packages/tui/src/pi_tui",
     "packages/loop/src/pi_loop",
+    "packages/aliases/tau_ai",
+    "packages/aliases/tau_agent",
+    "packages/aliases/tau_coding_agent",
+    "packages/aliases/tau_tui",
+    "packages/aliases/tau_loop",
     "README.md",
     "LICENSE",
     "pyproject.toml",
@@ -98,6 +108,7 @@ exclude = [
     "**/tests",
     "**/tests/**",
     "**/examples",
+    "**/.tau",
     "**/.pi-py",
     "**/build",
     "**/.venv",

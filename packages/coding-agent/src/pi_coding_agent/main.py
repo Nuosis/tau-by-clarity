@@ -245,7 +245,7 @@ async def _create_runtime_host(
         # resource arrays (extensions/skills/prompts/themes) must stay out of the
         # runtime-built session — otherwise create_agent_session_runtime, which
         # rebuilds the session via this factory, would silently re-introduce the
-        # global ~/.pi-py extensions the user opted out of.
+        # global ~/.tau extensions the user opted out of.
         runtime_settings = SettingsManager.create(
             cwd=runtime_cwd,
             agent_dir=agent_dir,
@@ -767,24 +767,24 @@ async def _run(args: Sequence[str]) -> int:
 
     cwd = os.getcwd()
     log_event("cwd_resolved", cwd=cwd)
-    # Seed the new global dir (~/.pi-py/agent) with auth/models from the legacy
+    # Seed the new global dir (~/.tau/agent) with auth/models from the legacy
     # Node dir on first run so existing API keys keep working.
     from .config import migrate_legacy_global_config
 
     migrate_legacy_global_config()
     log_event("legacy_config_migration_checked")
-    # --init: scaffold the project-local .pi-py structure, then continue to launch.
+    # --init: scaffold the project-local .tau structure, then continue to launch.
     if getattr(parsed, "init", False):
         from .config import scaffold_project
 
         created = scaffold_project(cwd)
         log_event("project_scaffold_checked", created=[os.path.relpath(path, cwd) for path in created])
         if created:
-            print(f"Initialized .pi-py agent project in {cwd}:", file=sys.stderr)
+            print(f"Initialized .tau agent project in {cwd}:", file=sys.stderr)
             for path in created:
                 print(f"  + {os.path.relpath(path, cwd)}", file=sys.stderr)
         else:
-            print(".pi-py project already initialized.", file=sys.stderr)
+            print(".tau project already initialized.", file=sys.stderr)
     # Sessions are contained per-project by default (unless --session-dir given).
     if not parsed.session_dir and not parsed.no_session:
         from .config import get_project_sessions_dir
@@ -792,7 +792,7 @@ async def _run(args: Sequence[str]) -> int:
         parsed.session_dir = get_project_sessions_dir(cwd)
         log_event("session_dir_defaulted", session_dir=parsed.session_dir)
     # Every launch (not just --init) leaves a populated, visible project config
-    # so a normal `tau` run never produces a half-empty .pi-py (sessions dir
+    # so a normal `tau` run never produces a half-empty .tau (sessions dir
     # but no settings.json). Inherited global defaults are written in.
     if not parsed.inherit:
         from .config import ensure_project_settings

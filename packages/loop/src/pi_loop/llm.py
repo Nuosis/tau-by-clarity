@@ -1,7 +1,7 @@
 """Genuine LLM access for the loop's judges and generators.
 
 Provider/model are NOT hardcoded: we read the TARGET AGENT's configured
-`defaultProvider`/`defaultModel` from its `.pi-py/settings.json` and resolve the
+`defaultProvider`/`defaultModel` from its `.tau/settings.json` and resolve the
 model — wire (`api`), base_url, limits — through `pi_ai.get_model`, the exact
 registry the agent runs on. The call goes through `pi_ai.complete_simple`, so the
 loop's judges run on the same model the agent does, with the correct transport
@@ -36,7 +36,7 @@ T = TypeVar("T", bound=BaseModel)
 
 def _settings(agent_dir: str) -> dict:
     try:
-        return json.loads(Path(os.path.join(agent_dir, ".pi-py", "settings.json")).read_text())
+        return json.loads(Path(os.path.join(agent_dir, ".tau", "settings.json")).read_text())
     except Exception:
         return {}
 

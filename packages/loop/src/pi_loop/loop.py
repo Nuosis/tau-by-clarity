@@ -8,7 +8,7 @@ Flow:
 NO MAX LOOPS. churn_detector is the sole runaway guard. The only deterministic
 surface is this control flow; every decision and every user-facing line is a
 genuine LLM call. The agent supplies its domain rubric and voice via its loop
-profile (`<agent_dir>/.pi-py/loop_profile.json`).
+profile (`<agent_dir>/.tau/loop_profile.json`).
 """
 
 from __future__ import annotations

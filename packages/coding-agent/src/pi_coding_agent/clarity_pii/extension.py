@@ -34,7 +34,7 @@ FLAG_NAME = "pii-filter"
 def _vault_dir() -> str:
     import os
 
-    base = os.environ.get("PI_AGENT_DIR") or os.path.join(os.path.expanduser("~"), ".pi-py", "agent")
+    base = os.environ.get("PI_AGENT_DIR") or os.path.join(os.path.expanduser("~"), ".tau", "agent")
     return os.path.join(base, "pii_vault")
 
 

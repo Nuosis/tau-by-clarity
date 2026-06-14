@@ -42,8 +42,8 @@ def _settings_paths() -> list[str]:
     paths: list[str] = []
     acd = os.environ.get("PI_CODING_AGENT_DIR")
     if acd:
-        paths += [os.path.join(acd, "settings.json"), os.path.join(acd, ".pi-py", "settings.json")]
-    paths.append(os.path.join(os.getcwd(), ".pi-py", "settings.json"))
+        paths += [os.path.join(acd, "settings.json"), os.path.join(acd, ".tau", "settings.json")]
+    paths.append(os.path.join(os.getcwd(), ".tau", "settings.json"))
     return paths
 
 
@@ -68,7 +68,7 @@ _store: CCRStore | None = None
 def _ccr() -> CCRStore:
     global _store
     if _store is None:
-        base = os.environ.get("PI_AGENT_DIR") or os.path.join(os.path.expanduser("~"), ".pi-py", "agent")
+        base = os.environ.get("PI_AGENT_DIR") or os.path.join(os.path.expanduser("~"), ".tau", "agent")
         _store = CCRStore(os.path.join(base, "ccr.db"))
     return _store
 

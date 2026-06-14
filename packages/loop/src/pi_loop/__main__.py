@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--agent-dir",
         default=os.environ.get("PI_LOOP_AGENT_DIR") or os.getcwd(),
-        help="Target agent root (dir containing .pi-py/). Defaults to $PI_LOOP_AGENT_DIR or cwd.",
+        help="Target agent root (dir containing .tau/). Defaults to $PI_LOOP_AGENT_DIR or cwd.",
     )
     parser.add_argument(
         "--project-root", default=None, help="Project the work targets. Defaults to the agent dir."

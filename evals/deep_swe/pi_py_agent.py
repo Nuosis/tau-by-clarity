@@ -45,7 +45,7 @@ class PiPyAgent(BaseAgent):
         # TODO(P6-1): install tau into the sandbox. Either `uv pip install` the built
         # wheel or upload the source tree (environment.upload_file) and `pip install -e`.
         # TODO(P6-3): provision embeddings (Ollama tiny model or deterministic fallback).
-        # Memory store is project-local (cwd/.pi-py/memory) — committed in the task repo,
+        # Memory store is project-local (cwd/.tau/memory) — committed in the task repo,
         # so PI_MEMORY_ENABLED=1 starts empty and the curator populates it during the run.
         await environment.exec("python -V")  # placeholder smoke
 

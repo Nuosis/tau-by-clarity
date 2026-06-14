@@ -87,7 +87,7 @@ TOOLS: dict[str, ToolConfig] = {
     ),
 }
 
-_APP_NAME = "pi"
+_APP_NAME = "tau"
 
 
 def _get_bin_dir() -> str:

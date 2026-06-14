@@ -28,7 +28,7 @@ def _mem(**kw) -> SemanticMemory:
 
 def test_db_created_in_project_dir(tmp_path):
     s = _store(tmp_path)
-    assert os.path.exists(os.path.join(str(tmp_path), ".pi-py", "memory", "memory.db"))
+    assert os.path.exists(os.path.join(str(tmp_path), ".tau", "memory", "memory.db"))
     s.close()
 
 

@@ -212,13 +212,13 @@ class TestArgParsing:
         captured = capsys.readouterr()
         assert "pi" in captured.out.lower() or "usage" in captured.out.lower()
         assert "uninstall <source> [-l]" in captured.out
-        assert "update [source|self|pi]" in captured.out
+        assert "update [self|pi|all]" in captured.out
         assert "config [--no-approve]" in captured.out
         assert "Show help for install/remove/uninstall/update/list" in captured.out
         assert "--session <path|id>" in captured.out
         assert "--offline" in captured.out
         assert "same as PI_OFFLINE=1" in captured.out
-        assert "default: ~/.pi-py/agent" in captured.out
+        assert "default: ~/.tau/agent" in captured.out
         assert "~/..pi/agent" not in captured.out
 
     def test_root_exports_parse_args_and_config_paths(self):

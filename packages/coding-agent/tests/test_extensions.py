@@ -102,7 +102,7 @@ class TestExtensionLoader:
         monkeypatch.setenv("PI_ACTIVE_COMPRESSION_DISABLED", "1")
         home = tmp_path / "home"
         project = tmp_path / "project"
-        extensions_dir = home / ".pi-py" / "extensions"
+        extensions_dir = home / ".tau" / "extensions"
         file_ext = extensions_dir / "file_ext.py"
         package_ext = extensions_dir / "package_ext" / "__init__.py"
         project.mkdir()
@@ -114,7 +114,7 @@ class TestExtensionLoader:
 
         paths = get_extension_discovery_paths(
             str(project),
-            str(home / ".pi-py" / "agent"),
+            str(home / ".tau" / "agent"),
             inherit_global=True,
         )
 
@@ -130,15 +130,15 @@ class TestExtensionLoader:
         monkeypatch.setenv("PI_ACTIVE_COMPRESSION_DISABLED", "1")
         home = tmp_path / "home"
         project = tmp_path / "project"
-        discovered = home / ".pi-py" / "extensions" / "discovered.py"
-        settings_only = home / ".pi-py" / "settings_only.py"
+        discovered = home / ".tau" / "extensions" / "discovered.py"
+        settings_only = home / ".tau" / "settings_only.py"
         project.mkdir()
         discovered.parent.mkdir(parents=True)
         discovered.write_text("def activate(api):\n    pass\n", encoding="utf-8")
         settings_only.write_text("def activate(api):\n    raise RuntimeError('settings entry loaded')\n", encoding="utf-8")
         monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(home)) if p.startswith("~") else p)
 
-        agent_dir = str(home / ".pi-py" / "agent")
+        agent_dir = str(home / ".tau" / "agent")
         os.makedirs(agent_dir, exist_ok=True)
         with open(os.path.join(agent_dir, "settings.json"), "w", encoding="utf-8") as f:
             f.write(f'{{"extensions":["{settings_only}"]}}')

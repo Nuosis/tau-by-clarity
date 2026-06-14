@@ -11,13 +11,19 @@ import subprocess
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
-# App metadata (mirrors piConfig in package.json)
-APP_NAME: str = "pi"
-# The Python harness uses its OWN config dir so it never reads the Node `.pi`
+# App metadata. APP_NAME is the user-facing brand shown in CLI/TUI text.
+# ENV_PREFIX is kept separate ("PI") so env var names stay PI_CODING_AGENT_*
+# for back-compat — agents (e.g. Devin) and the .pi-py convention depend on them.
+APP_NAME: str = "tau"
+ENV_PREFIX: str = "PI"
+# The harness uses its OWN config dir (`.tau`) so it never reads the Node `.pi`
 # tree (whose extensions are .ts and can't load here). Auth/models are migrated
-# from the legacy dir on first run; see migrate_legacy_global_config().
-CONFIG_DIR_NAME: str = ".pi-py"
-LEGACY_CONFIG_DIR_NAME: str = ".pi"
+# from the legacy dirs (`.pi-py`, then `.pi`) on first run; see
+# migrate_legacy_global_config().
+CONFIG_DIR_NAME: str = ".tau"
+# Older config dirs migrated FROM, newest first.
+LEGACY_CONFIG_DIR_NAMES: tuple[str, ...] = (".pi-py", ".pi")
+LEGACY_CONFIG_DIR_NAME: str = ".pi"  # retained for back-compat imports
 
 try:
     VERSION: str = _pkg_version("tau-by-clarity")
@@ -27,8 +33,9 @@ except Exception:
     except Exception:
         VERSION = "0.54.13"
 
-ENV_AGENT_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_DIR"
-ENV_SESSION_DIR: str = f"{APP_NAME.upper()}_CODING_AGENT_SESSION_DIR"
+# Env var names stay PI_* (ENV_PREFIX) for back-compat, independent of APP_NAME.
+ENV_AGENT_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_DIR"
+ENV_SESSION_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_SESSION_DIR"
 
 
 # ============================================================================
@@ -161,19 +168,19 @@ def get_project_config_dir(cwd: str | None = None) -> str:
 
 
 def get_project_agent_dir(cwd: str | None = None) -> str:
-    """Project-local agent dir (<cwd>/.pi-py/agent) — the default config root
+    """Project-local agent dir (<cwd>/.tau/agent) — the default config root
     when not inheriting global config."""
     return os.path.join(get_project_config_dir(cwd), "agent")
 
 
 def get_project_sessions_dir(cwd: str | None = None) -> str:
-    """Project-local sessions dir (<cwd>/.pi-py/agent/sessions) — sessions are
+    """Project-local sessions dir (<cwd>/.tau/agent/sessions) — sessions are
     contained per-project by default."""
     return os.path.join(get_project_agent_dir(cwd), "sessions")
 
 
 def migrate_legacy_global_config() -> None:
-    """One-time: seed the new global dir (~/.pi-py/agent) with auth + models
+    """One-time: seed the new global dir (~/.tau/agent) with auth + models
     from the legacy Node dir (~/.pi/agent) so existing API keys keep working.
 
     Only copies a file if the destination does not already exist; never deletes
@@ -182,33 +189,36 @@ def migrate_legacy_global_config() -> None:
     import shutil
 
     home = os.path.expanduser("~")
-    legacy = os.path.join(home, LEGACY_CONFIG_DIR_NAME, "agent")
     new = get_agent_dir()
-    if os.path.abspath(legacy) == os.path.abspath(new):
-        return
     try:
         os.makedirs(new, mode=0o700, exist_ok=True)
     except OSError:
         return
-    for name in ("auth.json", "models.json"):
-        src = os.path.join(legacy, name)
-        dst = os.path.join(new, name)
-        if os.path.exists(src) and not os.path.exists(dst):
-            try:
-                shutil.copy2(src, dst)
-            except OSError:
-                pass
+    # Seed from the newest legacy dir first (.pi-py), then the Node dir (.pi).
+    # Per-file "copy only if missing" means the newest source wins.
+    for legacy_name in LEGACY_CONFIG_DIR_NAMES:
+        legacy = os.path.join(home, legacy_name, "agent")
+        if os.path.abspath(legacy) == os.path.abspath(new):
+            continue
+        for name in ("auth.json", "models.json"):
+            src = os.path.join(legacy, name)
+            dst = os.path.join(new, name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    shutil.copy2(src, dst)
+                except OSError:
+                    pass
 
 
 def _global_default_seed() -> dict:
     """Pull the default provider/model/thinking from the global
-    ~/.pi-py/agent/settings.json so a new project file shows what it actually
+    ~/.tau/agent/settings.json so a new project file shows what it actually
     runs. Empty dict if no global defaults exist yet (pre-/login)."""
     import json
 
     seed: dict = {}
     gdata: dict = {}
-    global_settings = get_settings_path()  # ~/.pi-py/agent/settings.json
+    global_settings = get_settings_path()  # ~/.tau/agent/settings.json
     if os.path.exists(global_settings):
         try:
             with open(global_settings, encoding="utf-8") as gf:
@@ -229,7 +239,7 @@ def _global_default_seed() -> dict:
 
 
 def ensure_project_settings(cwd: str | None = None) -> str | None:
-    """Guarantee <cwd>/.pi-py/settings.json exists, seeded from the global
+    """Guarantee <cwd>/.tau/settings.json exists, seeded from the global
     defaults, on EVERY launch — so a normal `tau` run never leaves a
     half-empty .pi-py (sessions dir but no visible config). Returns the path if
     it was just created, else None. Never overwrites an existing file."""
@@ -248,7 +258,7 @@ def ensure_project_settings(cwd: str | None = None) -> str | None:
 
 def ensure_memory_store(cwd: str | None = None) -> str | None:
     """Guarantee the project-local memory store exists at
-    <cwd>/.pi-py/memory/memory.db (dir + schema'd SQLite db). Returns the db
+    <cwd>/.tau/memory/memory.db (dir + schema'd SQLite db). Returns the db
     path if it was just created, else None. Never touches an existing db.
 
     Offline: instantiating the store creates the dir and schema only — no
@@ -273,7 +283,7 @@ def ensure_memory_store(cwd: str | None = None) -> str | None:
 
 
 def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
-    """Seed <cwd>/.pi-py/agent with global auth/model config.
+    """Seed <cwd>/.tau/agent with global auth/model config.
 
     This makes an initialized project self-contained when launched with
     PI_CODING_AGENT_DIR pointing at its local agent dir. Idempotent: only
@@ -420,16 +430,16 @@ def ensure_zsh_pi_py_alias(zshrc_path: str | None = None) -> str | None:
 
 
 _PROJECT_GITIGNORE_ENTRIES = (
-    ".pi-py/agent/auth.json.key",
-    ".pi-py/agent/pii_vault",
-    ".pi-py/agent/sessions",
-    ".pi-py/evals/results/",
-    "**/.pi-py/agent/auth.json.key",
-    "**/.pi-py/agent/pii_vault",
-    "**/.pi-py/agent/sessions",
-    "~/.pi-py/agent/auth.json.key",
-    "~/.pi-py/agent/pii_vault",
-    "~/.pi-py/agent/sessions",
+    ".tau/agent/auth.json.key",
+    ".tau/agent/pii_vault",
+    ".tau/agent/sessions",
+    ".tau/evals/results/",
+    "**/.tau/agent/auth.json.key",
+    "**/.tau/agent/pii_vault",
+    "**/.tau/agent/sessions",
+    "~/.tau/agent/auth.json.key",
+    "~/.tau/agent/pii_vault",
+    "~/.tau/agent/sessions",
 )
 
 
@@ -476,7 +486,7 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
     if not os.path.exists(settings_path):
         os.makedirs(config_dir, exist_ok=True)
         # Seed the project file with the resolved defaults from the global
-        # ~/.pi-py/agent/settings.json so the agent's config is visible and
+        # ~/.tau/agent/settings.json so the agent's config is visible and
         # self-contained right here in its own dir (not an empty {} that hides
         # what it's actually running). If no global defaults exist yet, this
         # stays empty until /login writes them.
@@ -485,7 +495,7 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
         created.append(settings_path)
 
     # Stand up the project-local memory store so it's present and git-trackable
-    # from day one (the design commits ./.pi-py/memory/ to git). Creating the
+    # from day one (the design commits ./.tau/memory/ to git). Creating the
     # store writes an empty schema'd memory.db; it's offline (no Ollama call
     # until something is actually embedded), so this is safe even with
     # memory_enabled=false.

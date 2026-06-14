@@ -8,7 +8,7 @@ judge-verified done-condition holds. The skill moves from the prompt to the
 harness — verification, termination, state, voice.
 
 `pi_loop` is agent-agnostic. It drives **any** tau agent; the agent supplies
-only its domain rubric and voice via `<agent_dir>/.pi-py/loop_profile.json`.
+only its domain rubric and voice via `<agent_dir>/.tau/loop_profile.json`.
 Devin is one consumer, not the owner.
 
 ## Three loops — name the one this is
@@ -81,7 +81,7 @@ it needs). An LLM artifact, never templated.
 
 ## The profile seam
 
-`<agent_dir>/.pi-py/loop_profile.json`:
+`<agent_dir>/.tau/loop_profile.json`:
 
 ```json
 { "done_rubric": "...domain signals that mean done...",
