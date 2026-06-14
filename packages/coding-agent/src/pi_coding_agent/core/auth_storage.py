@@ -173,7 +173,7 @@ class AuthStorage:
         envelope = {
             "version": 2,
             "encrypted": True,
-            "cipher": "tau-xor-hmac-sha256",
+            "cipher": "pi-py-xor-hmac-sha256",
             "nonce": base64.urlsafe_b64encode(nonce).decode("ascii"),
             "data": base64.urlsafe_b64encode(ciphertext).decode("ascii"),
             "mac": base64.urlsafe_b64encode(mac).decode("ascii"),
@@ -181,7 +181,7 @@ class AuthStorage:
         return json.dumps(envelope, indent=2)
 
     def _decrypt_storage(self, envelope: dict[str, Any]) -> dict[str, Any]:
-        if envelope.get("cipher") != "tau-xor-hmac-sha256":
+        if envelope.get("cipher") != "pi-py-xor-hmac-sha256":
             raise ValueError("Unsupported encrypted auth storage format")
         key = self._load_or_create_key()
         nonce = base64.urlsafe_b64decode(str(envelope.get("nonce", "")))

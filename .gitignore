@@ -55,3 +55,6 @@ evals/fixtures/clarify_chat/
 # Downloaded corpora (public-domain, reproducible via curl)
 evals/fixtures/corpus/
 result.txt
+
+# Legacy local config dir (pre-rebrand runtime cruft)
+.pi-py/

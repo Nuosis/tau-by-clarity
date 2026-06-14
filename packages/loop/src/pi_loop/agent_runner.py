@@ -72,6 +72,7 @@ def run_agent(
     argv = _resolve_pi_py_invocation() + ["--mode", "json", "-p", f"Task: {prompt}"]
 
     env = dict(os.environ)
+    # Canonical PI_ name (back-compat) so the child resolves it via get_agent_dir().
     env["PI_CODING_AGENT_DIR"] = agent_dir
     env["PI_PROJECT_ROOT"] = os.path.abspath(project_root or agent_dir)
     env["PYTHONUNBUFFERED"] = "1"

@@ -17,7 +17,7 @@ from .cli_sub.args import parse_args, print_help
 from .cli_sub.file_processor import process_file_arguments
 from .cli_sub.list_models import list_models
 from .cli_sub.session_picker import select_session
-from .config import APP_NAME, get_agent_dir
+from .config import APP_NAME, agent_dir_env, get_agent_dir
 from .core.agent_session_runtime import (
     CreateAgentSessionRuntimeResult,
     create_agent_session_runtime,
@@ -249,7 +249,7 @@ async def _create_runtime_host(
         runtime_settings = SettingsManager.create(
             cwd=runtime_cwd,
             agent_dir=agent_dir,
-            options={"keepAgentResources": bool(os.environ.get("PI_CODING_AGENT_DIR"))},
+            options={"keepAgentResources": bool(agent_dir_env())},
             inherit_global=bool(getattr(parsed, "inherit", False)),
         )
         session_vars = getattr(parsed, "session_vars", None)
@@ -802,7 +802,7 @@ async def _run(args: Sequence[str]) -> int:
     settings_manager = SettingsManager.create(
         cwd,
         get_agent_dir(),
-        {"keepAgentResources": bool(os.environ.get("PI_CODING_AGENT_DIR"))},
+        {"keepAgentResources": bool(agent_dir_env())},
         inherit_global=parsed.inherit,
     )
     _report_settings_errors(settings_manager, "startup")

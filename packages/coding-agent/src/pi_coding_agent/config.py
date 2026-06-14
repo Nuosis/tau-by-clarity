@@ -36,6 +36,20 @@ except Exception:
 # Env var names stay PI_* (ENV_PREFIX) for back-compat, independent of APP_NAME.
 ENV_AGENT_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_DIR"
 ENV_SESSION_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_SESSION_DIR"
+# Reads accept both the canonical PI_ var (back-compat) and a TAU_ alias so a
+# caller using either prefix is honored consistently. Writes always set
+# ENV_AGENT_DIR (the canonical PI_ name) so child processes resolve it via
+# get_agent_dir().
+_ENV_AGENT_DIR_ALIASES: tuple[str, ...] = (ENV_AGENT_DIR, f"{APP_NAME.upper()}_CODING_AGENT_DIR")
+
+
+def agent_dir_env() -> str | None:
+    """Return the explicit agent-dir env value, honoring PI_ and TAU_ prefixes."""
+    for name in _ENV_AGENT_DIR_ALIASES:
+        val = os.environ.get(name)
+        if val:
+            return val
+    return None
 
 
 # ============================================================================
@@ -45,7 +59,7 @@ ENV_SESSION_DIR: str = f"{ENV_PREFIX}_CODING_AGENT_SESSION_DIR"
 
 def get_agent_dir() -> str:
     """Get the agent config directory (e.g., ~/.pi/agent/)."""
-    env_dir = os.environ.get(ENV_AGENT_DIR)
+    env_dir = agent_dir_env()
     if env_dir:
         home = os.path.expanduser("~")
         if env_dir == "~":
@@ -200,7 +214,8 @@ def migrate_legacy_global_config() -> None:
         legacy = os.path.join(home, legacy_name, "agent")
         if os.path.abspath(legacy) == os.path.abspath(new):
             continue
-        for name in ("auth.json", "models.json"):
+        # auth.json is encrypted; auth.json.key is required to decrypt it — copy both.
+        for name in ("auth.json", "auth.json.key", "models.json"):
             src = os.path.join(legacy, name)
             dst = os.path.join(new, name)
             if os.path.exists(src) and not os.path.exists(dst):

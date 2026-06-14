@@ -248,9 +248,11 @@ class DefaultResourceLoader:
         opts = options or DefaultResourceLoaderOptions()
         self._cwd = opts.cwd or os.getcwd()
         # Default: project-local discovery only. When a caller explicitly sets
-        # PI_CODING_AGENT_DIR, that directory is the agent under test and must
-        # own its resources even without --inherit.
-        explicit_agent_dir = bool(os.environ.get("PI_CODING_AGENT_DIR"))
+        # the agent-dir env var (PI_CODING_AGENT_DIR, or its TAU_ alias), that
+        # directory is the agent under test and must own its resources even
+        # without --inherit.
+        from pi_coding_agent.config import agent_dir_env
+        explicit_agent_dir = bool(agent_dir_env())
         if opts.inherit_global or explicit_agent_dir:
             self._agent_dir = opts.agent_dir or get_agent_dir()
         else:

@@ -40,7 +40,8 @@ def builtin_extension_path() -> str:
 
 def _settings_paths() -> list[str]:
     paths: list[str] = []
-    acd = os.environ.get("PI_CODING_AGENT_DIR")
+    from ..config import agent_dir_env
+    acd = agent_dir_env()
     if acd:
         paths += [os.path.join(acd, "settings.json"), os.path.join(acd, ".tau", "settings.json")]
     paths.append(os.path.join(os.getcwd(), ".tau", "settings.json"))
