@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from .api_registry import get_api_provider
+from .compression import compress_context
 from .pii import detok_event, protect_context
 from .env_api_keys import get_env_api_key
 from .providers import register_builtins
@@ -59,7 +60,8 @@ async def stream_simple(
     if provider is None:
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
-    # Universal PII chokepoint: tokenize outbound, detokenize the reply.
+    # Active compression (one-way), then the PII chokepoint.
+    context = compress_context(context)
     context, _detok = protect_context(context)
     async for event in provider.stream_simple(model, context, opts):
         event = _normalize_stream_event(event)
@@ -110,7 +112,8 @@ async def stream(
     if provider is None:
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
-    # Universal PII chokepoint: tokenize outbound, detokenize the reply.
+    # Active compression (one-way), then the PII chokepoint.
+    context = compress_context(context)
     context, _detok = protect_context(context)
     async for event in provider.stream(model, context, opts):
         event = _normalize_stream_event(event)

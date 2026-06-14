@@ -402,3 +402,12 @@ try:
     _register_clarity_pii()
 except Exception:
     pass
+
+# Install active compression (content-aware + CCR) as pi_ai's universal outbound
+# compressor; default-on via the active_compression settings flag.
+try:
+    from .active_compression import register_with_pi_ai as _register_active_compression
+
+    _register_active_compression()
+except Exception:
+    pass
