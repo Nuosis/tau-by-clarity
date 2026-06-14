@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 
 from .loop import run_loop
+from .steering import SteeringInbox
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,12 +43,30 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(text.rstrip() + "\n\n")
         sys.stdout.flush()
 
+    # Steering: read lines the user types while the loop runs, stage them, and
+    # acknowledge immediately so a typed message is never silently consumed.
+    inbox = SteeringInbox()
+
+    def _reader() -> None:
+        try:
+            for line in sys.stdin:
+                ack = inbox.submit(line)
+                if ack:
+                    sys.stderr.write(ack + "\n")
+                    sys.stderr.flush()
+        except Exception:
+            pass
+
+    if sys.stdin and not sys.stdin.closed:
+        threading.Thread(target=_reader, daemon=True).start()
+
     result = run_loop(
         args.goal,
         args.agent_dir,
         project_root=args.project_root,
         emit=emit,
         iteration_timeout=args.iteration_timeout,
+        inbox=inbox,
     )
     return 0 if (result.terminal and result.terminal.condition == "goal_accomplished") else 1
 

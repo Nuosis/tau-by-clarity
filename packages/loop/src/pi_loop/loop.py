@@ -21,6 +21,7 @@ from .judges import run_continuation_suite
 from .llm import LlmFn, resolve_llm
 from .models import IterationRecord, LedgerState, LoopResult
 from .profile import LoopProfile, load_profile
+from .steering import SteeringInbox
 
 Emit = Callable[[str], None]
 
@@ -39,6 +40,7 @@ def run_loop(
     agent_runner: Callable[..., object] = run_agent,
     emit: Emit = _default_emit,
     iteration_timeout: Optional[int] = None,
+    inbox: Optional[SteeringInbox] = None,
 ) -> LoopResult:
     """Drive `goal` against the agent at `agent_dir` to a judge-determined stop.
 
@@ -80,7 +82,16 @@ def run_loop(
             emit(report.message)
             return result
 
-        artifacts = build_continue_artifacts(llm_fn, goal, ledger, output, index, profile)
+        # Drain any steering the user staged while the agent was working, and
+        # inject it into the next prompt (rather than making them wait for the
+        # whole loop to finish).
+        steering = inbox.drain() if inbox is not None else []
+        if steering:
+            emit("↪ applying your steering: " + " | ".join(steering))
+
+        artifacts = build_continue_artifacts(
+            llm_fn, goal, ledger, output, index, profile, steering=steering
+        )
         ledger = artifacts.ledger
         result.ledger = ledger
         emit(artifacts.user_feedback)

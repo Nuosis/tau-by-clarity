@@ -88,16 +88,30 @@ _PROMPT_SYSTEM = (
     "goal, steer it back explicitly. If the loop is re-treading, tell the agent to "
     "lock the settled choice and move to the next open item. Be specific and "
     "action-oriented; name the next outcome, not a vague 'continue'. Write the "
-    "instruction directly to the agent in the imperative, nothing else."
+    "instruction directly to the agent in the imperative, nothing else.\n\n"
+    "If USER STEERING is present, it is the user redirecting the work in real "
+    "time: honor it FIRST and let it override drift and your own next step, while "
+    "still serving the original goal. Fold it into the instruction as the priority."
 )
 
 
-def new_prompt(llm_fn: LlmFn, goal: str, ledger: LedgerState, output: IterationOutput) -> str:
+def new_prompt(
+    llm_fn: LlmFn,
+    goal: str,
+    ledger: LedgerState,
+    output: IterationOutput,
+    steering: list[str] | None = None,
+) -> str:
+    steer_block = ""
+    if steering:
+        joined = "\n".join(f"- {s}" for s in steering)
+        steer_block = f"\n\nUSER STEERING (incorporate first, overrides drift):\n{joined}"
     user = (
         f"ORIGINAL GOAL:\n{goal}\n\n"
         f"LEDGER:\n{ledger.render()}\n\n"
         f"WHAT JUST HAPPENED:\n{output.final_text or '(none)'}\n\n"
         f"OBSERVED EVIDENCE:\n{output.observed_evidence()}"
+        f"{steer_block}"
     )
     return (llm_fn(_PROMPT_SYSTEM, user) or "").strip()
 
@@ -109,11 +123,13 @@ def build_continue_artifacts(
     output: IterationOutput,
     iteration: int,
     profile: LoopProfile,
+    steering: list[str] | None = None,
 ) -> LoopArtifacts:
-    """Ledger first (feeds the other two), then feedback and the next prompt."""
+    """Ledger first (feeds the other two), then feedback and the next prompt
+    (which folds in any staged user steering)."""
     new_ledger = update_ledger(llm_fn, ledger, output, iteration)
     feedback = user_feedback(llm_fn, goal, new_ledger, output, profile)
-    nxt = new_prompt(llm_fn, goal, new_ledger, output)
+    nxt = new_prompt(llm_fn, goal, new_ledger, output, steering)
     return LoopArtifacts(ledger=new_ledger, user_feedback=feedback, new_prompt=nxt)
 
 

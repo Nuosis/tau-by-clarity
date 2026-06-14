@@ -81,6 +81,7 @@ def run_agent(
             argv,
             cwd=agent_dir,
             env=env,
+            stdin=subprocess.DEVNULL,  # leave the parent's stdin free for steering input
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

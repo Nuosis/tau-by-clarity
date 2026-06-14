@@ -19,11 +19,13 @@ from .models import (
     TerminalReport,
 )
 from .profile import LoopProfile, load_profile
+from .steering import SteeringInbox
 
 __all__ = [
     "run_loop",
     "LoopProfile",
     "load_profile",
+    "SteeringInbox",
     "ContinuationDecision",
     "DecisionEntry",
     "IterationOutput",
