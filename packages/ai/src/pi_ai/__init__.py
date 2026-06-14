@@ -62,6 +62,9 @@ from .env_api_keys import get_env_api_key
 # Streaming functions
 from .stream import complete, complete_simple, stream, stream_simple
 
+# Universal PII filter hook (registered by clarity_pii; no-op otherwise)
+from .pii import has_pii_filter, register_pii_filter, unregister_pii_filter
+
 # Utilities
 from .utils.event_stream import AssistantMessageEventStream as AssistantMessageEventStreamClass, EventStream, create_assistant_message_event_stream
 from .utils.json_parse import parse_partial_json, parse_streaming_json
@@ -92,6 +95,8 @@ __all__ = [
     "get_env_api_key",
     # Streaming
     "stream", "complete", "stream_simple", "complete_simple",
+    # PII filter hook
+    "register_pii_filter", "unregister_pii_filter", "has_pii_filter",
     # Utils
     "EventStream", "AssistantMessageEventStreamClass", "create_assistant_message_event_stream",
     "parse_partial_json", "parse_streaming_json",

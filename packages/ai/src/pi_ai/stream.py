@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from .api_registry import get_api_provider
+from .pii import detok_event, protect_context
 from .env_api_keys import get_env_api_key
 from .providers import register_builtins
 from .types import (
@@ -58,8 +59,13 @@ async def stream_simple(
     if provider is None:
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
+    # Universal PII chokepoint: tokenize outbound, detokenize the reply.
+    context, _detok = protect_context(context)
     async for event in provider.stream_simple(model, context, opts):
-        yield _normalize_stream_event(event)
+        event = _normalize_stream_event(event)
+        if _detok is not None:
+            event = detok_event(event, _detok)
+        yield event
 
 
 async def complete_simple(
@@ -104,8 +110,13 @@ async def stream(
     if provider is None:
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
+    # Universal PII chokepoint: tokenize outbound, detokenize the reply.
+    context, _detok = protect_context(context)
     async for event in provider.stream(model, context, opts):
-        yield _normalize_stream_event(event)
+        event = _normalize_stream_event(event)
+        if _detok is not None:
+            event = detok_event(event, _detok)
+        yield event
 
 
 async def complete(

@@ -91,6 +91,9 @@ def resolve_llm(agent_dir: str, *, model: str | None = None) -> LlmFn:
 
         return asyncio.run(_go())
 
+    # PII protection is enforced universally at the pi_ai dispatch layer
+    # (clarity_pii registers a per-call filter), so every complete_simple call
+    # here is tokenized regardless of source — no per-caller wrapper needed.
     return llm_fn
 
 
