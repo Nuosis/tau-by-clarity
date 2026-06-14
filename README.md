@@ -1,15 +1,14 @@
 # Tau by Clarity
 
-> Python port of the [pi-mono](../pi-mono) TypeScript monorepo — four packages with aligned code, logic, algorithms, and folder structure.
+> A multi-provider AI coding agent **and** agent-building framework for Python —
+> an interactive TUI, a headless CLI (`tau`), an agent loop, file tools, and
+> built-in **Tau by Clarity** PII tokenization and active context compression.
 >
 > **[中文 README →](README_CN.md)**
 
-| TypeScript | Python | Description |
-|---|---|---|
-| `@mariozechner/pi-ai` | `pi_ai` | Unified LLM streaming layer (Google, Anthropic, OpenAI, Bedrock, …) |
-| `@mariozechner/pi-agent-core` | `pi_agent` | Agent loop, tool execution, state management |
-| `@mariozechner/pi-coding-agent` | `pi_coding_agent` | Coding agent CLI with file tools: read, write, edit, bash, grep, find, ls |
-| `@mariozechner/pi-tui` | `pi_tui` | Terminal UI library with differential rendering engine |
+Run it (`tau`), embed it (`import pi_coding_agent`), or build your own agents on it
+(see [Building agents](#building-agents--tau-as-an-agent-framework)). Tau builds on
+the **PI** project — see [Credits & lineage](#credits--lineage).
 
 ---
 
@@ -166,7 +165,7 @@ uv run tau --help
 
 ## Building agents — tau as an agent framework
 
-pi-py isn't only the bundled coding agent — it's a framework for building your own
+Tau isn't only the bundled coding agent — it's a framework for building your own
 agents and subagents. The **agent directory is the deployment unit**: prompts,
 tools, skills, subagents, and evals all live inside it.
 
@@ -184,7 +183,7 @@ my-agent/
 ```
 
 Point the runtime at it with `PI_CODING_AGENT_DIR=/path/to/my-agent/.pi-py`, then
-run headless (`pi --mode json -p "..."`) or in the TUI.
+run headless (`tau --mode json -p "..."`) or in the TUI.
 
 ### Tools are extensions
 
@@ -387,3 +386,27 @@ pi-mono-python/
 | TUI shows garbled characters | Ensure your terminal supports UTF-8 (iTerm2, Warp, or any modern terminal) |
 | Tests are skipped | Add `--live` to run real API tests |
 | `400 thought_signature` error | Upgrade to the latest version — this is fixed in the google provider |
+
+---
+
+## Credits & lineage
+
+Tau stands on the shoulders of the **PI** project. Its architecture, algorithms,
+package boundaries, and the `pi_*` import namespaces come from there:
+
+- **PI (`pi-mono`)** — the original TypeScript coding-agent monorepo by
+  **Mario Zechner** ([@badlogic](https://github.com/badlogic/pi-mono),
+  `@mariozechner/*`). Tau mirrors its design directly.
+- **PI for Python** — Tau is forked from the Python port at
+  [openxjarvis/pi-mono-python](https://github.com/openxjarvis/pi-mono-python).
+
+Package lineage (and why the import names are `pi_*`):
+
+| PI (TypeScript) | Tau (Python) | Layer |
+|---|---|---|
+| `@mariozechner/pi-ai` | `pi_ai` | Unified LLM streaming (Google, Anthropic, OpenAI, Bedrock, …) |
+| `@mariozechner/pi-agent-core` | `pi_agent` | Agent loop, tool execution, state |
+| `@mariozechner/pi-coding-agent` | `pi_coding_agent` | Coding agent + file tools |
+| `@mariozechner/pi-tui` | `pi_tui` | Terminal UI rendering engine |
+
+With gratitude to the PI authors and contributors.
