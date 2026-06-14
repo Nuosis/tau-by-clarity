@@ -830,3 +830,128 @@ selected from memory; harness owns state integrity, model owns local strategy;
 summaries are reversible references* — but **do not** copy its unconditional
 per-turn context rebuild: it was costed for a latency-free research assistant, and
 it fights both prompt caching and (for any voice/interactive use) latency.
+
+## 12. Gap: lossless reversible-reference compression vs. recall-as-safety-net (v1)
+
+> Status: **direction set (2026-06-13), not yet built.** Surfaced reviewing what
+> shipped against the intended model; resolved toward adopting Headroom for the
+> compression+cache half while memory keeps recall (see "Resolved direction"
+> below). No code change yet.
+
+### The intended model
+
+The middle of an over-floor working set should compress **losslessly**: each
+demoted block becomes a **one-line semantic token + tags**, carrying a
+**reference back to its full text**, and the full text is **retrievable on demand**
+when the model needs it. This is the §11 discipline taken literally —
+*"summaries are reversible references"* — i.e. the Headroom **CCR**
+(Compress · Cache · Retrieve) shape: compress to a handle, keep the original, let
+the agent pull it back.
+
+### What v1 actually decided and shipped
+
+v1 made a *different* bet (§7): **losslessness comes from recall, not from
+compression.** The breadcrumb is deliberately a **lossy relevance cue**, not a
+reversible reference:
+
+- `working_context.py::_breadcrumb` produces *the first ~24 words of the raw text,
+  truncated, + a `[compressed <eid>]` marker* — its own docstring: *"Light stub …
+  The store is the fact safety-net."*
+- §7: *"The losslessness comes from recall, not from clever compression … recall is
+  what makes eviction non-destructive … never ship the eviction half alone."*
+- The breadcrumb's job is to be a **retrieval cue that tells recall to fire**, not a
+  handle to the original. What survives a demotion is therefore **whatever the
+  curator already extracted as an atomic fact** — *not* the original block.
+
+### The divergence, concretely
+
+| Property | Intended (reversible reference) | v1 (recall-as-safety-net) |
+| --- | --- | --- |
+| Middle block becomes | semantic one-liner **+ tags** | first-24-words truncation + `[compressed eid]` |
+| What survives | the **original** (retrievable) | the **curated fact** (if the curator caught it) |
+| Reversibility | retrieve full text by reference | re-derive a fact by semantic recall query |
+| Failure mode | none if the handle resolves | silent loss of anything the curator didn't extract |
+
+### What already exists (so closing the gap is additive, not a rebuild)
+
+- **The cache substrate is present.** `ConversationTurn` is stored as the *"exact
+  ordered conversation turn (compaction substrate)"* with full `content` — the
+  original text is retained.
+- **A handle is present.** The breadcrumb already carries `eid`.
+
+### What is missing
+
+1. **Compress → semantic+tags.** The breadcrumb is raw truncation, not a semantic
+   summary with relevance tags.
+2. **Retrieve.** There is **no retrieve-by-eid / rehydration path**. `store.get()`
+   returns a curated `SemanticMemory` fact, never the `ConversationTurn`. Nothing
+   re-expands a breadcrumb to its original. (No `headroom_retrieve` equivalent —
+   and note §9/Tier-1's finding that the model under-calls a retrieve tool, which is
+   *why* v1 leaned on passive recall instead.)
+3. **`eid` ↔ `ConversationTurn.id` linkage** must be guaranteed for any retrieve to
+   resolve.
+
+### The options considered
+
+- **(a) Keep v1** — recall-as-safety-net. Cheapest; lossy by design; bets the
+  curator + §9 hybrid recall clear ~98% (the §9 NIAH claim). No reversibility.
+- **(b) Add reversible reference** — semantic+tags breadcrumb + retrieve-by-eid
+  rehydration over the existing `ConversationTurn` substrate. Realizes §11's
+  "reversible references"; must overcome the Tier-1 *model-won't-call-the-tool*
+  finding.
+- **(c) Both** — curated facts for *relevance*, reversible originals for *fidelity*.
+
+### Resolved direction: adopt Headroom for compression+CCR; memory = recall + retrieve-reliability backstop
+
+Option (c), with **Headroom** (`headroom-docs.vercel.app/docs/architecture`) as the
+concrete vehicle for the reversible-reference half — because it already is the §11
+"summaries are reversible references" shape, productised.
+
+**What Headroom is.** A client-layer compression proxy: `Entry → Analyze →
+Transform → Call`. Transform = three stages feeding one **CCR store** (SQLite,
+hash-indexed): **Cache Aligner** (prompt-cache stability — note this directly
+respects our §7 cache discipline), **Smart Crusher** (content-*type*-aware
+compression — JSON "statistical sampling + anomaly preservation," logs "pattern
+clustering," with an explicit retention split *"30% array start = schema, 15% end =
+recency, 55% by importance, error items always kept"*), and **Context Manager**
+(drops whole messages). When Smart Crusher crushes a payload or Context Manager
+drops a message, **the original is cached** under a handle; the model pulls it back
+with **`ccr_retrieve("abc123")`**. Compression is **lossy** (Kneedle representative
+subset) but **reversible** via the cached original — the same "lossless-effective"
+shape as (c), not lossless-encoding.
+
+**Why it cleanly replaces our active compression (not our memory).** Headroom has a
+literal *"What Headroom Does NOT Touch"* section: it does **not** query a store for
+relevant prior context, **not** inject, **not** do RAG/recall. So the two halves
+split with zero overlap:
+
+- **Active compression (`working_context._breadcrumb`) → Headroom replaces it**, and
+  upgrades it on both §12 gaps: content-aware compression (vs positional 24-word
+  truncation) + a real retrieve (CCR). It's also two-for-one — **Smart Crusher**
+  handles the *read-side / tool-output* bloat (a 1000-row `RunnerOutput` → 15 rows
+  with errors kept) that working-context never addressed, while **Context Manager**
+  is the transcript-middle drop-with-retrieve.
+- **Curator + recall → stays.** Headroom has no equivalent; memory remains the
+  relevance-injection layer.
+
+**The load-bearing refinement (this changes memory's job, not just compression's).**
+Headroom's retrieve is **model-driven** (`ccr_retrieve`) — which is *exactly* the
+Tier-1 failure (§9) that recall was built to hedge: the model under-calls retrieve,
+so a dropped payload that becomes the needle 30 turns later is lost. Therefore
+**recall does not become "just adds relevant context" — it also becomes the
+reliability backstop for Headroom's weak model-triggered retrieve**: passive,
+harness-injected rehydration that fires on a handle/cue-hit *without* the model
+asking. Net: Headroom owns *compress + cache*; memory owns *recall* **and**
+*retrieve-trigger reliability*.
+
+**Where it plugs in.** The `pi_ai` universal call hook (the same chokepoint now
+doing PII tokenization for all calls regardless of source) is the natural seam for
+Smart-Crusher compression + CCR — making compression universal the same way.
+
+**De-risk before building (same measure-before-ship gate as §9).** The one
+load-bearing unknown is the **retrieve trigger**, not the compression. Prototype
+harness-driven rehydration over a CCR-style cache (whether Headroom's lib or our own
+`ConversationTurn` substrate) and keep passive recall as the backstop, *before*
+trusting `ccr_retrieve`. Also verify Context Manager's transcript-middle behavior
+holds up against our positional working-context on the §9 dense-agent content, and
+that recompression doesn't churn the cache prefix beyond what Cache Aligner protects.
