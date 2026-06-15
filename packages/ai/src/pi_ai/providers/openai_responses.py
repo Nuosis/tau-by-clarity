@@ -174,7 +174,6 @@ def _build_params(
     params: dict[str, Any] = {
         "model": model.id,
         "input": messages,
-        "stream": True,
     }
 
     session_id = opts.get("session_id")

@@ -179,7 +179,6 @@ def _build_params(
     params: dict[str, Any] = {
         "model": deployment_name,
         "input": messages,
-        "stream": True,
     }
     if opts.get("session_id"):
         params["prompt_cache_key"] = opts["session_id"]

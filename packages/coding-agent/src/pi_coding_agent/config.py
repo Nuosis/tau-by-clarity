@@ -70,6 +70,31 @@ def get_agent_dir() -> str:
     return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent")
 
 
+def get_root_agent_dir() -> str:
+    """Get the fixed root agent config dir (~/.tau/agent).
+
+    Unlike get_agent_dir(), this intentionally ignores PI_CODING_AGENT_DIR /
+    TAU_CODING_AGENT_DIR. Use it only when seeding a project from the user's
+    root config. Runtime agent resources still use get_agent_dir().
+    """
+    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent")
+
+
+def get_root_config_dir() -> str:
+    """Get the fixed root config dir (~/.tau), ignoring agent-dir env vars."""
+    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME)
+
+
+def get_root_skills_dir() -> str:
+    """Get the fixed root skills dir (~/.tau/skills)."""
+    return os.path.join(get_root_config_dir(), "skills")
+
+
+def get_root_settings_path() -> str:
+    """Get the fixed root settings path (~/.tau/agent/settings.json)."""
+    return os.path.join(get_root_agent_dir(), "settings.json")
+
+
 def get_prompts_dir() -> str:
     """Get path to prompt templates directory."""
     return os.path.join(get_agent_dir(), "prompts")
@@ -162,17 +187,17 @@ def get_share_viewer_url(gist_id: str) -> str:
 
 def get_global_config_dir() -> str:
     """Get the global Pi config directory (~/.pi)."""
-    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME)
+    return get_root_config_dir()
 
 
 def get_global_agent_dir() -> str:
     """Get the global Pi agent directory (~/.pi/agent)."""
-    return get_agent_dir()
+    return get_root_agent_dir()
 
 
 def get_global_sessions_dir() -> str:
     """Get the sessions directory (~/.pi/agent/sessions)."""
-    return get_sessions_dir()
+    return os.path.join(get_root_agent_dir(), "sessions")
 
 
 def get_project_config_dir(cwd: str | None = None) -> str:
@@ -203,13 +228,28 @@ def migrate_legacy_global_config() -> None:
     import shutil
 
     home = os.path.expanduser("~")
-    new = get_agent_dir()
+    new = get_root_agent_dir()
     try:
         os.makedirs(new, mode=0o700, exist_ok=True)
     except OSError:
         return
-    # Seed from the newest legacy dir first (.pi-py), then the Node dir (.pi).
-    # Per-file "copy only if missing" means the newest source wins.
+    # Seed settings from the newest legacy root first. Older builds wrote
+    # settings in both ~/.pi-py/settings.json and ~/.pi-py/agent/settings.json;
+    # the root file is the newer Tau/Py config location when present.
+    settings_sources: list[str] = []
+    for legacy_name in LEGACY_CONFIG_DIR_NAMES:
+        settings_sources.append(os.path.join(home, legacy_name, "settings.json"))
+        settings_sources.append(os.path.join(home, legacy_name, "agent", "settings.json"))
+    settings_dst = os.path.join(new, "settings.json")
+    for src in settings_sources:
+        if os.path.exists(src) and not os.path.exists(settings_dst):
+            try:
+                shutil.copy2(src, settings_dst)
+            except OSError:
+                pass
+
+    # Seed auth/models from the newest legacy dir first (.pi-py), then the Node
+    # dir (.pi). Per-file "copy only if missing" means the newest source wins.
     for legacy_name in LEGACY_CONFIG_DIR_NAMES:
         legacy = os.path.join(home, legacy_name, "agent")
         if os.path.abspath(legacy) == os.path.abspath(new):
@@ -233,7 +273,7 @@ def _global_default_seed() -> dict:
 
     seed: dict = {}
     gdata: dict = {}
-    global_settings = get_settings_path()  # ~/.tau/agent/settings.json
+    global_settings = get_root_settings_path()  # ~/.tau/agent/settings.json
     if os.path.exists(global_settings):
         try:
             with open(global_settings, encoding="utf-8") as gf:
@@ -256,18 +296,36 @@ def _global_default_seed() -> dict:
 def ensure_project_settings(cwd: str | None = None) -> str | None:
     """Guarantee <cwd>/.tau/settings.json exists, seeded from the global
     defaults, on EVERY launch — so a normal `tau` run never leaves a
-    half-empty .pi-py (sessions dir but no visible config). Returns the path if
-    it was just created, else None. Never overwrites an existing file."""
+    half-empty .pi-py (sessions dir but no visible config). If the file exists,
+    fills any missing seeded defaults without overwriting project values.
+    Returns the path if it was created or updated, else None."""
     import json
 
     base = cwd or os.getcwd()
     config_dir = get_project_config_dir(base)
     settings_path = os.path.join(config_dir, "settings.json")
+    seed = _global_default_seed()
     if os.path.exists(settings_path):
-        return None
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                existing = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(existing, dict):
+            return None
+        changed = False
+        for key, value in seed.items():
+            if key not in existing and value is not None:
+                existing[key] = value
+                changed = True
+        if not changed:
+            return None
+        with open(settings_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(existing, indent=2) + "\n")
+        return settings_path
     os.makedirs(config_dir, exist_ok=True)
     with open(settings_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(_global_default_seed(), indent=2) + "\n")
+        f.write(json.dumps(seed, indent=2) + "\n")
     return settings_path
 
 
@@ -307,7 +365,7 @@ def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
     import shutil
 
     base = cwd or os.getcwd()
-    global_agent_dir = get_agent_dir()
+    global_agent_dir = get_root_agent_dir()
     project_agent_dir = get_project_agent_dir(base)
     if os.path.abspath(global_agent_dir) == os.path.abspath(project_agent_dir):
         return []
@@ -323,6 +381,46 @@ def ensure_project_agent_config(cwd: str | None = None) -> list[str]:
                 created.append(dst)
             except OSError:
                 pass
+    return created
+
+
+def ensure_project_skills(cwd: str | None = None) -> list[str]:
+    """Seed <cwd>/.tau/skills with root skills from ~/.tau/skills.
+
+    Idempotent and non-destructive: copies only missing top-level skill entries,
+    skips dotfiles, and never overwrites a project-local skill.
+    """
+    base = cwd or os.getcwd()
+    root_skills_dir = get_root_skills_dir()
+    project_skills_dir = os.path.join(get_project_config_dir(base), "skills")
+    if not os.path.isdir(root_skills_dir):
+        return []
+    if os.path.abspath(root_skills_dir) == os.path.abspath(project_skills_dir):
+        return []
+
+    created: list[str] = []
+    os.makedirs(project_skills_dir, exist_ok=True)
+    try:
+        names = sorted(os.listdir(root_skills_dir))
+    except OSError:
+        return []
+    for name in names:
+        if not name or name.startswith("."):
+            continue
+        src = os.path.join(root_skills_dir, name)
+        dst = os.path.join(project_skills_dir, name)
+        if os.path.exists(dst):
+            continue
+        try:
+            if os.path.isdir(src):
+                shutil.copytree(src, dst)
+            elif os.path.isfile(src):
+                shutil.copy2(src, dst)
+            else:
+                continue
+            created.append(dst)
+        except OSError:
+            pass
     return created
 
 
@@ -345,7 +443,7 @@ def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
                         "[project]",
                         'name = "tau-agent-runner"',
                         'version = "0.1.0"',
-                        'requires-python = ">=3.11,<3.14"',
+                        'requires-python = ">=3.11,<3.15"',
                         f'dependencies = ["tau-by-clarity=={VERSION}"]',
                         "",
                         "[tool.uv]",
@@ -518,6 +616,7 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
     if mem_db:
         created.append(mem_db)
 
+    created.extend(ensure_project_skills(base))
     created.extend(ensure_project_agent_config(base))
     created.extend(ensure_project_uv_runner(base))
     alias_path = ensure_zsh_pi_py_alias()
@@ -534,7 +633,38 @@ def scaffold_project(cwd: str | None = None) -> list[str]:
             f.write(f"# {name}\n\n<!-- Project context for this agent. -->\n")
         created.append(agents_path)
 
+    repo_map_status = _maybe_run_project_repo_map_init(base)
+    if repo_map_status:
+        created.append(repo_map_status)
+
     return created
+
+
+def _maybe_run_project_repo_map_init(cwd: str) -> str | None:
+    """Run project repo-map init when the project supplies that extension.
+
+    Tau core should not know Devin's mapping semantics. This hook only invokes
+    a project-local repo_map_init module when present.
+    """
+    import importlib.util
+
+    base = os.path.abspath(cwd)
+    candidates = [
+        os.path.join(base, ".tau", "extensions", "repo_map_workflow.py"),
+        os.path.join(base, ".tau", "subagents", "explorer", ".tau", "extensions", "repo_map_workflow.py"),
+    ]
+    workflow_path = next((path for path in candidates if os.path.exists(path)), None)
+    if not workflow_path:
+        return None
+    spec = importlib.util.spec_from_file_location("project_repo_map_workflow", workflow_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load project repo-map workflow: {workflow_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "repo_map_init_for_project"):
+        raise RuntimeError(f"Project repo-map workflow missing repo_map_init_for_project(): {workflow_path}")
+    output = module.repo_map_init_for_project(base)
+    return str(output) if output else None
 
 
 def find_project_root(cwd: str | None = None) -> str:

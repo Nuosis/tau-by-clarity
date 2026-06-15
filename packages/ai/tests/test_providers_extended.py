@@ -238,6 +238,22 @@ class TestAnthropicProviderAuth:
 # Provider stream functions return EventStream
 # ---------------------------------------------------------------------------
 
+class TestOpenAIResponsesParams:
+    def test_openai_responses_params_leave_stream_to_sdk_call(self):
+        from pi_ai.providers.openai_responses import _build_params
+
+        params = _build_params(_make_model(api="openai-responses"), _make_context(), {})
+
+        assert "stream" not in params
+
+    def test_azure_openai_responses_params_leave_stream_to_sdk_call(self):
+        from pi_ai.providers.azure_openai_responses import _build_params
+
+        params = _build_params(_make_model(api="azure-openai-responses"), _make_context(), {}, "gpt-deployment")
+
+        assert "stream" not in params
+
+
 class TestProviderStreamReturn:
     """Verify all provider stream functions return EventStreams immediately without blocking."""
 
