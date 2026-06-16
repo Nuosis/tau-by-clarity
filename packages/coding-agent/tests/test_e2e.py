@@ -1544,13 +1544,26 @@ async def test_tui_reload_rerenders_resources_and_refreshes_extension_commands(m
 
 
 @pytest.mark.asyncio
-async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypatch):
+@pytest.mark.parametrize(
+    ("active_compression_enabled", "expected_context_label"),
+    [(True, "ac-ctx"), (False, "ctx")],
+)
+async def test_tui_extension_header_footer_and_working_surfaces_render(
+    monkeypatch,
+    active_compression_enabled,
+    expected_context_label,
+):
     import re
     from types import SimpleNamespace
 
     import pi_tui
     import pi_coding_agent.modes.interactive.tui as tui_module
     from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    monkeypatch.setattr(
+        "pi_coding_agent.active_compression.is_enabled",
+        lambda: active_compression_enabled,
+    )
 
     class MockTerminal:
         rows = 24
@@ -1657,9 +1670,10 @@ async def test_tui_extension_header_footer_and_working_surfaces_render(monkeypat
 
     assert "Extension header" in clean
     assert "Extension footer" in clean
-    assert "ctx: 12% (1k/128k)" in clean
+    expected_context = f"{expected_context_label}: 12% (1k/128k)"
+    assert expected_context in clean
     assert f"v{tui_module.VERSION}" in clean
-    assert clean.index("ctx: 12% (1k/128k)") < clean.index(f"v{tui_module.VERSION}")
+    assert clean.index(expected_context) < clean.index(f"v{tui_module.VERSION}")
     assert "working:" in clean
     assert "Indexing project (dots)" in clean
 

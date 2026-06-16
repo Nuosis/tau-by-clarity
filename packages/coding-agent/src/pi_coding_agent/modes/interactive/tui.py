@@ -981,6 +981,14 @@ async def _run_pi_tui(
             return f"{n // 1000}k"
         return str(n)
 
+    def _context_label() -> str:
+        try:
+            from pi_coding_agent.active_compression import is_enabled
+
+            return "ac-ctx" if is_enabled() else "ctx"
+        except Exception:
+            return "ctx"
+
     def update_footer() -> None:
         """Refresh footer: model | thinking: off | ctx: 12% | tokens: 8k/64k"""
         model = session.model
@@ -992,7 +1000,7 @@ async def _run_pi_tui(
             pct = ctx["percent"]
             tkn = _fmt_tokens(ctx.get("tokens", 0))
             cw = _fmt_tokens(ctx.get("contextWindow", 0))
-            parts.append(f"ctx: {pct:.0f}% ({tkn}/{cw})")
+            parts.append(f"{_context_label()}: {pct:.0f}% ({tkn}/{cw})")
         parts.append(f"v{VERSION}")
         for key, text in sorted(extension_statuses.items()):
             parts.append(f"{key}: {text}")
