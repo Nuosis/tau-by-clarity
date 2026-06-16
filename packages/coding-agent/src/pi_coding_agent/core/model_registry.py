@@ -662,6 +662,9 @@ class ModelRegistry:
 
     def get_model(self, provider: str, model_id: str) -> Model:
         """Get a model by provider and ID."""
+        oauth_model = self._oauth_backed_model(provider, model_id)
+        if oauth_model is not None:
+            return oauth_model
         config_loaded = self._find_config_loaded_model(provider, model_id)
         if config_loaded is not None:
             return config_loaded
@@ -681,6 +684,9 @@ class ModelRegistry:
 
     def find(self, provider: str, model_id: str) -> Model | None:
         """Find a model or return None."""
+        oauth_model = self._oauth_backed_model(provider, model_id)
+        if oauth_model is not None:
+            return oauth_model
         config_loaded = self._find_config_loaded_model(provider, model_id)
         if config_loaded is not None:
             return config_loaded
@@ -700,6 +706,17 @@ class ModelRegistry:
         if synthetic is not None:
             return synthetic
         return None
+
+    def _oauth_backed_model(self, provider: str, model_id: str) -> Model | None:
+        if provider != "openai" or not self._auth_storage:
+            return None
+        get_token = getattr(self._auth_storage, "get_oauth_token", None)
+        if not callable(get_token) or not get_token("openai"):
+            return None
+        model = get_model("openai-codex", model_id)
+        if model is None:
+            return None
+        return Model(**{**model.__dict__, "provider": "openai"})
 
     def _find_config_loaded_model(self, provider: str, model_id: str) -> Model | None:
         config = self._config_providers.get(provider) or self._registered_providers.get(provider)

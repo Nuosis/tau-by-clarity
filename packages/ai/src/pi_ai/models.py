@@ -4,7 +4,7 @@ Model registry and utilities — mirrors packages/ai/src/models.ts
 from __future__ import annotations
 
 from .models_generated import MODELS
-from .types import Model, Usage
+from .types import Model, Usage, UsageCost
 
 
 def get_model(provider: str, model_id: str) -> Model | None:
@@ -34,12 +34,19 @@ def get_models(provider: str | None = None) -> list[Model]:
 
 def calculate_cost(model: Model, usage: Usage) -> float:
     """Calculate total cost in USD from usage and model pricing. Also mutates usage.cost."""
-    cost = usage.input / 1_000_000 * model.cost.input
-    cost += usage.output / 1_000_000 * model.cost.output
-    cost += usage.cache_read / 1_000_000 * model.cost.cache_read
-    cost += usage.cache_write / 1_000_000 * model.cost.cache_write
-    usage.cost = cost
-    return cost
+    input_cost = usage.input / 1_000_000 * model.cost.input
+    output_cost = usage.output / 1_000_000 * model.cost.output
+    cache_read_cost = usage.cache_read / 1_000_000 * model.cost.cache_read
+    cache_write_cost = usage.cache_write / 1_000_000 * model.cost.cache_write
+    total = input_cost + output_cost + cache_read_cost + cache_write_cost
+    usage.cost = UsageCost(
+        input=input_cost,
+        output=output_cost,
+        cache_read=cache_read_cost,
+        cache_write=cache_write_cost,
+        total=total,
+    )
+    return total
 
 
 def supports_xhigh(model: Model) -> bool:

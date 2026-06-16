@@ -94,8 +94,11 @@ async def run_print_mode(
         except Exception:
             pass
 
+    printed_assistant_text = False
+
     # Subscribe to events
     def on_event(event: AgentEvent) -> None:
+        nonlocal printed_assistant_text
         if mode == "json":
             try:
                 obj = _event_to_dict(event)
@@ -103,6 +106,11 @@ async def run_print_mode(
             except Exception:
                 pass
         else:
+            if event.type == "message_end" and isinstance(event.message, AssistantMessage):
+                printed_assistant_text = any(
+                    isinstance(block, TextContent) and bool(block.text)
+                    for block in event.message.content
+                )
             _handle_print_event(event, show_thinking=show_thinking)
 
     unsub = session.subscribe(on_event)
@@ -120,7 +128,7 @@ async def run_print_mode(
             await session.prompt(msg)
 
         # In text mode, output final assistant response
-        if mode == "text":
+        if mode == "text" and not printed_assistant_text:
             state = session.state
             msgs = state.messages if hasattr(state, "messages") else []
             last = msgs[-1] if msgs else None

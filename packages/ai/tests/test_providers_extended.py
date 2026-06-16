@@ -254,6 +254,18 @@ class TestOpenAIResponsesParams:
 
         assert "stream" not in params
 
+    def test_openai_codex_responses_body_omits_standard_max_output_tokens(self):
+        from pi_ai.providers.openai_codex_responses import _build_request_body
+
+        body = _build_request_body(
+            _make_model(id_="gpt-5.5", provider="openai", api="openai-codex-responses"),
+            _make_context(),
+            {"max_tokens": 8192},
+            [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+        )
+
+        assert "max_output_tokens" not in body
+
     async def _fake_response_events(self):
         yield {"type": "response.output_item.added", "item": {"type": "message", "id": "msg_1"}}
         yield {"type": "response.output_text.delta", "delta": "Hello"}
@@ -298,8 +310,8 @@ class TestOpenAIResponsesParams:
         assert events[-1]["type"] == "done"
         result = await stream.result()
         assert result.stop_reason == "stop"
-        assert result.content[0]["type"] == "text"
-        assert result.content[0]["text"] == "Hello"
+        assert result.content[0].type == "text"
+        assert result.content[0].text == "Hello"
         assert result.usage.input == 5
         assert result.usage.cache_read == 2
 
@@ -323,7 +335,62 @@ class TestOpenAIResponsesParams:
         assert events[-1]["type"] == "done"
         result = await stream.result()
         assert result.stop_reason == "stop"
-        assert result.content[0]["text"] == "Hello"
+        assert result.content[0].text == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_openai_codex_responses_streams_typed_output(self):
+        from pi_ai.providers.openai_codex_responses import stream_openai_codex_responses
+
+        lines = [
+            'data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1"}}',
+            'data: {"type":"response.output_text.delta","delta":"Hello"}',
+            'data: {"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"Hello"}]}}',
+            'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2}}}}',
+            "data: [DONE]",
+        ]
+
+        class FakeResponse:
+            status_code = 200
+
+            async def aread(self):
+                return b""
+
+            async def aiter_lines(self):
+                for line in lines:
+                    yield line
+
+        class FakeStreamContext:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, *_args, **_kwargs):
+                return FakeStreamContext()
+
+        with patch("httpx.AsyncClient", return_value=FakeClient()):
+            stream = stream_openai_codex_responses(
+                _make_model(id_="gpt-5.5", provider="openai", api="openai-codex-responses"),
+                _make_context(),
+                {"api_key": "oauth-token"},
+            )
+            events = [event async for event in stream]
+
+        assert events[-1]["type"] == "done"
+        result = await stream.result()
+        assert result.stop_reason == "stop"
+        assert result.content[0].type == "text"
+        assert result.content[0].text == "Hello"
+        assert result.usage.input == 5
+        assert result.usage.cache_read == 2
 
 
 class TestProviderStreamReturn:

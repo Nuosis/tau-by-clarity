@@ -22,6 +22,7 @@ from pi_ai.providers.openai_responses_shared import (
 )
 from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.providers.simple_options import build_base_options, clamp_reasoning
+from pi_ai.types import AssistantMessage, Usage
 from pi_ai.utils.event_stream import EventStream
 
 if TYPE_CHECKING:
@@ -57,20 +58,16 @@ def stream_openai_codex_responses(
 
         from pi_ai.env_api_keys import get_env_api_key
 
-        output: dict[str, Any] = {
-            "role": "assistant",
-            "content": [],
-            "api": "openai-codex-responses",
-            "provider": model.provider,
-            "model": model.id,
-            "usage": {
-                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-                "total_tokens": 0,
-                "cost": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0},
-            },
-            "stop_reason": "stop",
-            "timestamp": int(time.time() * 1000),
-        }
+        output = AssistantMessage(
+            role="assistant",
+            content=[],
+            api="openai-codex-responses",
+            provider=model.provider,
+            model=model.id,
+            usage=Usage(),
+            stop_reason="stop",
+            timestamp=int(time.time() * 1000),
+        )
 
         try:
             api_key = opts.get("api_key") or get_env_api_key(model.provider) or ""
@@ -108,18 +105,18 @@ def stream_openai_codex_responses(
                     sse_events = _parse_sse_stream(response)
                     await process_responses_stream(sse_events, output, ev_stream, model)
 
-            if output["stop_reason"] in ("aborted", "error"):
+            if output.stop_reason in ("aborted", "error"):
                 raise RuntimeError("An unknown error occurred")
 
-            ev_stream.push({"type": "done", "reason": output["stop_reason"], "message": output})
+            ev_stream.push({"type": "done", "reason": output.stop_reason, "message": output})
             ev_stream.end(output)
 
         except Exception as exc:
-            for b in output["content"]:
+            for b in output.content:
                 if isinstance(b, dict):
                     b.pop("index", None)
-            output["stop_reason"] = "error"
-            output["error_message"] = str(exc)
+            output.stop_reason = "error"
+            output.error_message = str(exc)
             ev_stream.push({"type": "error", "reason": "error", "error": output})
             ev_stream.end(output)
 
@@ -162,8 +159,6 @@ def _build_request_body(
         body["instructions"] = context.system_prompt
     if opts.get("session_id"):
         body["prompt_cache_key"] = opts["session_id"]
-    if opts.get("max_tokens"):
-        body["max_output_tokens"] = opts["max_tokens"]
     if opts.get("temperature") is not None:
         body["temperature"] = opts["temperature"]
 

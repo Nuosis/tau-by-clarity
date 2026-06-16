@@ -241,9 +241,11 @@ async def process_responses_stream(
 ) -> None:
     """Process an OpenAI Responses API stream into our event stream format."""
     from pi_ai.models import calculate_cost
+    from pi_ai.types import TextContent, ThinkingContent, ToolCall
 
     current_item: dict[str, Any] | None = None
     current_block: Any | None = None
+    current_partial_json = ""
     blocks = output.content
 
     def block_index() -> int:
@@ -258,13 +260,13 @@ async def process_responses_stream(
 
             if item_type == "reasoning":
                 current_item = item if isinstance(item, dict) else item.__dict__
-                current_block = {"type": "thinking", "thinking": ""}
+                current_block = ThinkingContent(thinking="")
                 output.content.append(current_block)
                 stream.push({"type": "thinking_start", "content_index": block_index(), "partial": output})
 
             elif item_type == "message":
                 current_item = item if isinstance(item, dict) else item.__dict__
-                current_block = {"type": "text", "text": ""}
+                current_block = TextContent(text="")
                 output.content.append(current_block)
                 stream.push({"type": "text_start", "content_index": block_index(), "partial": output})
 
@@ -273,87 +275,92 @@ async def process_responses_stream(
                 call_id = item_dict.get("call_id", "")
                 item_id = item_dict.get("id", "")
                 current_item = item_dict
-                current_block = {
-                    "type": "toolCall",
-                    "id": f"{call_id}|{item_id}",
-                    "name": item_dict.get("name", ""),
-                    "arguments": {},
-                    "partial_json": item_dict.get("arguments", ""),
-                }
+                current_partial_json = item_dict.get("arguments", "")
+                current_block = ToolCall(
+                    id=f"{call_id}|{item_id}",
+                    name=item_dict.get("name", ""),
+                    arguments={},
+                    arguments_raw=current_partial_json,
+                )
                 output.content.append(current_block)
                 stream.push({"type": "toolcall_start", "content_index": block_index(), "partial": output})
 
         elif event_type == "response.reasoning_summary_text.delta":
-            if current_item and current_item.get("type") == "reasoning" and isinstance(current_block, dict) and current_block.get("type") == "thinking":
+            if current_item and current_item.get("type") == "reasoning" and getattr(current_block, "type", None) == "thinking":
                 delta = event.get("delta") if isinstance(event, dict) else getattr(event, "delta", "")
-                current_block["thinking"] = current_block.get("thinking", "") + delta
+                current_block.thinking = (current_block.thinking or "") + delta
                 stream.push({"type": "thinking_delta", "content_index": block_index(), "delta": delta, "partial": output})
 
         elif event_type == "response.reasoning_summary_part.done":
-            if current_item and current_item.get("type") == "reasoning" and isinstance(current_block, dict) and current_block.get("type") == "thinking":
-                current_block["thinking"] = current_block.get("thinking", "") + "\n\n"
+            if current_item and current_item.get("type") == "reasoning" and getattr(current_block, "type", None) == "thinking":
+                current_block.thinking = (current_block.thinking or "") + "\n\n"
                 stream.push({"type": "thinking_delta", "content_index": block_index(), "delta": "\n\n", "partial": output})
 
         elif event_type == "response.output_text.delta":
-            if current_item and current_item.get("type") == "message" and isinstance(current_block, dict) and current_block.get("type") == "text":
+            if current_item and current_item.get("type") == "message" and getattr(current_block, "type", None) == "text":
                 delta = event.get("delta") if isinstance(event, dict) else getattr(event, "delta", "")
-                current_block["text"] = current_block.get("text", "") + delta
+                current_block.text = (current_block.text or "") + delta
                 stream.push({"type": "text_delta", "content_index": block_index(), "delta": delta, "partial": output})
 
         elif event_type == "response.refusal.delta":
-            if current_item and current_item.get("type") == "message" and isinstance(current_block, dict) and current_block.get("type") == "text":
+            if current_item and current_item.get("type") == "message" and getattr(current_block, "type", None) == "text":
                 delta = event.get("delta") if isinstance(event, dict) else getattr(event, "delta", "")
-                current_block["text"] = current_block.get("text", "") + delta
+                current_block.text = (current_block.text or "") + delta
                 stream.push({"type": "text_delta", "content_index": block_index(), "delta": delta, "partial": output})
 
         elif event_type == "response.function_call_arguments.delta":
-            if current_item and current_item.get("type") == "function_call" and isinstance(current_block, dict) and current_block.get("type") == "toolCall":
+            if current_item and current_item.get("type") == "function_call" and getattr(current_block, "type", None) == "toolCall":
                 delta = event.get("delta") if isinstance(event, dict) else getattr(event, "delta", "")
-                current_block["partial_json"] = current_block.get("partial_json", "") + delta
-                current_block["arguments"] = parse_streaming_json(current_block["partial_json"])
+                current_partial_json += delta
+                current_block.arguments_raw = current_partial_json
+                current_block.arguments = parse_streaming_json(current_partial_json)
                 stream.push({"type": "toolcall_delta", "content_index": block_index(), "delta": delta, "partial": output})
 
         elif event_type == "response.function_call_arguments.done":
-            if isinstance(current_block, dict) and current_block.get("type") == "toolCall":
+            if getattr(current_block, "type", None) == "toolCall":
                 args_str = event.get("arguments") if isinstance(event, dict) else getattr(event, "arguments", "")
-                current_block["partial_json"] = args_str or ""
-                current_block["arguments"] = parse_streaming_json(current_block["partial_json"])
+                current_partial_json = args_str or ""
+                current_block.arguments_raw = current_partial_json
+                current_block.arguments = parse_streaming_json(current_partial_json)
 
         elif event_type == "response.output_item.done":
             item = event.get("item") if isinstance(event, dict) else getattr(event, "item", {})
             item_dict = item if isinstance(item, dict) else (item.__dict__ if item else {})
             item_type = item_dict.get("type")
 
-            if item_type == "reasoning" and isinstance(current_block, dict) and current_block.get("type") == "thinking":
+            if item_type == "reasoning" and getattr(current_block, "type", None) == "thinking":
                 summary = item_dict.get("summary") or []
                 thinking_text = "\n\n".join(s.get("text", "") if isinstance(s, dict) else getattr(s, "text", "") for s in summary)
-                current_block["thinking"] = thinking_text
-                current_block["thinking_signature"] = json.dumps(item_dict)
+                current_block.thinking = thinking_text
+                current_block.thinking_signature = json.dumps(item_dict)
                 stream.push({"type": "thinking_end", "content_index": block_index(), "content": thinking_text, "partial": output})
                 current_block = None
 
-            elif item_type == "message" and isinstance(current_block, dict) and current_block.get("type") == "text":
+            elif item_type == "message" and getattr(current_block, "type", None) == "text":
                 item_content = item_dict.get("content") or []
                 text = "".join(
                     (c.get("text", "") if isinstance(c, dict) else getattr(c, "text", ""))
                     + (c.get("refusal", "") if isinstance(c, dict) else getattr(c, "refusal", ""))
                     for c in item_content
                 )
-                current_block["text"] = text
-                current_block["text_signature"] = item_dict.get("id", "")
+                current_block.text = text
+                current_block.text_signature = item_dict.get("id", "")
                 stream.push({"type": "text_end", "content_index": block_index(), "content": text, "partial": output})
                 current_block = None
 
             elif item_type == "function_call":
-                partial_json = current_block.get("partial_json", "") if isinstance(current_block, dict) else ""
-                args_raw = partial_json or item_dict.get("arguments", "{}")
+                args_raw = current_partial_json or item_dict.get("arguments", "{}")
                 args = parse_streaming_json(args_raw)
-                tool_call = {
-                    "type": "toolCall",
-                    "id": f"{item_dict.get('call_id', '')}|{item_dict.get('id', '')}",
-                    "name": item_dict.get("name", ""),
-                    "arguments": args,
-                }
+                if getattr(current_block, "type", None) == "toolCall":
+                    current_block.arguments_raw = args_raw
+                    current_block.arguments = args
+                tool_call = ToolCall(
+                    id=f"{item_dict.get('call_id', '')}|{item_dict.get('id', '')}",
+                    name=item_dict.get("name", ""),
+                    arguments=args,
+                    arguments_raw=args_raw,
+                )
+                current_partial_json = ""
                 current_block = None
                 stream.push({"type": "toolcall_end", "content_index": block_index(), "tool_call": tool_call, "partial": output})
 

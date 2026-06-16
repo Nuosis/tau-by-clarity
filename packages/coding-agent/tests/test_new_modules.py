@@ -403,6 +403,44 @@ class TestPrintMode:
 
         _handle_print_event(FakeEvent())  # Should not raise
 
+    @pytest.mark.asyncio
+    async def test_run_print_mode_does_not_replay_streamed_final_text(self, capsys):
+        from types import SimpleNamespace
+
+        from pi_ai.types import AssistantMessage, TextContent, Usage
+        from pi_coding_agent.modes.print_mode import PrintModeOptions, run_print_mode
+
+        message = AssistantMessage(
+            content=[TextContent(text="only once")],
+            api="openai-codex-responses",
+            provider="openai",
+            model="gpt-5.5",
+            usage=Usage(),
+            timestamp=0,
+        )
+
+        class FakeSession:
+            def __init__(self):
+                self._listeners = []
+                self.state = SimpleNamespace(messages=[])
+
+            def subscribe(self, listener):
+                self._listeners.append(listener)
+                return lambda: self._listeners.remove(listener)
+
+            async def prompt(self, text, images=None):
+                self.state.messages.append(message)
+                for listener in list(self._listeners):
+                    listener(SimpleNamespace(type="message_end", message=message))
+
+        code = await run_print_mode(
+            FakeSession(),
+            options=PrintModeOptions(mode="text", initial_message="hello"),
+        )
+
+        assert code == 0
+        assert capsys.readouterr().out.strip().splitlines() == ["only once"]
+
 
 # ── core/session_manager tree/branch tests ────────────────────────────────────
 
@@ -527,6 +565,38 @@ class TestModelRegistryExtended:
         mr = ModelRegistry(auth_storage=auth)
 
         assert mr.get_api_key("openai") == "oauth-token"
+
+    def test_openai_subscription_token_uses_codex_responses_transport(self):
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        auth = AuthStorage.in_memory({})
+        auth.set_oauth_token("openai", {"access_token": "oauth-token", "expires_at": 9999999999})
+
+        mr = ModelRegistry(auth_storage=auth)
+        model = mr.find("openai", "gpt-5.5")
+
+        assert model is not None
+        assert model.provider == "openai"
+        assert model.id == "gpt-5.5"
+        assert model.api == "openai-codex-responses"
+        assert model.base_url == "https://chatgpt.com/backend-api"
+        assert mr.get_api_key("openai") == "oauth-token"
+
+    def test_openai_api_key_uses_standard_responses_transport(self):
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        auth = AuthStorage.in_memory({})
+        auth.set_api_key("openai", "stored-api-key")
+
+        mr = ModelRegistry(auth_storage=auth)
+        model = mr.find("openai", "gpt-5.5")
+
+        assert model is not None
+        assert model.provider == "openai"
+        assert model.id == "gpt-5.5"
+        assert model.api == "openai-responses"
 
     def test_register_model(self):
         from pi_coding_agent.core.model_registry import ModelRegistry
