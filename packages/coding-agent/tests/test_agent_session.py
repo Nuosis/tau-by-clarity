@@ -236,6 +236,10 @@ class TestAutoRetryLogic:
         msg = self._make_error_msg("500 internal server error")
         assert agent_session._is_retryable_error(msg) is True
 
+    def test_is_retryable_error_codex_opaque_backend_error(self, agent_session):
+        msg = self._make_error_msg("Error Code None: None")
+        assert agent_session._is_retryable_error(msg) is True
+
     def test_is_not_retryable_stop(self, agent_session):
         msg = AssistantMessage(
             role="assistant", content=[TextContent(type="text", text="ok")],

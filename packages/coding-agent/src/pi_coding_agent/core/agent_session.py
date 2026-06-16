@@ -73,7 +73,7 @@ _RETRY_PATTERN = re.compile(
     r"overloaded|rate.?limit|too many requests|429|500|502|503|504|"
     r"service.?unavailable|server error|internal error|connection.?error|"
     r"connection.?refused|other side closed|fetch failed|upstream.?connect|"
-    r"reset before headers|terminated|retry delay",
+    r"reset before headers|terminated|retry delay|error code none",
     re.IGNORECASE,
 )
 

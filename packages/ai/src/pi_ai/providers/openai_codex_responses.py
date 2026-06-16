@@ -105,8 +105,7 @@ def stream_openai_codex_responses(
                     sse_events = _parse_sse_stream(response)
                     await process_responses_stream(sse_events, output, ev_stream, model)
 
-            if output.stop_reason in ("aborted", "error"):
-                raise RuntimeError("An unknown error occurred")
+            _raise_for_stream_failure(output)
 
             ev_stream.push({"type": "done", "reason": output.stop_reason, "message": output})
             ev_stream.end(output)
@@ -116,12 +115,17 @@ def stream_openai_codex_responses(
                 if isinstance(b, dict):
                     b.pop("index", None)
             output.stop_reason = "error"
-            output.error_message = str(exc)
+            output.error_message = output.error_message or str(exc)
             ev_stream.push({"type": "error", "reason": "error", "error": output})
             ev_stream.end(output)
 
     asyncio.ensure_future(_run())
     return ev_stream
+
+
+def _raise_for_stream_failure(output: AssistantMessage) -> None:
+    if output.stop_reason in ("aborted", "error"):
+        raise RuntimeError(output.error_message or "An unknown error occurred")
 
 
 def stream_simple_openai_codex_responses(
