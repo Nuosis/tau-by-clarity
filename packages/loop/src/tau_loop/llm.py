@@ -42,9 +42,6 @@ def _settings(agent_dir: str) -> dict:
 
 
 def _resolve_key(provider: str) -> str:
-    env = os.environ.get(f"{provider.upper()}_API_KEY") or os.environ.get("TAU_LOOP_API_KEY")
-    if env:
-        return env.strip()
     try:
         from pi_coding_agent.core.auth_storage import AuthStorage
 
@@ -53,6 +50,9 @@ def _resolve_key(provider: str) -> str:
             return key.strip()
     except Exception:
         pass
+    env = os.environ.get(f"{provider.upper()}_API_KEY") or os.environ.get("TAU_LOOP_API_KEY")
+    if env:
+        return env.strip()
     raise RuntimeError(
         f"No API key for provider {provider!r}: set {provider.upper()}_API_KEY "
         f"or log in so AuthStorage can resolve it."

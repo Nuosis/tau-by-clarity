@@ -515,6 +515,19 @@ class TestModelRegistryExtended:
         key = mr.get_api_key("openai")
         assert key == "sk-test-from-env"
 
+    def test_get_api_key_prefers_subscription_token_over_api_key(self, monkeypatch):
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        monkeypatch.setenv("OPENAI_API_KEY", "env-api-key")
+        auth = AuthStorage.in_memory({})
+        auth.set_api_key("openai", "stored-api-key")
+        auth.set_oauth_token("openai", {"access_token": "oauth-token", "expires_at": 9999999999})
+
+        mr = ModelRegistry(auth_storage=auth)
+
+        assert mr.get_api_key("openai") == "oauth-token"
+
     def test_register_model(self):
         from pi_coding_agent.core.model_registry import ModelRegistry
         from pi_ai import get_model

@@ -513,8 +513,11 @@ class ModelRegistry:
         if key_config:
             return _resolve_config_value(key_config)
 
-        # Auth storage
+        # Auth storage. Use the canonical resolver so subscription/OAuth tokens
+        # take precedence over stored or environment API keys.
         if self._auth_storage:
+            if hasattr(self._auth_storage, "resolve_api_key"):
+                return self._auth_storage.resolve_api_key(provider)
             if hasattr(self._auth_storage, "get_api_key"):
                 return self._auth_storage.get_api_key(provider)
             cred = self._auth_storage.get(provider) if hasattr(self._auth_storage, "get") else None

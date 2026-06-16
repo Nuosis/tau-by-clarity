@@ -362,6 +362,14 @@ def test_auth_storage_oauth_token_wins_over_later_api_key():
     assert auth.resolve_api_key("openai") == "oauth-token"
 
 
+def test_auth_storage_oauth_token_wins_over_env_api_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-api-key")
+    auth = AuthStorage.in_memory({})
+    auth.set_oauth_token("openai", {"access_token": "oauth-token", "expires_at": 9999999999})
+
+    assert auth.resolve_api_key("openai") == "oauth-token"
+
+
 def test_auth_storage_delete_key():
     with tempfile.TemporaryDirectory() as tmpdir:
         auth = AuthStorage()
