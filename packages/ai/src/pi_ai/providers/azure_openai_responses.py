@@ -9,6 +9,7 @@ Mirrors azure-openai-responses.ts
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,7 @@ from pi_ai.providers.openai_responses_shared import (
 )
 from pi_ai.providers.payload_utils import apply_on_payload
 from pi_ai.providers.simple_options import build_base_options, clamp_reasoning
+from pi_ai.types import AssistantMessage, Usage
 from pi_ai.utils.event_stream import EventStream
 
 if TYPE_CHECKING:
@@ -47,20 +49,16 @@ def stream_azure_openai_responses(
 
         deployment_name = _resolve_deployment_name(model, opts)
 
-        output: dict[str, Any] = {
-            "role": "assistant",
-            "content": [],
-            "api": "azure-openai-responses",
-            "provider": model.provider,
-            "model": model.id,
-            "usage": {
-                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
-                "total_tokens": 0,
-                "cost": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0},
-            },
-            "stop_reason": "stop",
-            "timestamp": int(time.time() * 1000),
-        }
+        output = AssistantMessage(
+            role="assistant",
+            content=[],
+            api="azure-openai-responses",
+            provider=model.provider,
+            model=model.id,
+            usage=Usage(),
+            stop_reason="stop",
+            timestamp=int(time.time() * 1000),
+        )
 
         try:
             from pi_ai.env_api_keys import get_env_api_key
@@ -74,22 +72,24 @@ def stream_azure_openai_responses(
             params = await apply_on_payload(params, model, opts.get("on_payload"))
 
             openai_stream = client.responses.create(**params, stream=True)
+            if inspect.isawaitable(openai_stream):
+                openai_stream = await openai_stream
             ev_stream.push({"type": "start", "partial": output})
 
             await process_responses_stream(openai_stream, output, ev_stream, model)
 
-            if output["stop_reason"] in ("aborted", "error"):
+            if output.stop_reason in ("aborted", "error"):
                 raise RuntimeError("An unknown error occurred")
 
-            ev_stream.push({"type": "done", "reason": output["stop_reason"], "message": output})
+            ev_stream.push({"type": "done", "reason": output.stop_reason, "message": output})
             ev_stream.end(output)
 
         except Exception as exc:
-            for b in output["content"]:
+            for b in output.content:
                 if isinstance(b, dict):
                     b.pop("index", None)
-            output["stop_reason"] = "error"
-            output["error_message"] = str(exc)
+            output.stop_reason = "error"
+            output.error_message = str(exc)
             ev_stream.push({"type": "error", "reason": "error", "error": output})
             ev_stream.end(output)
 

@@ -7,6 +7,7 @@ and stream function scaffolding for bedrock, vertex, azure, responses, codex.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -252,6 +253,77 @@ class TestOpenAIResponsesParams:
         params = _build_params(_make_model(api="azure-openai-responses"), _make_context(), {}, "gpt-deployment")
 
         assert "stream" not in params
+
+    async def _fake_response_events(self):
+        yield {"type": "response.output_item.added", "item": {"type": "message", "id": "msg_1"}}
+        yield {"type": "response.output_text.delta", "delta": "Hello"}
+        yield {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "msg_1",
+                "content": [{"type": "output_text", "text": "Hello"}],
+            },
+        }
+        yield {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 2},
+                },
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_openai_responses_awaits_async_create_and_streams_typed_output(self):
+        from pi_ai.providers.openai_responses import stream_openai_responses
+
+        responses = SimpleNamespace()
+        responses.create = AsyncMock(side_effect=lambda **_: self._fake_response_events())
+        client = SimpleNamespace(responses=responses)
+
+        with patch("openai.AsyncOpenAI", return_value=client):
+            stream = stream_openai_responses(
+                _make_model(id_="gpt-5.5", provider="openai", api="openai-responses"),
+                _make_context(),
+                {"api_key": "test-key"},
+            )
+            events = [event async for event in stream]
+
+        assert responses.create.await_count == 1
+        assert events[-1]["type"] == "done"
+        result = await stream.result()
+        assert result.stop_reason == "stop"
+        assert result.content[0]["type"] == "text"
+        assert result.content[0]["text"] == "Hello"
+        assert result.usage.input == 5
+        assert result.usage.cache_read == 2
+
+    @pytest.mark.asyncio
+    async def test_azure_openai_responses_handles_awaitable_create_and_typed_output(self):
+        from pi_ai.providers.azure_openai_responses import stream_azure_openai_responses
+
+        responses = SimpleNamespace()
+        responses.create = AsyncMock(side_effect=lambda **_: self._fake_response_events())
+        client = SimpleNamespace(responses=responses)
+
+        with patch("pi_ai.providers.azure_openai_responses._create_client", return_value=client):
+            stream = stream_azure_openai_responses(
+                _make_model(id_="gpt-5.5", provider="azure-openai-responses", api="azure-openai-responses"),
+                _make_context(),
+                {"api_key": "test-key"},
+            )
+            events = [event async for event in stream]
+
+        assert responses.create.await_count == 1
+        assert events[-1]["type"] == "done"
+        result = await stream.result()
+        assert result.stop_reason == "stop"
+        assert result.content[0]["text"] == "Hello"
 
 
 class TestProviderStreamReturn:
