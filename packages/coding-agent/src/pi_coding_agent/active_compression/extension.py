@@ -66,11 +66,11 @@ def extension_factory(pi: Any) -> None:
         name="ccr_retrieve",
         label="Retrieve from compressed payload",
         description=(
-            "Search a CCR-compressed payload by its [CCR:<handle>] handle. `query` "
-            "is required: pass the keywords/identifier you need (e.g. the node, "
-            "file, or term you're looking for) to get back only the relevant items "
-            "— a BM25 search within the cached data. Issue multiple scoped queries "
-            "to gather what you need; there is no full-payload dump."
+            "Retrieve the specific parts of a compressed payload needed for the "
+            "current task. Use semantically rich task terms for `query`: exact IDs, "
+            "node names, file paths, symbols, entity names, timestamps, or other "
+            "distinctive values from the task. Call again with another specific "
+            "query when you need more."
         ),
         parameters={
             "type": "object",
@@ -79,8 +79,10 @@ def extension_factory(pi: Any) -> None:
                 "query": {
                     "type": "string",
                     "description": (
-                        "Required. Keywords/identifier to search within the cached "
-                        "payload; returns only matching items."
+                        "Required. Semantically rich search term for the next needed "
+                        "piece of information: prefer exact IDs, node names, file "
+                        "paths, symbols, entity names, timestamps, or other distinctive "
+                        "task values."
                     ),
                 },
             },
