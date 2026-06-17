@@ -846,9 +846,18 @@ async def _run_pi_tui(
         history_text.set_text("\n\n".join(blocks))
         history_text.invalidate()
 
+    def _assistant_stream_needs_margin(text: str) -> bool:
+        if not text or not history_text._text.strip() or stream_text._text:
+            return False
+        plain_label = _assistant_label(session)
+        bold_label = bold(plain_label)
+        return text.startswith(plain_label) or text.startswith(bold_label)
+
     def set_stream(text: str) -> None:
         """Update the current streaming response line."""
         trace(f"set_stream: {text[:120]!r}")
+        if _assistant_stream_needs_margin(text):
+            text = "\n" + text
         stream_text.set_text(text)
         stream_text.invalidate()
         tui.request_render()
