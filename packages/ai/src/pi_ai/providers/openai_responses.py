@@ -9,7 +9,6 @@ Mirrors openai-responses.ts
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -67,12 +66,10 @@ def stream_openai_responses(
 
             params = await apply_on_payload(params, model, opts.get("on_payload"))
 
-            openai_stream = client.responses.create(
+            openai_stream = await client.responses.create(
                 **params,
                 stream=True,
             )
-            if inspect.isawaitable(openai_stream):
-                openai_stream = await openai_stream
             ev_stream.push({"type": "start", "partial": output})
 
             await process_responses_stream(

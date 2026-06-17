@@ -9,7 +9,6 @@ Mirrors azure-openai-responses.ts
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -71,9 +70,7 @@ def stream_azure_openai_responses(
 
             params = await apply_on_payload(params, model, opts.get("on_payload"))
 
-            openai_stream = client.responses.create(**params, stream=True)
-            if inspect.isawaitable(openai_stream):
-                openai_stream = await openai_stream
+            openai_stream = await client.responses.create(**params, stream=True)
             ev_stream.push({"type": "start", "partial": output})
 
             await process_responses_stream(openai_stream, output, ev_stream, model)
@@ -158,10 +155,10 @@ def _resolve_azure_config(model: "Model", opts: dict[str, Any]) -> tuple[str, st
 
 
 def _create_client(model: "Model", api_key: str, opts: dict[str, Any]) -> Any:
-    from openai import AzureOpenAI
+    from openai import AsyncAzureOpenAI
     base_url, api_version = _resolve_azure_config(model, opts)
     headers = {**(getattr(model, "headers", None) or {}), **(opts.get("headers") or {})}
-    return AzureOpenAI(
+    return AsyncAzureOpenAI(
         api_key=api_key,
         api_version=api_version,
         base_url=base_url,

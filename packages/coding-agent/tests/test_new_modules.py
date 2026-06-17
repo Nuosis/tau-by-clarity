@@ -566,6 +566,20 @@ class TestModelRegistryExtended:
 
         assert mr.get_api_key("openai") == "oauth-token"
 
+    def test_get_prefers_subscription_token_over_api_key_in_mixed_storage(self):
+        from pi_coding_agent.core.auth_storage import AuthStorage
+
+        auth = AuthStorage.in_memory({})
+        auth.set_oauth_token("openai", {"access_token": "oauth-token", "expires_at": 9999999999})
+        auth.set_api_key("openai", "stored-api-key")
+
+        credential = auth.get("openai")
+
+        assert credential is not None
+        assert credential["type"] == "oauth"
+        assert credential["access_token"] == "oauth-token"
+        assert auth.resolve_api_key("openai") == "oauth-token"
+
     def test_openai_subscription_token_uses_codex_responses_transport(self):
         from pi_coding_agent.core.auth_storage import AuthStorage
         from pi_coding_agent.core.model_registry import ModelRegistry
@@ -582,6 +596,20 @@ class TestModelRegistryExtended:
         assert model.api == "openai-codex-responses"
         assert model.base_url == "https://chatgpt.com/backend-api"
         assert mr.get_api_key("openai") == "oauth-token"
+
+    def test_openai_subscription_token_overrides_get_all_transport(self):
+        from pi_coding_agent.core.auth_storage import AuthStorage
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        auth = AuthStorage.in_memory({})
+        auth.set_oauth_token("openai", {"access_token": "oauth-token", "expires_at": 9999999999})
+        auth.set_api_key("openai", "stored-api-key")
+
+        mr = ModelRegistry(auth_storage=auth)
+        model = next(m for m in mr.get_all() if m.provider == "openai" and m.id == "gpt-5.5")
+
+        assert model.api == "openai-codex-responses"
+        assert model.base_url == "https://chatgpt.com/backend-api"
 
     def test_openai_api_key_uses_standard_responses_transport(self):
         from pi_coding_agent.core.auth_storage import AuthStorage

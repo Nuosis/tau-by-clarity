@@ -242,12 +242,18 @@ class AuthStorage:
     def get(self, provider: str) -> dict[str, Any] | None:
         self._ensure_loaded()
         credential = self._data.get(provider)
-        if isinstance(credential, dict) and credential.get("type") in {"api_key", "oauth"}:
+        # OAuth/subscription tokens take precedence over API keys.  Older
+        # auth.json files can contain both a current provider credential and
+        # legacy api_keys/oauth_tokens entries, so apply the same precedence
+        # here that resolve_api_key() applies.
+        if provider in self._data.get("oauth_tokens", {}):
+            return {"type": "oauth", **self._data["oauth_tokens"][provider]}
+        if isinstance(credential, dict) and credential.get("type") == "oauth":
+            return dict(credential)
+        if isinstance(credential, dict) and credential.get("type") == "api_key":
             return dict(credential)
         if provider in self._data.get("api_keys", {}):
             return {"type": "api_key", "key": self._data["api_keys"][provider]}
-        if provider in self._data.get("oauth_tokens", {}):
-            return {"type": "oauth", **self._data["oauth_tokens"][provider]}
         return None
 
     def set(self, provider: str, credential: dict[str, Any]) -> None:

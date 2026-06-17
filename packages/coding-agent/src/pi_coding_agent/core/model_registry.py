@@ -245,6 +245,8 @@ class ModelRegistry:
         for prov_name, prov_config in self._registered_providers.items():
             combined = self._apply_provider_config_to_models(combined, prov_name, prov_config)
 
+        combined = self._apply_oauth_transport_overrides(combined)
+
         self._models = combined + self._extra_models
 
     def _load_built_in_models(
@@ -708,15 +710,30 @@ class ModelRegistry:
         return None
 
     def _oauth_backed_model(self, provider: str, model_id: str) -> Model | None:
-        if provider != "openai" or not self._auth_storage:
-            return None
-        get_token = getattr(self._auth_storage, "get_oauth_token", None)
-        if not callable(get_token) or not get_token("openai"):
+        if provider != "openai" or not self._has_oauth_token("openai"):
             return None
         model = get_model("openai-codex", model_id)
         if model is None:
             return None
         return Model(**{**model.__dict__, "provider": "openai"})
+
+    def _has_oauth_token(self, provider: str) -> bool:
+        if not self._auth_storage:
+            return False
+        get_token = getattr(self._auth_storage, "get_oauth_token", None)
+        return bool(callable(get_token) and get_token(provider))
+
+    def _apply_oauth_transport_overrides(self, models: list[Model]) -> list[Model]:
+        if not self._has_oauth_token("openai"):
+            return models
+        overridden: list[Model] = []
+        for model in models:
+            if model.provider != "openai":
+                overridden.append(model)
+                continue
+            oauth_model = self._oauth_backed_model("openai", model.id)
+            overridden.append(oauth_model or model)
+        return overridden
 
     def _find_config_loaded_model(self, provider: str, model_id: str) -> Model | None:
         config = self._config_providers.get(provider) or self._registered_providers.get(provider)

@@ -751,15 +751,15 @@ async def _run_pi_tui(
     # padding_x=0: the history widget already pads, and we prefix the assistant label.
     _md_component = Markdown("", 0, 0, markdown_theme)
 
-    def render_markdown(text: str, prefix_columns: int = 0) -> str:
+    def render_markdown(text: str) -> str:
         """Render assistant markdown to ANSI lines via the shared Markdown component.
 
         Trailing padding is stripped per line (the component pads to width) so the
-        body sits cleanly after the assistant label and does not overflow.
+        body uses the available transcript width without overflow.
         """
         try:
             _md_component.set_text(text)
-            width = max(20, int(getattr(terminal, "columns", 80) or 80) - 2 - max(0, prefix_columns))
+            width = max(20, int(getattr(terminal, "columns", 80) or 80) - 2)
             lines = [ln.rstrip() for ln in _md_component.render(width)]
             return "\n".join(lines).strip("\n")
         except Exception:
@@ -767,8 +767,7 @@ async def _run_pi_tui(
 
     def assistant_rendered_line(text: str) -> str:
         label = _assistant_label(session)
-        prefix_columns = len(label) + 1
-        return f"{bold(label)} {render_markdown(text, prefix_columns=prefix_columns)}"
+        return f"{bold(label)}\n{render_markdown(text)}"
 
     # ── Output area ──────────────────────────────────────────────────────────
     header_text = Text("", padding_x=1, padding_y=0)
@@ -2214,6 +2213,8 @@ async def _run_pi_tui(
             # (headings yellow, inline code cyan, bold light-cyan); errors and
             # other stream content are moved across verbatim.
             if rendered_response and not response_is_error:
+                if history_text._text.strip():
+                    append_history("")
                 append_history(assistant_rendered_line(rendered_response))
                 set_stream("")
             elif stream_text._text:
