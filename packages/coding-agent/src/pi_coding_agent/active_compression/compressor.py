@@ -107,7 +107,9 @@ def compress(text: str, ccr: CCRStore) -> str:
         body = json.dumps(kept, ensure_ascii=False)
         return (
             f"[CCR:{handle}] compressed JSON array: {n} items → {len(kept)} kept "
-            f"({n_err} error item(s) preserved). Full original via ccr_retrieve {handle}.\n{body}"
+            f"({n_err} error item(s) preserved). Retrieve a relevant subset with "
+            f"ccr_retrieve(handle={handle}, query=<what you need>) — query required, "
+            f"returns only matching items.\n{body}"
         )
 
     lines = stripped.splitlines()
@@ -122,7 +124,9 @@ def compress(text: str, ccr: CCRStore) -> str:
         body = "\n".join(keep)
         return (
             f"[CCR:{handle}] compressed log: {len(lines)} lines → head+tail+"
-            f"{len(errs)} error line(s). Full original via ccr_retrieve {handle}.\n{body}"
+            f"{len(errs)} error line(s). Retrieve a relevant subset with "
+            f"ccr_retrieve(handle={handle}, query=<what you need>) — query required, "
+            f"returns only matching items.\n{body}"
         )
 
     # Generic large text → head + tail.
@@ -130,5 +134,6 @@ def compress(text: str, ccr: CCRStore) -> str:
     head, tail = stripped[:1200], stripped[-600:]
     return (
         f"[CCR:{handle}] compressed text ({len(stripped)} chars). "
-        f"Full original via ccr_retrieve {handle}.\n{head}\n… elided …\n{tail}"
+        f"Retrieve relevant items with ccr_retrieve(handle={handle}, query=<what you need>) "
+        f"— query required, returns only matching items.\n{head}\n… elided …\n{tail}"
     )

@@ -64,35 +64,7 @@ def compress_context(context: Any) -> Any:
     registered. Never mutates the caller's context."""
     fn = _compressor
     if fn is None:
-        import os, sys
-        if os.environ.get("LB_AC_DEBUG"):
-            print("[AC_DEBUG] compress_context: NO compressor registered", file=sys.stderr)
         return context
-    import os as _os, sys as _sys
-    if _os.environ.get("LB_AC_DEBUG"):
-        roles = [getattr(m, "role", "?") for m in context.messages]
-        sizes = []
-        for m in context.messages:
-            c = getattr(m, "content", None)
-            if isinstance(c, list):
-                sizes.append(sum(len(getattr(b, "text", "") or "") for b in c))
-            elif isinstance(c, str):
-                sizes.append(len(c))
-            else:
-                sizes.append(0)
-        print(f"[AC_DEBUG] compress_context in: roles={roles} sizes={sizes}", file=_sys.stderr)
-    new = context.model_copy(
+    return context.model_copy(
         update={"messages": [_xform_message(m, fn) for m in context.messages]}
     )
-    if _os.environ.get("LB_AC_DEBUG"):
-        sizes = []
-        for m in new.messages:
-            c = getattr(m, "content", None)
-            if isinstance(c, list):
-                sizes.append(sum(len(getattr(b, "text", "") or "") for b in c))
-            elif isinstance(c, str):
-                sizes.append(len(c))
-            else:
-                sizes.append(0)
-        print(f"[AC_DEBUG] compress_context out: sizes={sizes}", file=_sys.stderr)
-    return new

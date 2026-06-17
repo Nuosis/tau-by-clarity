@@ -1,115 +1,103 @@
 """CCR retrieve trigger — the §12 reversibility path made usable.
 
-Two mechanisms, both bundled on-by-default with active compression:
-
-1. **`ccr_retrieve` tool** (model-driven) — the model can explicitly fetch a
-   compressed original by its `[CCR:<handle>]` handle.
-2. **Harness-driven rehydration** (the §12 de-risk for the "model won't call the
-   tool" finding) — a `context` hook that watches for a handle the model
-   *referenced in its own output* and **expands the compressed block in place**,
-   without depending on a formal tool call. The model only has to mention the
-   handle (cheap, reliable); the harness does the retrieval (deterministic).
+A single, consistent retrieval path: the **`ccr_retrieve` tool**, which is always
+query-scoped. The model passes a required `query` and gets back only the matching
+items (a BM25 search within the cached original), so retrieval can never reinflate
+the context with the full payload. There is deliberately no harness-driven
+full-expansion fallback and no full-dump escape hatch — those were back-doors that
+defeated CCR's purpose of keeping the peak context small.
 
 Loaded standalone by the extension loader → absolute imports.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from pi_coding_agent.active_compression import retrieve, mark_expanded
-from pi_coding_agent.clarity_pii.walk import apply_to_message
-
-_HANDLE_RE = re.compile(r"ccr_retrieve\s+([0-9a-f]{12})|\[CCR:([0-9a-f]{12})\]")
-
-
-def _role(m: Any) -> Any:
-    return m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
-
-
-def _text_of(m: Any) -> str:
-    content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for b in content:
-            t = b.get("text") if isinstance(b, dict) else getattr(b, "text", None)
-            if isinstance(t, str):
-                parts.append(t)
-        return " ".join(parts)
-    return ""
-
-
-def _handles_referenced_by_assistant(messages: list) -> list[str]:
-    out: list[str] = []
-    for m in messages:
-        if _role(m) != "assistant":
-            continue
-        for mt in _HANDLE_RE.finditer(_text_of(m)):
-            h = mt.group(1) or mt.group(2)
-            if h and h not in out:
-                out.append(h)
-    return out
+from pi_coding_agent.active_compression import retrieve
+from pi_coding_agent.active_compression.search import search_original
 
 
 def extension_factory(pi: Any) -> None:
-    state: dict[str, set] = {"expanded": set()}
-
     # ---- model-driven: the explicit tool ---------------------------------- #
     async def execute(tool_call_id, params, signal, on_update, ctx):
-        handle = (params or {}).get("handle", "")
+        params = params or {}
+        handle = params.get("handle", "")
+        query = (params.get("query") or "").strip()
         original = retrieve(handle)
         if original is None:
             return {
                 "content": [{"type": "text", "text": f"No CCR entry for handle {handle!r}."}],
                 "isError": True,
             }
-        state["expanded"].add(handle)
-        # Phase-4: record durably so the compressor stops re-eliding this original.
-        mark_expanded(handle)
+
+        # Retrieval is ALWAYS query-scoped (Headroom BM25): there is no full-payload
+        # escape hatch. Returning only the relevant subset is the entire point —
+        # it keeps the peak context small and the original stays compressed for
+        # future turns (we never mark_expanded here). If the model needs more, it
+        # issues another scoped query; it cannot dump the whole payload back in.
+        res = search_original(original, query)
+        if res["kept_items"] > 0:
+            note = (
+                f"[CCR query '{query}': {res['kept_items']} of {res['total_items']} "
+                f"items. Issue another ccr_retrieve with a different query to fetch "
+                f"other items.]"
+            )
+            return {
+                "content": [{"type": "text", "text": f"{note}\n{res['text']}"}],
+                "details": {
+                    "handle": handle,
+                    "query": query,
+                    "kept_items": res["kept_items"],
+                    "total_items": res["total_items"],
+                    "chars": len(res["text"]),
+                },
+            }
+        # No matches → tell the model so it can refine. Never dump the full payload.
         return {
-            "content": [{"type": "text", "text": original}],
-            "details": {"handle": handle, "chars": len(original)},
+            "content": [{"type": "text", "text": (
+                f"[CCR query '{query}': no matching items in {handle} "
+                f"({res['total_items']} items total). Try a different/broader query.]"
+            )}],
+            "details": {"handle": handle, "query": query, "kept_items": 0},
         }
 
     pi.register_tool(
         name="ccr_retrieve",
-        label="Retrieve compressed original",
-        description="Fetch the full original of a CCR-compressed payload by its [CCR:<handle>] handle.",
+        label="Retrieve from compressed payload",
+        description=(
+            "Search a CCR-compressed payload by its [CCR:<handle>] handle. `query` "
+            "is required: pass the keywords/identifier you need (e.g. the node, "
+            "file, or term you're looking for) to get back only the relevant items "
+            "— a BM25 search within the cached data. Issue multiple scoped queries "
+            "to gather what you need; there is no full-payload dump."
+        ),
         parameters={
             "type": "object",
-            "properties": {"handle": {"type": "string", "description": "12-char CCR handle"}},
-            "required": ["handle"],
+            "properties": {
+                "handle": {"type": "string", "description": "12-char CCR handle"},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Required. Keywords/identifier to search within the cached "
+                        "payload; returns only matching items."
+                    ),
+                },
+            },
+            "required": ["handle", "query"],
         },
         execute=execute,
     )
 
-    # ---- harness-driven: rehydrate on cue-hit ----------------------------- #
-    async def on_context(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
-        messages = event.get("messages") or []
-        wanted = [h for h in _handles_referenced_by_assistant(messages) if h not in state["expanded"]]
-        if not wanted:
-            return None
-        changed = False
-        for h in wanted:
-            state["expanded"].add(h)
-            mark_expanded(h)  # Phase-4: stop the compressor re-eliding this original.
-            original = retrieve(h)
-            if original is None:
-                continue
-            # Replace the compressed block (text starting with [CCR:<h>]) with the
-            # full original, in place, across the transcript.
-            def _expand(text: str, h=h, original=original) -> str:
-                return original if text.startswith(f"[CCR:{h}]") else text
-
-            for m in messages:
-                apply_to_message(m, _expand)
-            changed = True
-        return {"messages": messages} if changed else None
-
-    pi.on("context", on_context)
+    # NOTE: there is intentionally NO harness-driven full-expansion fallback.
+    # An earlier version rehydrated the entire original in place whenever the model
+    # merely *mentioned* a [CCR:<handle>] in its text. That was a back-door to the
+    # full-payload dump — it silently reinflated the context (the exact thing CCR
+    # exists to prevent) without the model ever issuing a scoped query. Retrieval is
+    # now a single, consistent path: the query-scoped `ccr_retrieve` tool, whose
+    # `query` parameter is structurally required (the harness bounces query-less
+    # calls back to the model). The model must say what it's looking for; it can
+    # never expand everything.
 
 
 activate = extension_factory

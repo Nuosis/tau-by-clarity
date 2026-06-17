@@ -19,6 +19,16 @@ class CCRStore:
     def __init__(self, path: str) -> None:
         self.path = path
         self._lock = threading.Lock()
+        # Phase-4 (Context Tracker): handles whose original has been retrieved/
+        # expanded for the model *in the current conversation*. Once expanded, that
+        # content must NOT be re-compressed on subsequent turns, or retrieval is
+        # futile (the model re-elides forever). Per the Headroom spec this is
+        # per-conversation state ("Across multiple turns... remembers what was
+        # compressed in earlier turns"), so it is in-memory and process-scoped — it
+        # MUST NOT persist across runs/sessions, or AC silently degrades to a no-op
+        # for any payload ever retrieved once. The durable `ccr` cache below is
+        # separate: originals stay retrievable on disk; only expansion state resets.
+        self._expanded: set[str] = set()
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -26,13 +36,6 @@ class CCRStore:
             c.execute(
                 "CREATE TABLE IF NOT EXISTS ccr "
                 "(handle TEXT PRIMARY KEY, content TEXT NOT NULL, created_at REAL)"
-            )
-            # Phase-4 (Context Tracker): handles whose original has been retrieved/
-            # expanded for the model. Such content must NOT be re-compressed on
-            # subsequent turns, or retrieval is futile (the model re-elides forever).
-            c.execute(
-                "CREATE TABLE IF NOT EXISTS ccr_expanded "
-                "(handle TEXT PRIMARY KEY, expanded_at REAL)"
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -59,16 +62,14 @@ class CCRStore:
         return hashlib.sha1(content.encode("utf-8")).hexdigest()[:12]
 
     def mark_expanded(self, handle: str) -> None:
-        """Record that this handle's original has been retrieved/expanded for the model."""
-        with self._lock, self._connect() as c:
-            c.execute(
-                "INSERT OR IGNORE INTO ccr_expanded (handle, expanded_at) VALUES (?, ?)",
-                (handle, time.time()),
-            )
+        """Mark a handle as expanded for the model in the current conversation.
+
+        In-memory only: this is per-process/per-conversation state and must not
+        persist across runs (a durable mark would permanently disable compression
+        for that content everywhere)."""
+        with self._lock:
+            self._expanded.add(handle)
 
     def is_expanded(self, handle: str) -> bool:
-        with self._connect() as c:
-            row = c.execute(
-                "SELECT 1 FROM ccr_expanded WHERE handle = ?", (handle,)
-            ).fetchone()
-        return row is not None
+        with self._lock:
+            return handle in self._expanded
