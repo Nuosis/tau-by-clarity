@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pi_coding_agent.active_compression import retrieve
+from pi_coding_agent.active_compression import retrieve, mark_expanded
 from pi_coding_agent.clarity_pii.walk import apply_to_message
 
 _HANDLE_RE = re.compile(r"ccr_retrieve\s+([0-9a-f]{12})|\[CCR:([0-9a-f]{12})\]")
@@ -67,6 +67,8 @@ def extension_factory(pi: Any) -> None:
                 "isError": True,
             }
         state["expanded"].add(handle)
+        # Phase-4: record durably so the compressor stops re-eliding this original.
+        mark_expanded(handle)
         return {
             "content": [{"type": "text", "text": original}],
             "details": {"handle": handle, "chars": len(original)},
@@ -93,6 +95,7 @@ def extension_factory(pi: Any) -> None:
         changed = False
         for h in wanted:
             state["expanded"].add(h)
+            mark_expanded(h)  # Phase-4: stop the compressor re-eliding this original.
             original = retrieve(h)
             if original is None:
                 continue

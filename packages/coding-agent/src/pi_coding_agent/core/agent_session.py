@@ -1410,6 +1410,10 @@ class AgentSession:
         self._base_system_prompt = self._build_system_prompt(valid_names)
         self._agent.set_system_prompt(self._effective_system_prompt())
 
+    def set_temperature(self, temperature: float | None) -> None:
+        """Set the sampling temperature (None = provider/model default; 0 = greedy)."""
+        self._agent.set_temperature(temperature)
+
     # ── Model management (2g) ─────────────────────────────────────────────────
 
     async def set_model(self, model: Model) -> None:

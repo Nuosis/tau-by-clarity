@@ -27,6 +27,13 @@ class CCRStore:
                 "CREATE TABLE IF NOT EXISTS ccr "
                 "(handle TEXT PRIMARY KEY, content TEXT NOT NULL, created_at REAL)"
             )
+            # Phase-4 (Context Tracker): handles whose original has been retrieved/
+            # expanded for the model. Such content must NOT be re-compressed on
+            # subsequent turns, or retrieval is futile (the model re-elides forever).
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS ccr_expanded "
+                "(handle TEXT PRIMARY KEY, expanded_at REAL)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=10)
@@ -45,3 +52,23 @@ class CCRStore:
         with self._connect() as c:
             row = c.execute("SELECT content FROM ccr WHERE handle = ?", (handle,)).fetchone()
         return row[0] if row else None
+
+    @staticmethod
+    def handle_for(content: str) -> str:
+        """The handle a given content would hash to (matches put())."""
+        return hashlib.sha1(content.encode("utf-8")).hexdigest()[:12]
+
+    def mark_expanded(self, handle: str) -> None:
+        """Record that this handle's original has been retrieved/expanded for the model."""
+        with self._lock, self._connect() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO ccr_expanded (handle, expanded_at) VALUES (?, ?)",
+                (handle, time.time()),
+            )
+
+    def is_expanded(self, handle: str) -> bool:
+        with self._connect() as c:
+            row = c.execute(
+                "SELECT 1 FROM ccr_expanded WHERE handle = ?", (handle,)
+            ).fetchone()
+        return row is not None

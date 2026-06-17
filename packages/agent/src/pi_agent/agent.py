@@ -62,6 +62,7 @@ class AgentOptions:
         on_payload: Callable[[Any, Model], Any | None] | None = None,
         on_response: Callable[[Any, Model], Any | None] | None = None,
         thinking_budgets: ThinkingBudgets | None = None,
+        temperature: float | None = None,
         transport: Transport = "sse",
         max_retry_delay_ms: int | None = None,
         toolExecution: str = "parallel",
@@ -86,6 +87,7 @@ class AgentOptions:
         self.on_payload = on_payload
         self.on_response = on_response
         self.thinking_budgets = thinking_budgets
+        self.temperature = temperature
         self.transport = transport
         self.max_retry_delay_ms = max_retry_delay_ms
         self.toolExecution = tool_execution or toolExecution
@@ -141,6 +143,7 @@ class Agent:
         self._on_payload = opts.on_payload
         self._on_response = opts.on_response
         self._thinking_budgets: ThinkingBudgets | None = opts.thinking_budgets
+        self._temperature: float | None = opts.temperature
         self._transport: Transport = opts.transport
         self._max_retry_delay_ms: int | None = opts.max_retry_delay_ms
         self.toolExecution: str = opts.toolExecution
@@ -175,6 +178,17 @@ class Agent:
     @thinking_budgets.setter
     def thinking_budgets(self, value: ThinkingBudgets | None) -> None:
         self._thinking_budgets = value
+
+    @property
+    def temperature(self) -> float | None:
+        return self._temperature
+
+    @temperature.setter
+    def temperature(self, value: float | None) -> None:
+        self._temperature = value
+
+    def set_temperature(self, value: float | None) -> None:
+        self._temperature = value
 
     @property
     def transport(self) -> Transport:
@@ -409,6 +423,7 @@ class Agent:
             session_id=self._session_id,
             transport=self._transport,
             thinking_budgets=self._thinking_budgets,
+            temperature=self._temperature,
             max_retry_delay_ms=self._max_retry_delay_ms,
             convert_to_llm=self._convert_to_llm,
             transform_context=self._transform_context,

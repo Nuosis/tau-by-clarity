@@ -269,6 +269,7 @@ async def _create_runtime_host(
                 cwd=runtime_cwd,
                 model=resolved_model,
                 thinking_level=thinking,
+                temperature=parsed.temperature,
                 session_manager=options["session_manager"],
                 auth_storage=auth_storage,
                 model_registry=model_registry,
@@ -321,7 +322,7 @@ async def _create_session_manager(parsed: Any, cwd: str) -> SessionManager | Non
         resolved = await _resolve_session_path(parsed.session, cwd, parsed.session_dir)
         rtype = resolved["type"]
         if rtype in {"path", "local"}:
-            return SessionManager.open(resolved["path"], parsed.session_dir)
+            return SessionManager.open(resolved["path"])
         if rtype == "global":
             print(f"Session found in different project: {resolved['cwd']}", file=sys.stderr)
             if not await _prompt_confirm("Fork this session into current directory?"):
@@ -894,6 +895,7 @@ async def _run(args: Sequence[str]) -> int:
         cwd=cwd,
         model=resolved_model,
         thinking_level=thinking,
+        temperature=parsed.temperature,
         session_manager=session_manager,
         auth_storage=auth_storage,
         model_registry=model_registry,
@@ -981,7 +983,7 @@ async def _run(args: Sequence[str]) -> int:
             log_event("resume_picker_cancelled")
             return 0
         log_event("resume_picker_selected", selected=selected)
-        sm = SessionManager.open(selected, parsed.session_dir)
+        sm = SessionManager.open(selected)
         resolved_model, thinking = _resolve_model_for_session(parsed, model_registry, settings_manager)
         resource_loader = await _create_resource_loader(parsed, cwd, settings_manager)
         result = await create_agent_session(
@@ -989,6 +991,7 @@ async def _run(args: Sequence[str]) -> int:
                 cwd=cwd,
                 model=resolved_model,
                 thinking_level=thinking,
+                temperature=parsed.temperature,
                 session_manager=sm,
                 auth_storage=auth_storage,
                 model_registry=model_registry,

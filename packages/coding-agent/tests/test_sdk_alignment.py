@@ -187,6 +187,31 @@ class TestSDKAlignment:
         assert "Available tools:\n(none)" in result.session.system_prompt
 
     @pytest.mark.asyncio
+    async def test_temperature_option_reaches_agent(self, tmp_path):
+        """--temperature flows through CreateAgentSessionOptions to the Agent."""
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
+                cwd=str(tmp_path),
+                model=get_model("anthropic", "claude-3-5-sonnet-20241022"),
+                resource_loader=_FakeResourceLoader(),
+                temperature=0.0,
+            )
+        )
+        assert result.session._agent.temperature == 0.0
+
+    @pytest.mark.asyncio
+    async def test_temperature_defaults_to_none(self, tmp_path):
+        """Omitting temperature leaves it None (provider/model default)."""
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
+                cwd=str(tmp_path),
+                model=get_model("anthropic", "claude-3-5-sonnet-20241022"),
+                resource_loader=_FakeResourceLoader(),
+            )
+        )
+        assert result.session._agent.temperature is None
+
+    @pytest.mark.asyncio
     async def test_project_settings_tools_empty_disables_default_tools(self, tmp_path, monkeypatch):
         monkeypatch.delenv("PI_MEMORY_ENABLED", raising=False)
         settings_manager = SettingsManager.in_memory({

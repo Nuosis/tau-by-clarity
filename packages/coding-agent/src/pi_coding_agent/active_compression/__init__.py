@@ -26,6 +26,7 @@ __all__ = [
     "is_enabled",
     "compress",
     "retrieve",
+    "mark_expanded",
     "register_with_pi_ai",
     "builtin_extension_path",
     "SETTING",
@@ -83,6 +84,12 @@ def compress(text: str) -> str:
 def retrieve(handle: str) -> str | None:
     """Fetch a cached original by its CCR handle (the reversibility path)."""
     return _ccr().get(handle)
+
+
+def mark_expanded(handle: str) -> None:
+    """Phase-4 (Context Tracker): mark a handle's original as expanded for the model,
+    so the universal compressor stops re-eliding it on subsequent turns."""
+    _ccr().mark_expanded(handle)
 
 
 def register_with_pi_ai() -> None:

@@ -68,9 +68,28 @@ def _crush_list_of_dicts(items: list, budget: int = DEFAULT_ITEM_BUDGET) -> tupl
     return kept, n, len(errors)
 
 
+_CCR_MARKER_RE = re.compile(r"\[CCR:([0-9a-f]{12})\]")
+
+
 def compress(text: str, ccr: CCRStore) -> str:
-    """Compress a tool-output string; cache the original in CCR. No-op if small."""
+    """Compress a tool-output string; cache the original in CCR. No-op if small.
+
+    Phase-4 (Context Tracker) idempotence guards, in order:
+    - Pass through our own already-compressed output (text carrying a [CCR:..] marker),
+      so we never double-compress or churn handles.
+    - Pass through content whose handle is already marked expanded — once the model
+      has retrieved an original, re-compressing it would make retrieval futile and
+      drive the read→retrieve→re-elide thrash loop.
+    """
     if not text or _approx_tokens(text) < MIN_TOKENS:
+        return text
+
+    # Guard 1: don't re-compress our own compressed output.
+    if _CCR_MARKER_RE.search(text):
+        return text
+
+    # Guard 2: don't re-compress an original the model has already expanded.
+    if ccr.is_expanded(CCRStore.handle_for(text)):
         return text
 
     stripped = text.strip()

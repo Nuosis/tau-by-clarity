@@ -50,6 +50,8 @@ class CreateAgentSessionOptions:
     model: Model | None = None
     # Thinking level. Default: from settings, else 'medium' (clamped to model capabilities)
     thinking_level: ThinkingLevel | None = None
+    # Sampling temperature. Default: None (provider/model default). 0 = greedy/deterministic.
+    temperature: float | None = None
     # Models available for cycling (Ctrl+P in interactive mode)
     scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
     
@@ -231,6 +233,10 @@ async def create_agent_session(
     # Apply scoped models if provided
     if options.scoped_models:
         session.set_scoped_models(options.scoped_models)
+
+    # Apply sampling temperature if provided (None = provider/model default)
+    if options.temperature is not None:
+        session.set_temperature(options.temperature)
     
     extensions_result = resource_loader.get_extensions() if hasattr(resource_loader, "get_extensions") else None
     

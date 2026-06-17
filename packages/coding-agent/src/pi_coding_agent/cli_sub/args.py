@@ -49,6 +49,7 @@ class Args:
     fork: str | None = None
     session_dir: str | None = None
     models: list[str] | None = None
+    temperature: float | None = None
     tools: list[str] | None = None
     exclude_tools: list[str] | None = None
     no_tools: bool = False
@@ -135,6 +136,14 @@ def parse_args(
         elif arg == "--api-key" and i + 1 < len(args):
             i += 1
             result.api_key = args[i]
+        elif arg == "--temperature" and i + 1 < len(args):
+            i += 1
+            try:
+                result.temperature = float(args[i])
+            except ValueError:
+                result.diagnostics.append(
+                    {"type": "error", "message": f"--temperature requires a number, got {args[i]!r}"}
+                )
         elif arg == "--goal" and i + 1 < len(args):
             i += 1
             result.goal = args[i]
