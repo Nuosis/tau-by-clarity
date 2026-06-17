@@ -198,6 +198,8 @@ class Markdown:
     def _render_tokens(self, tokens: list[dict], width: int) -> list[str]:
         lines: list[str] = []
         for i, token in enumerate(tokens):
+            if token.get("type") == "heading" and lines and lines[-1] != "":
+                lines.append("")
             next_type = tokens[i + 1]["type"] if i + 1 < len(tokens) else None
             lines.extend(self._render_token(token, width, next_type))
         return lines

@@ -326,11 +326,11 @@ def test_agent_name_label(tmp_path) -> None:
     assert _assistant_label(named) == "Devin:"
 
     unnamed = SimpleNamespace(settings_manager=SettingsManager.in_memory({}))
-    assert _assistant_label(unnamed) == "Assistant:"
+    assert _assistant_label(unnamed) == "Tau:"
 
     # Blank/whitespace name falls back to the generic label.
     blank = SimpleNamespace(settings_manager=SettingsManager.in_memory({"name": "  "}))
-    assert _assistant_label(blank) == "Assistant:"
+    assert _assistant_label(blank) == "Tau:"
 
 
 def test_non_inherit_drops_global_extensions(tmp_path, monkeypatch) -> None:

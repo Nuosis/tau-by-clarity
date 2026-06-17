@@ -419,11 +419,11 @@ def _apply_autocomplete_provider_wrappers(base_provider: Any, wrappers: list[Any
 
 def _assistant_label(session: Any) -> str:
     """Label for assistant turns. Uses the per-instance `name` setting when set
-    (e.g. "Devin:"), otherwise the generic "Assistant:"."""
+    (e.g. "Devin:"), otherwise the generic "Tau:"."""
     sm = getattr(session, "settings_manager", None)
     getter = getattr(sm, "get_agent_name", None) if sm is not None else None
     name = getter() if callable(getter) else None
-    return f"{name}:" if name else "Assistant:"
+    return f"{name}:" if name else "Tau:"
 
 
 def _item_value(item: Any, *names: str, default: Any = None) -> Any:
@@ -748,22 +748,27 @@ async def _run_pi_tui(
         code_block_border=dim,
         list_bullet=cyan,
     )
-    # padding_x=0: the history widget already pads, and we prefix "Assistant:".
+    # padding_x=0: the history widget already pads, and we prefix the assistant label.
     _md_component = Markdown("", 0, 0, markdown_theme)
 
-    def render_markdown(text: str) -> str:
+    def render_markdown(text: str, prefix_columns: int = 0) -> str:
         """Render assistant markdown to ANSI lines via the shared Markdown component.
 
         Trailing padding is stripped per line (the component pads to width) so the
-        body sits cleanly after the "Assistant:" label and does not overflow.
+        body sits cleanly after the assistant label and does not overflow.
         """
         try:
             _md_component.set_text(text)
-            width = max(20, int(getattr(terminal, "columns", 80) or 80) - 2)
+            width = max(20, int(getattr(terminal, "columns", 80) or 80) - 2 - max(0, prefix_columns))
             lines = [ln.rstrip() for ln in _md_component.render(width)]
             return "\n".join(lines).strip("\n")
         except Exception:
             return text
+
+    def assistant_rendered_line(text: str) -> str:
+        label = _assistant_label(session)
+        prefix_columns = len(label) + 1
+        return f"{bold(label)} {render_markdown(text, prefix_columns=prefix_columns)}"
 
     # ── Output area ──────────────────────────────────────────────────────────
     header_text = Text("", padding_x=1, padding_y=0)
@@ -826,15 +831,20 @@ async def _run_pi_tui(
             messages = getter()
         else:
             messages = getattr(session, "messages", [])
-        lines: list[str] = []
+        blocks: list[str] = []
         for message in messages or []:
             role, body = message_text_from_any(message)
             body = body.strip()
             if not body:
                 continue
-            label = "You" if role == "user" else "Assistant" if role == "assistant" else role or "Message"
-            lines.append(f"{label}: {body}")
-        history_text.set_text("\n".join(lines))
+            if role == "user":
+                blocks.append(_user_box(body))
+            elif role == "assistant":
+                blocks.append(assistant_rendered_line(body))
+            else:
+                label = role or "Message"
+                blocks.append(f"{label}: {body}")
+        history_text.set_text("\n\n".join(blocks))
         history_text.invalidate()
 
     def set_stream(text: str) -> None:
@@ -2050,7 +2060,7 @@ async def _run_pi_tui(
                         if snapshot_text != rendered_response:
                             trace(f"on_event: snapshot_text len={len(snapshot_text)}")
                             rendered_response = snapshot_text
-                            set_stream(f"{bold(_assistant_label(session))} {render_markdown(snapshot_text)}")
+                            set_stream(assistant_rendered_line(snapshot_text))
                         return
 
                     ae = getattr(event, "assistant_message_event", None)
@@ -2060,7 +2070,7 @@ async def _run_pi_tui(
                         if response_so_far != rendered_response:
                             trace(f"on_event: delta_text len={len(response_so_far)}")
                             rendered_response = response_so_far
-                            set_stream(f"{bold(_assistant_label(session))} {render_markdown(response_so_far)}")
+                            set_stream(assistant_rendered_line(response_so_far))
 
                 elif etype == "message_end":
                     msg = getattr(event, "message", None)
@@ -2069,7 +2079,7 @@ async def _run_pi_tui(
                         if final_text and final_text != rendered_response:
                             trace(f"on_event: final_text len={len(final_text)}")
                             rendered_response = final_text
-                            set_stream(f"{bold(_assistant_label(session))} {render_markdown(final_text)}")
+                            set_stream(assistant_rendered_line(final_text))
 
                 elif etype == "agent_end":
                     if not rendered_response:
@@ -2088,7 +2098,7 @@ async def _run_pi_tui(
                                 fallback_text = assistant_text_from_message(msg)
                                 if fallback_text:
                                     trace(f"on_event: agent_end fallback_text len={len(fallback_text)}")
-                                    set_stream(f"{bold(_assistant_label(session))} {render_markdown(fallback_text)}")
+                                    set_stream(assistant_rendered_line(fallback_text))
                                     rendered_response = fallback_text
                                     break
 
@@ -2204,7 +2214,7 @@ async def _run_pi_tui(
             # (headings yellow, inline code cyan, bold light-cyan); errors and
             # other stream content are moved across verbatim.
             if rendered_response and not response_is_error:
-                append_history(f"{bold(_assistant_label(session))} {render_markdown(rendered_response)}")
+                append_history(assistant_rendered_line(rendered_response))
                 set_stream("")
             elif stream_text._text:
                 append_history(stream_text._text)

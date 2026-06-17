@@ -1,4 +1,6 @@
 """Tests for pi_tui components"""
+import re
+
 import pytest
 
 from pi_tui.components.spacer import Spacer
@@ -7,6 +9,7 @@ from pi_tui.components.truncated_text import TruncatedText
 from pi_tui.components.box import Box
 from pi_tui.components.select_list import SelectItem, SelectList, SelectListTheme
 from pi_tui.components.input import Input
+from pi_tui.components.markdown import Markdown, MarkdownTheme
 from pi_tui.utils import visible_width
 
 
@@ -71,6 +74,24 @@ class TestText:
         t = Text("hello", padding_x=0, padding_y=0, custom_bg_fn=bg)
         t.render(20)
         assert applied
+
+
+class TestMarkdown:
+    @staticmethod
+    def _plain_lines(lines):
+        return [re.sub(r"\x1b\[[0-9;]*m", "", line).rstrip() for line in lines]
+
+    def test_heading_gets_top_padding_after_content(self):
+        md = Markdown("Intro\n### Details\nBody", padding_x=0, padding_y=0, theme=MarkdownTheme())
+        lines = self._plain_lines(md.render(80))
+
+        assert lines[:4] == ["Intro", "", "### Details", ""]
+
+    def test_heading_at_start_does_not_get_leading_padding(self):
+        md = Markdown("### Details\nBody", padding_x=0, padding_y=0, theme=MarkdownTheme())
+        lines = self._plain_lines(md.render(80))
+
+        assert lines[:3] == ["### Details", "", "Body"]
 
 
 class TestTruncatedText:
