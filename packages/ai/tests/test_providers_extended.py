@@ -266,6 +266,31 @@ class TestOpenAIResponsesParams:
 
         assert "max_output_tokens" not in body
 
+    def test_openai_codex_responses_body_always_sends_instructions(self):
+        from pi_ai import Context
+        from pi_ai.providers.openai_codex_responses import _build_request_body
+
+        body = _build_request_body(
+            _make_model(id_="gpt-5.5", provider="openai", api="openai-codex-responses"),
+            Context(messages=[]),
+            {},
+            [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+        )
+
+        assert body["instructions"]
+
+    def test_openai_codex_responses_body_omits_unsupported_temperature(self):
+        from pi_ai.providers.openai_codex_responses import _build_request_body
+
+        body = _build_request_body(
+            _make_model(id_="gpt-5.5", provider="openai", api="openai-codex-responses"),
+            _make_context(),
+            {"temperature": 0},
+            [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+        )
+
+        assert "temperature" not in body
+
     async def _fake_response_events(self):
         yield {"type": "response.output_item.added", "item": {"type": "message", "id": "msg_1"}}
         yield {"type": "response.output_text.delta", "delta": "Hello"}

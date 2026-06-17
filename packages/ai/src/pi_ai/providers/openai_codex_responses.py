@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from pi_ai.types import Context, Model, SimpleStreamOptions
 
 _DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
+_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 _MAX_RETRIES = 3
 _BASE_DELAY_MS = 1000
 _CODEX_TOOL_CALL_PROVIDERS = frozenset({"openai", "openai-codex", "opencode"})
@@ -155,16 +156,13 @@ def _build_request_body(
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model.id,
+        "instructions": context.system_prompt or _DEFAULT_INSTRUCTIONS,
         "input": messages,
         "stream": True,
         "store": False,
     }
-    if context.system_prompt:
-        body["instructions"] = context.system_prompt
     if opts.get("session_id"):
         body["prompt_cache_key"] = opts["session_id"]
-    if opts.get("temperature") is not None:
-        body["temperature"] = opts["temperature"]
 
     tools = getattr(context, "tools", None)
     if tools:
