@@ -330,6 +330,110 @@ async def test_agent_loop_applies_prepare_arguments_before_validation_and_execut
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_reports_malformed_tool_arguments_without_executing():
+    """Malformed streamed tool args should not be collapsed to {} and executed."""
+    from pi_ai import get_model
+    from pi_ai.types import EventToolCallEnd, EventToolCallStart
+
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    executed_args = []
+
+    async def execute_tool(tool_call_id, params, cancel=None, on_update=None):
+        executed_args.append(params)
+        return AgentToolResult(content=[TextContent(type="text", text="should not run")])
+
+    broken_tool = AgentTool(
+        name="broken_tool",
+        label="broken_tool",
+        description="Requires args",
+        parameters={
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        },
+        execute=execute_tool,
+    )
+
+    call_count = 0
+
+    async def _stream_with_malformed_tool(m, ctx, opts=None):
+        nonlocal call_count
+        call_count += 1
+        partial = AssistantMessage(
+            role="assistant",
+            content=[],
+            api=m.api,
+            provider=m.provider,
+            model=m.id,
+            usage=Usage(),
+            stop_reason="stop",
+            timestamp=_ts(),
+        )
+        yield EventStart(type="start", partial=partial)
+
+        if call_count > 1:
+            final = AssistantMessage(
+                role="assistant",
+                content=[TextContent(type="text", text="done")],
+                api=m.api,
+                provider=m.provider,
+                model=m.id,
+                usage=Usage(),
+                stop_reason="stop",
+                timestamp=_ts(),
+            )
+            yield EventDone(type="done", reason="stop", message=final)
+            return
+
+        tc = ToolCall(
+            type="toolCall",
+            id="tc-malformed",
+            name="broken_tool",
+            arguments={},
+            arguments_raw='{"status": completed',
+            arguments_parse_error="Expecting value at line 1 column 12",
+        )
+        with_tc = partial.model_copy(update={"content": [tc]})
+        yield EventToolCallStart(type="toolcall_start", content_index=0, partial=with_tc)
+        yield EventToolCallEnd(type="toolcall_end", content_index=0, tool_call=tc, partial=with_tc)
+        final = AssistantMessage(
+            role="assistant",
+            content=[tc],
+            api=m.api,
+            provider=m.provider,
+            model=m.id,
+            usage=Usage(),
+            stop_reason="toolUse",
+            timestamp=_ts(),
+        )
+        yield EventDone(type="done", reason="toolUse", message=final)
+
+    context = AgentContext(messages=[], tools=[broken_tool])
+    prompts = [make_user_message("Use broken tool")]
+    config = AgentLoopConfig(
+        model=model,
+        convert_to_llm=lambda msgs: [
+            m for m in msgs if hasattr(m, "role") and m.role in ("user", "assistant", "toolResult")
+        ],
+    )
+
+    tool_results = []
+    stream = agent_loop(prompts, context, config, stream_fn=_stream_with_malformed_tool)
+    async for event in stream:
+        if event.type == "message_end":
+            msg = getattr(event, "message", None)
+            if getattr(msg, "role", None) == "toolResult":
+                tool_results.append(msg)
+
+    assert executed_args == []
+    assert tool_results
+    text = tool_results[0].content[0].text
+    assert "malformed JSON arguments" in text
+    assert "tc-malformed" in text
+    assert '\\"status\\": completed' in text
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_stops_when_all_tool_results_request_termination():
     """A terminating tool result should stop the loop after emitting its tool result."""
     from pi_ai import get_model

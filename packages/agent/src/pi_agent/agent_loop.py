@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 from typing import Any, AsyncGenerator
 
@@ -65,6 +66,25 @@ def _tool_result_terminates(result: Any) -> bool:
     if isinstance(result, dict):
         return bool(result.get("terminate", False))
     return bool(getattr(result, "terminate", False))
+
+
+def _format_malformed_tool_arguments(tool_call: ToolCall) -> str:
+    raw = getattr(tool_call, "arguments_raw", None) or ""
+    error = getattr(tool_call, "arguments_parse_error", None) or "unknown parse error"
+    preview_head = raw[:1000]
+    preview_tail = raw[-1000:] if len(raw) > 1000 else ""
+    payload = {
+        "tool_name": tool_call.name,
+        "tool_call_id": tool_call.id,
+        "error": error,
+        "raw_length": len(raw),
+        "raw_head": preview_head,
+        "raw_tail": preview_tail,
+    }
+    return (
+        f'Tool "{tool_call.name}" received malformed JSON arguments and was not executed.\n'
+        f"Diagnostic:\n{json.dumps(payload, indent=2, ensure_ascii=False)}"
+    )
 
 
 def _emit_run_state(
@@ -686,6 +706,8 @@ async def _prepare_tool_call(
             prepared_args = tool.prepareArguments(tool_call.arguments)
             if prepared_args is not tool_call.arguments:
                 prepared_tool_call = tool_call.model_copy(update={"arguments": prepared_args})
+        if getattr(prepared_tool_call, "arguments_parse_error", None):
+            raise ValueError(_format_malformed_tool_arguments(prepared_tool_call))
         validated_args = validate_tool_arguments(ai_tool, prepared_tool_call)
 
         if config.before_tool_call:

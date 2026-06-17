@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pi_ai.utils.json_parse import parse_partial_json
+from pi_ai.utils.json_parse import parse_partial_json, parse_streaming_json_result
 from pi_ai.utils.validation import validate_tool_arguments
 from pi_ai.types import Tool, ToolCall
 from pi_ai.providers.transform_messages import transform_messages
@@ -34,6 +34,25 @@ def test_parse_partial_json_empty():
 def test_parse_partial_json_nested():
     result = parse_partial_json('{"a": {"b": 1}, "c": [1, 2]}')
     assert result == {"a": {"b": 1}, "c": [1, 2]}
+
+
+def test_parse_streaming_json_result_repairs_truncated_string_and_object():
+    result = parse_streaming_json_result('{"status": "completed", "summary": "Bounder')
+
+    assert result.ok
+    assert result.repair_applied
+    assert result.value == {"status": "completed", "summary": "Bounder"}
+    assert result.raw.endswith("Bounder")
+    assert result.repaired_text is not None
+
+
+def test_parse_streaming_json_result_preserves_unrepairable_raw():
+    result = parse_streaming_json_result('{"status": completed')
+
+    assert not result.ok
+    assert result.value is None
+    assert result.raw == '{"status": completed'
+    assert result.error
 
 
 # ── Validation tests ─────────────────────────────────────────────────────────

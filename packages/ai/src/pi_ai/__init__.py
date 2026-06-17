@@ -70,7 +70,7 @@ from .compression import compress_context, has_compressor, register_compressor, 
 
 # Utilities
 from .utils.event_stream import AssistantMessageEventStream as AssistantMessageEventStreamClass, EventStream, create_assistant_message_event_stream
-from .utils.json_parse import parse_partial_json, parse_streaming_json
+from .utils.json_parse import StreamingJsonParseResult, parse_partial_json, parse_streaming_json, parse_streaming_json_result
 from .utils.overflow import is_context_overflow, get_overflow_patterns
 from .utils.validation import validate_tool_arguments, validate_tool_call
 from .utils.sanitize_unicode import sanitize_surrogates
@@ -104,7 +104,7 @@ __all__ = [
     "register_compressor", "unregister_compressor", "has_compressor", "compress_context",
     # Utils
     "EventStream", "AssistantMessageEventStreamClass", "create_assistant_message_event_stream",
-    "parse_partial_json", "parse_streaming_json",
+    "parse_partial_json", "parse_streaming_json", "parse_streaming_json_result", "StreamingJsonParseResult",
     "validate_tool_arguments", "validate_tool_call",
     "is_context_overflow", "get_overflow_patterns",
     "sanitize_surrogates",

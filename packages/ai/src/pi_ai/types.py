@@ -182,6 +182,10 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_raw: str | None = None
+    arguments_repaired_raw: str | None = None
+    arguments_repair_applied: bool = False
+    arguments_parse_error: str | None = None
     thought_signature: str | None = None  # Google-specific
 
 

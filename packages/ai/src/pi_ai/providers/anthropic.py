@@ -50,7 +50,7 @@ from ..types import (
     UserMessage,
 )
 from ..utils.event_stream import EventStream
-from ..utils.json_parse import parse_partial_json, parse_streaming_json
+from ..utils.json_parse import parse_partial_json, parse_streaming_json_result
 from ..utils.sanitize_unicode import sanitize_surrogates
 from .transform_messages import transform_messages as _transform_messages
 
@@ -622,12 +622,17 @@ async def stream_simple(
                         yield EventThinkingEnd(type="thinking_end", content_index=cb_idx, content=blk.thinking, partial=partial)
                     elif isinstance(blk, ToolCall):
                         raw = tool_arg_buffers.get(cb_idx, "{}")
-                        parsed = parse_streaming_json(raw) or {}
+                        parse_result = parse_streaming_json_result(raw)
+                        parsed = parse_result.value or {}
                         content_blocks[cb_idx] = ToolCall(
                             type="toolCall",
                             id=blk.id,
                             name=blk.name,
                             arguments=parsed,
+                            arguments_raw=raw if raw.strip() else None,
+                            arguments_repaired_raw=parse_result.repaired_text,
+                            arguments_repair_applied=parse_result.repair_applied,
+                            arguments_parse_error=None if parse_result.ok else parse_result.error,
                         )
                         partial = partial.model_copy(update={"content": list(content_blocks)})
                         yield EventToolCallEnd(
