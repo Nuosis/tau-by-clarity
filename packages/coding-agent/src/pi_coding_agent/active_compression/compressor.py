@@ -128,7 +128,12 @@ def compress(text: str, ccr: CCRStore) -> str:
     if len(lines) > 30:
         handle = ccr.put(text)
         errs = [ln for ln in lines if _ERROR_LINE_RE.search(ln)]
-        keep = lines[:10] + [f"… ({max(0, len(lines) - 15)} lines elided) …"] + lines[-5:]
+        tail_count = 15
+        keep = (
+            lines[:10]
+            + [f"… ({max(0, len(lines) - 10 - tail_count)} lines elided) …"]
+            + lines[-tail_count:]
+        )
         if errs:
             keep += ["— preserved error lines —", *errs[:20]]
         body = "\n".join(keep)

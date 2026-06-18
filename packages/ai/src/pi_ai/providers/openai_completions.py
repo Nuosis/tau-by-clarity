@@ -36,6 +36,7 @@ from ..types import (
     UserMessage,
 )
 from ..utils.json_parse import parse_partial_json
+from .payload_utils import apply_on_payload
 from .transform_messages import transform_messages as _transform_messages
 
 
@@ -192,6 +193,8 @@ async def stream_simple(
     if opts.reasoning:
         effort_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
         params["reasoning_effort"] = effort_map.get(opts.reasoning, "medium")
+
+    params = await apply_on_payload(params, model, opts.on_payload)
 
     partial = _make_empty_assistant(model)
     content_blocks: list[Any] = []

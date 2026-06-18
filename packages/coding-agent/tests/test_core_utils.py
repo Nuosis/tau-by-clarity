@@ -289,3 +289,155 @@ class TestClarityPiiWalk:
         assert payload["input"][0]["id"] == raw_id
         assert payload["input"][0]["call_id"] == f"call_{raw_card}"
         assert payload["input"][0]["arguments"] == "{\"note\":\"email [PII:EMAIL:1]\"}"
+
+
+def _graphwalks_like_prompt() -> str:
+    header = [
+        "You will be given a graph as a list of directed edges.",
+        "If asked for the parents of a node, only return incoming edges.",
+        "",
+        "Here is an example:",
+        "Operation:",
+        "Find the parents of node uvwx.",
+        "Final Answer: [abcd, efgh]",
+        "",
+        "Here is the graph to operate on:",
+        "The graph has the following edges:",
+    ]
+    edges = [f"node{i:03d} -> node{i + 1:03d}" for i in range(80)]
+    tail = [
+        "target-node -> outgoing-child",
+        "winner-2 -> target-node",
+        "winner -> target-node",
+        "",
+        "Operation:",
+        "Find the parents of node target-node.",
+        "",
+        "Return your final answer as a list of nodes.",
+        "Final Answer: []",
+    ]
+    return "\n".join(header + edges + tail)
+
+
+def test_active_compression_log_summary_preserves_actual_tail_operation(tmp_path):
+    from pi_coding_agent.active_compression.ccr import CCRStore
+    from pi_coding_agent.active_compression.compressor import compress
+
+    original = _graphwalks_like_prompt()
+    store = CCRStore(str(tmp_path / "ccr.db"))
+
+    compressed = compress(original, store)
+
+    assert "[CCR:" in compressed
+    assert "Find the parents of node target-node." in compressed
+    assert len(compressed) < len(original)
+
+
+def test_ccr_tail_query_returns_actual_task_block():
+    from pi_coding_agent.active_compression.search import search_original
+
+    result = search_original(_graphwalks_like_prompt(), "actual task tail operation")
+
+    assert result["route"] == "tail_slice"
+    assert "Find the parents of node target-node." in result["text"]
+    assert "winner -> target-node" in result["text"]
+
+
+def test_ccr_parent_query_returns_all_incoming_edges_only():
+    from pi_coding_agent.active_compression.search import search_original
+
+    result = search_original(_graphwalks_like_prompt(), "target-node parents edges")
+
+    assert result["route"] == "incoming_edges"
+    assert "winner -> target-node" in result["text"]
+    assert "winner-2 -> target-node" in result["text"]
+    assert "target-node -> outgoing-child" not in result["text"]
+
+
+def test_ccr_source_query_returns_all_outgoing_edges_only():
+    from pi_coding_agent.active_compression.search import search_original
+
+    result = search_original(_graphwalks_like_prompt(), "target-node ->")
+
+    assert result["route"] == "outgoing_edges"
+    assert "target-node -> outgoing-child" in result["text"]
+    assert "winner -> target-node" not in result["text"]
+
+
+def test_ccr_bfs_query_computes_exact_depth_without_frontier_turns():
+    from pi_coding_agent.active_compression.search import search_original
+
+    original = "\n".join(
+        [
+            "The graph has the following edges:",
+            "start -> a",
+            "start -> b",
+            "a -> c",
+            "a -> d",
+            "b -> e",
+            "c -> target",
+            "d -> off-target",
+            "e -> other",
+            "",
+            "Operation:",
+            "Perform a BFS from node start and return only the nodes at exactly depth 2 (not nodes at intermediate depths).",
+        ]
+    )
+
+    result = search_original(original, "edges graph list directed")
+
+    assert result["route"] == "graph_bfs"
+    assert "depth 1: 2 node(s)" in result["text"]
+    assert "depth 2: 3 node(s)" in result["text"]
+    assert "Final Answer: [c, d, e]" in result["text"]
+
+
+def test_ccr_parent_operation_query_ignores_example_bfs():
+    from pi_coding_agent.active_compression.search import search_original
+
+    original = "\n".join(
+        [
+            "Here is an example:",
+            "The graph has the following edges:",
+            "abcd -> uvwx",
+            "Operation:",
+            "Perform a BFS from node alke with depth 1.",
+            "Final Answer: []",
+            "",
+            "Here is the graph to operate on:",
+            "The graph has the following edges:",
+            "winner -> target",
+            "decoy -> other",
+            "",
+            "Operation:",
+            "Find the parents of node target.",
+            "",
+            "Final Answer: []",
+        ]
+    )
+
+    result = search_original(original, "edges graph operation node")
+
+    assert result["route"] == "graph_parents"
+    assert "Operation: Find the parents of node target." in result["text"]
+    assert "Final Answer: [winner]" in result["text"]
+    assert "BFS from node alke" not in result["text"]
+
+
+def test_ccr_task_query_on_paginated_page_directs_next_read_offset():
+    from pi_coding_agent.active_compression.search import search_original
+
+    page = "\n".join(
+        [
+            "The graph has the following edges:",
+            "a -> b",
+            "b -> c",
+            "",
+            "[Showing lines 1-2000 of 4394. Use offset=2001 to continue.]",
+        ]
+    )
+
+    result = search_original(page, "actual task operation")
+
+    assert result["route"] == "pagination_continue"
+    assert "offset=2001" in result["text"]

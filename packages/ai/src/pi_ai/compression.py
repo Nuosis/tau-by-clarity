@@ -21,6 +21,8 @@ from typing import Any, Callable, Optional
 # gates and content-type-routes internally) and owns its CCR cache.
 CompressFn = Callable[[str], str]
 
+EXCLUDED_TOOL_NAMES = frozenset({"ccr_retrieve"})
+
 _compressor: Optional[CompressFn] = None
 
 
@@ -50,6 +52,10 @@ def _xform_message(msg: Any, fn: CompressFn) -> Any:
     # assistant's own messages. Tool outputs are the read-side bloat Headroom-style
     # compression targets; the current instruction must reach the model verbatim.
     if getattr(msg, "role", None) != "toolResult":
+        return msg
+    # CCR retrieval is already a scoped decompression result. Re-compressing it
+    # hides the evidence the model explicitly asked for and causes retrieve loops.
+    if getattr(msg, "tool_name", None) in EXCLUDED_TOOL_NAMES:
         return msg
     content = getattr(msg, "content", None)
     if isinstance(content, str):
