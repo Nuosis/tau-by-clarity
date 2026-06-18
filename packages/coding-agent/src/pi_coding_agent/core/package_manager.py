@@ -877,9 +877,13 @@ class DefaultPackageManager:
 
     async def self_update(self, force: bool = False, package_name: str = "tau-by-clarity") -> None:
         """Update the Python CLI package that provides this harness."""
-        args = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
-        if force:
-            args.insert(-1, "--force-reinstall")
+        uv_bin = shutil.which("uv")
+        if uv_bin:
+            args = [uv_bin, "tool", "install", "--force", "--reinstall", package_name]
+        else:
+            args = [sys.executable, "-m", "pip", "install", "--upgrade", package_name]
+            if force:
+                args.insert(-1, "--force-reinstall")
 
         async def _op() -> None:
             await self._run_command(args)

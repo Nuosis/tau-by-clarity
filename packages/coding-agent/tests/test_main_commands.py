@@ -515,16 +515,50 @@ async def test_handle_package_command_update_all_updates_extensions_then_self(mo
 
 
 @pytest.mark.asyncio
-async def test_package_manager_self_update_invokes_python_pip(monkeypatch, tmp_path) -> None:
-    import sys
-
+async def test_package_manager_self_update_invokes_uv_tool_install(monkeypatch, tmp_path) -> None:
     from pi_coding_agent.core.package_manager import DefaultPackageManager
+    from pi_coding_agent.core import package_manager as package_manager_mod
 
     commands: list[list[str]] = []
 
     class _PackageManager(DefaultPackageManager):
         async def _run_command(self, args, cwd=None):
             commands.append(args)
+
+    monkeypatch.setattr(
+        package_manager_mod.shutil,
+        "which",
+        lambda name: "/opt/homebrew/bin/uv" if name == "uv" else None,
+    )
+
+    manager = _PackageManager(cwd=str(tmp_path), agent_dir=str(tmp_path / "agent"), settings_manager=object())
+
+    await manager.self_update(force=True)
+
+    assert commands == [[
+        "/opt/homebrew/bin/uv",
+        "tool",
+        "install",
+        "--force",
+        "--reinstall",
+        "tau-by-clarity",
+    ]]
+
+
+@pytest.mark.asyncio
+async def test_package_manager_self_update_falls_back_to_python_pip(monkeypatch, tmp_path) -> None:
+    import sys
+
+    from pi_coding_agent.core.package_manager import DefaultPackageManager
+    from pi_coding_agent.core import package_manager as package_manager_mod
+
+    commands: list[list[str]] = []
+
+    class _PackageManager(DefaultPackageManager):
+        async def _run_command(self, args, cwd=None):
+            commands.append(args)
+
+    monkeypatch.setattr(package_manager_mod.shutil, "which", lambda name: None)
 
     manager = _PackageManager(cwd=str(tmp_path), agent_dir=str(tmp_path / "agent"), settings_manager=object())
 
