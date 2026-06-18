@@ -1,0 +1,195 @@
+[
+  {
+    "id": "code_symbol_lookup",
+    "kind": "code",
+    "task": "Find the function that validates webhook signatures and report its file path.",
+    "expected_query_terms": [
+      "validate_webhook_signature",
+      "webhook",
+      "signature"
+    ],
+    "payload": "src/api/webhooks.py\ndef validate_webhook_signature(headers, body):\n    return hmac.compare_digest(headers.get('x-signature'), sign(body))\n\nsrc/api/routes.py\ndef create_checkout_session(user_id):\n    return stripe.checkout.Session.create(client_reference_id=user_id)\n\nsrc/auth/tokens.py\ndef verify_access_token(token):\n    return jwt.decode(token, PUBLIC_KEY, algorithms=['RS256'])\n"
+  },
+  {
+    "id": "log_request_failure",
+    "kind": "logs",
+    "task": "Find why request req_7HD9 failed.",
+    "expected_query_terms": [
+      "req_7HD9"
+    ],
+    "payload": "2026-06-17T10:01:01Z req_1AA2 GET /health 200 ok\n2026-06-17T10:01:03Z req_7HD9 POST /orders 500 payment_provider_timeout provider=stripe retryable=true\n2026-06-17T10:01:04Z req_3BC4 POST /orders 201 ok\n2026-06-17T10:01:05Z req_7HD9 retry scheduled backoff=30s\n"
+  },
+  {
+    "id": "json_order_lookup",
+    "kind": "json",
+    "task": "What is the shipping status for order ORD-8842?",
+    "expected_query_terms": [
+      "ORD-8842"
+    ],
+    "payload": "[{\"order_id\":\"ORD-3310\",\"customer\":\"Avery\",\"shipping_status\":\"delivered\"},{\"order_id\":\"ORD-8842\",\"customer\":\"Blake\",\"shipping_status\":\"held_for_address_review\"},{\"order_id\":\"ORD-1177\",\"customer\":\"Casey\",\"shipping_status\":\"label_created\"}]"
+  },
+  {
+    "id": "docs_section_lookup",
+    "kind": "docs",
+    "task": "According to the deployment guide, what does the Bluebird rollback policy require?",
+    "expected_query_terms": [
+      "Bluebird",
+      "rollback"
+    ],
+    "payload": "# Deployment Guide\n\n## Canary policy\nCanary deploys start at 5% traffic for ten minutes.\n\n## Bluebird rollback policy\nBluebird requires two green health probes, a database migration compatibility check, and a manual approval from the incident commander before rollback.\n\n## Logging policy\nAll deploy logs are retained for 30 days.\n"
+  },
+  {
+    "id": "entity_record_lookup",
+    "kind": "records",
+    "task": "Find the account owner for Acme Ridge Clinics.",
+    "expected_query_terms": [
+      "Acme",
+      "Ridge",
+      "Clinics"
+    ],
+    "payload": "account: Northstar Dental\nowner: Maya Chen\nplan: pro\n\naccount: Acme Ridge Clinics\nowner: Jordan Patel\nplan: enterprise\n\naccount: Green Valley Lab\nowner: Riley Stone\nplan: starter\n"
+  },
+  {
+    "id": "trace_span_lookup",
+    "kind": "trace",
+    "task": "Which span caused trace trc_b91 latency to exceed 2 seconds?",
+    "expected_query_terms": [
+      "trc_b91"
+    ],
+    "payload": "trace=trc_a20 span=db.query duration_ms=120\ntrace=trc_b91 span=auth.verify duration_ms=42\ntrace=trc_b91 span=vendor.enrich_profile duration_ms=2410\ntrace=trc_b91 span=response.serialize duration_ms=8\ntrace=trc_c10 span=db.query duration_ms=95\n"
+  },
+  {
+    "id": "config_key_lookup",
+    "kind": "config",
+    "task": "What value is set for FEATURE_VECTOR_RECALL_ROLLOUT?",
+    "expected_query_terms": [
+      "FEATURE_VECTOR_RECALL_ROLLOUT"
+    ],
+    "payload": "AUTH_SESSION_TTL=3600\nFEATURE_CLASSIFIER_V2=false\nFEATURE_VECTOR_RECALL_ROLLOUT=25\nMAX_UPLOAD_BYTES=10485760\n"
+  },
+  {
+    "id": "meeting_decision_lookup",
+    "kind": "notes",
+    "task": "What decision was made about Project Kestrel's launch date?",
+    "expected_query_terms": [
+      "Project Kestrel",
+      "Kestrel",
+      "launch date"
+    ],
+    "payload": "Meeting notes\n- Project Atlas: defer billing redesign until July.\n- Project Kestrel: launch date moved from June 30 to July 12 because QA needs another pass.\n- Project Lumen: owner changed to Priya.\n"
+  },
+  {
+    "id": "api_error_code_lookup",
+    "kind": "api_docs",
+    "task": "What does error code E_AUTH_CLOCK_SKEW mean?",
+    "expected_query_terms": [
+      "E_AUTH_CLOCK_SKEW"
+    ],
+    "payload": "E_RATE_LIMIT: Too many requests; retry after the reset time.\nE_AUTH_CLOCK_SKEW: Client timestamp differs from server time by more than 300 seconds.\nE_PAYLOAD_TOO_LARGE: Request body exceeds configured limit.\n"
+  },
+  {
+    "id": "mixed_noise_lookup",
+    "kind": "mixed",
+    "task": "For customer CUST-409, what risk tier is assigned?",
+    "expected_query_terms": [
+      "CUST-409"
+    ],
+    "payload": "Example: For customer CUST-000, look up the matching row.\nInstructions: Use the customer identifier to find account metadata.\nRows:\nCUST-102 | owner=Sam | risk=low\nCUST-409 | owner=Drew | risk=high\nCUST-510 | owner=Lee | risk=medium\n"
+  },
+  {
+    "id": "incident_trace_chain",
+    "kind": "iterative_incident",
+    "task": "Find the root cause for request req_741.",
+    "expected_query_terms": [
+      "req_741",
+      "job_91f",
+      "ven_44c",
+      "kyc_timeout"
+    ],
+    "expected_query_sequence": [
+      "req_741",
+      "job_91f",
+      "ven_44c"
+    ],
+    "payload": "Example incident trace: req_demo -> job_demo -> vendor_demo -> demo_timeout.\nDo not use example identifiers for real incidents.\n\n2026-06-17T09:00:00Z trace=req_220 route=/checkout status=200 job=job_11a\n2026-06-17T09:00:01Z trace=req_741 route=/checkout status=500 job=job_91f account=acct_red\n2026-06-17T09:00:02Z trace=req_888 route=/profile status=200 job=job_22c\n2026-06-17T09:00:04Z job=job_91f worker=payment-enrichment vendor_call=ven_44c queue=payments\n2026-06-17T09:00:05Z job=job_11a worker=receipt-email vendor_call=ven_11x queue=email\n2026-06-17T09:00:06Z vendor_call=ven_44c provider=Alloy status=failed reason=kyc_timeout retryable=true\n2026-06-17T09:00:07Z vendor_call=ven_11x provider=Sendgrid status=ok\n"
+  },
+  {
+    "id": "code_symbol_call_chain",
+    "kind": "iterative_code",
+    "task": "Trace what external provider call is reached from create_invoice_endpoint.",
+    "expected_query_terms": [
+      "create_invoice_endpoint",
+      "create_invoice_for_account",
+      "send_invoice",
+      "stripe.Invoice.create"
+    ],
+    "expected_query_sequence": [
+      "create_invoice_endpoint",
+      "create_invoice_for_account",
+      "send_invoice"
+    ],
+    "payload": "Example call chain: demo_handler -> demo_service -> demo_provider.call.\n\nsrc/api/routes.py\ndef create_invoice_endpoint(request):\n    account_id = request.json['account_id']\n    return create_invoice_for_account(account_id)\n\nsrc/billing/invoices.py\ndef create_invoice_for_account(account_id):\n    customer = load_billing_customer(account_id)\n    return send_invoice(customer.stripe_id)\n\nsrc/billing/customers.py\ndef load_billing_customer(account_id):\n    return BillingCustomer.get(account_id=account_id)\n\nsrc/billing/send.py\ndef send_invoice(stripe_id):\n    return stripe.Invoice.create(customer=stripe_id, collection_method='send_invoice')\n"
+  },
+  {
+    "id": "customer_policy_chain",
+    "kind": "iterative_records",
+    "task": "Who is the escalation owner for customer CUST-918?",
+    "expected_query_terms": [
+      "CUST-918",
+      "ACC-44",
+      "ORG-9",
+      "POL-7",
+      "Dana Ruiz"
+    ],
+    "expected_query_sequence": [
+      "CUST-918",
+      "ACC-44",
+      "ORG-9",
+      "POL-7"
+    ],
+    "payload": "Example: customer CUST-000 belongs_to account ACC-00; account ACC-00 parent_org ORG-0.\n\ncustomer CUST-117 belongs_to account ACC-12\ncustomer CUST-918 belongs_to account ACC-44\ncustomer CUST-302 belongs_to account ACC-99\naccount ACC-44 parent_org ORG-9 region=west\naccount ACC-12 parent_org ORG-3 region=east\norg ORG-9 risk_policy POL-7 tier=high\norg ORG-3 risk_policy POL-2 tier=low\npolicy POL-7 escalation_owner Dana Ruiz pager=pager-duty-41\npolicy POL-2 escalation_owner Lee Wong pager=pager-duty-12\n"
+  },
+  {
+    "id": "config_alias_chain",
+    "kind": "iterative_config",
+    "task": "What percentage rollout controls FEATURE_RECALL_ENABLED and who approves it?",
+    "expected_query_terms": [
+      "FEATURE_RECALL_ENABLED",
+      "ROLLOUT_VECTOR_RECALL",
+      "rr_82",
+      "25",
+      "Nina"
+    ],
+    "expected_query_sequence": [
+      "FEATURE_RECALL_ENABLED",
+      "ROLLOUT_VECTOR_RECALL",
+      "rr_82"
+    ],
+    "expected_answer_terms": [
+      "FEATURE_RECALL_ENABLED",
+      "rr_82",
+      "25",
+      "Nina"
+    ],
+    "payload": "Example config: FEATURE_DEMO=${ROLLOUT_DEMO}; ROLLOUT_DEMO=rollout:rr_demo.\n\nFEATURE_LOGIN_V2=false\nFEATURE_RECALL_ENABLED=${ROLLOUT_VECTOR_RECALL}\nFEATURE_BILLING_PORTAL=true\nROLLOUT_VECTOR_RECALL=rollout:rr_82\nROLLOUT_OLD_SEARCH=rollout:rr_17\nrollout rr_82 audience=beta_staff treatment=enabled percentage=25\nrollout rr_17 audience=internal treatment=enabled percentage=10\nownership rr_82 team=SearchInfra approver=Nina Park\nownership rr_17 team=Core approver=Omar Singh\n"
+  },
+  {
+    "id": "claim_denial_chain",
+    "kind": "iterative_claims",
+    "task": "Why was claim CLM-552 denied?",
+    "expected_query_terms": [
+      "CLM-552",
+      "DEN-14",
+      "RULE-203",
+      "PLAN-GOLD",
+      "AUTH-991"
+    ],
+    "expected_query_sequence": [
+      "CLM-552",
+      "DEN-14",
+      "RULE-203",
+      "AUTH-991"
+    ],
+    "payload": "Example claim: CLM-000 denied by DEN-00 due to RULE-00.\n\nclaim CLM-101 patient PAT-10 denial_code DEN-02 auth AUTH-120\nclaim CLM-552 patient PAT-88 denial_code DEN-14 auth AUTH-991\nclaim CLM-772 patient PAT-77 denial_code DEN-03 auth AUTH-772\npatient PAT-88 plan PLAN-GOLD\ndenial DEN-14 reason=missing_prior_auth rule=RULE-203\ndenial DEN-02 reason=coverage_expired rule=RULE-100\nrule RULE-203 requires prior authorization for CPT 70553 under PLAN-GOLD before date_of_service\nauth AUTH-991 status=submitted_late submitted_after=date_of_service channel=fax\nauth AUTH-120 status=approved submitted_before=date_of_service\n"
+  }
+]

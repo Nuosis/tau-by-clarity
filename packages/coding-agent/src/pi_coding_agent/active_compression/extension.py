@@ -49,7 +49,10 @@ def extension_factory(pi: Any) -> None:
                     "handle": handle,
                     "query": query,
                     "kept_items": res["kept_items"],
+                    "matched_items": res.get("matched_items"),
                     "total_items": res["total_items"],
+                    "effective_query": res.get("effective_query"),
+                    "fallback_used": res.get("fallback_used"),
                     "chars": len(res["text"]),
                 },
             }
@@ -59,7 +62,14 @@ def extension_factory(pi: Any) -> None:
                 f"[CCR query '{query}': no matching items in {handle} "
                 f"({res['total_items']} items total). Try a different/broader query.]"
             )}],
-            "details": {"handle": handle, "query": query, "kept_items": 0},
+            "details": {
+                "handle": handle,
+                "query": query,
+                "kept_items": 0,
+                "matched_items": res.get("matched_items"),
+                "effective_query": res.get("effective_query"),
+                "fallback_used": res.get("fallback_used"),
+            },
         }
 
     pi.register_tool(
