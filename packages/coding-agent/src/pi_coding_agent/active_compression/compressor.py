@@ -69,6 +69,12 @@ def _crush_list_of_dicts(items: list, budget: int = DEFAULT_ITEM_BUDGET) -> tupl
 
 
 _CCR_MARKER_RE = re.compile(r"\[CCR:([0-9a-f]{12})\]")
+_QUERY_GUIDANCE = (
+    "Use exact IDs, symbols, labels, or schema words in query. If the needed "
+    "instruction/value is hidden inside the payload, query distinctive labels "
+    "such as target, instruction, operation, question, key, or id; avoid broad "
+    "generic terms that match many repeated lines."
+)
 
 
 def compress(text: str, ccr: CCRStore) -> str:
@@ -109,7 +115,7 @@ def compress(text: str, ccr: CCRStore) -> str:
             f"[CCR:{handle}] compressed JSON array: {n} items → {len(kept)} kept "
             f"({n_err} error item(s) preserved). Retrieve a relevant subset with "
             f"ccr_retrieve(handle={handle}, query=<what you need>) — query required, "
-            f"returns only matching items.\n{body}"
+            f"returns only matching items. {_QUERY_GUIDANCE}\n{body}"
         )
 
     lines = stripped.splitlines()
@@ -126,7 +132,7 @@ def compress(text: str, ccr: CCRStore) -> str:
             f"[CCR:{handle}] compressed log: {len(lines)} lines → head+tail+"
             f"{len(errs)} error line(s). Retrieve a relevant subset with "
             f"ccr_retrieve(handle={handle}, query=<what you need>) — query required, "
-            f"returns only matching items.\n{body}"
+            f"returns only matching items. {_QUERY_GUIDANCE}\n{body}"
         )
 
     # Generic large text → head + tail.
@@ -135,5 +141,5 @@ def compress(text: str, ccr: CCRStore) -> str:
     return (
         f"[CCR:{handle}] compressed text ({len(stripped)} chars). "
         f"Retrieve relevant items with ccr_retrieve(handle={handle}, query=<what you need>) "
-        f"— query required, returns only matching items.\n{head}\n… elided …\n{tail}"
+        f"— query required, returns only matching items. {_QUERY_GUIDANCE}\n{head}\n… elided …\n{tail}"
     )

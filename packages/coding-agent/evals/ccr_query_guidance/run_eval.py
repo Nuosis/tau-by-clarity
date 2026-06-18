@@ -11,6 +11,7 @@ The eval captures both retrieval behavior and final-answer coverage:
 - all queries
 - whether expected task-specific terms appear in any query
 - whether expected query targets appear in order
+- whether retrieved evidence contains the needed values
 - whether expected answer terms appear in the final answer
 - number of retrieval calls
 - final status/output
@@ -28,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -44,6 +46,7 @@ class RunResult:
     scenario_id: str
     expected_query_terms: list[str]
     expected_query_sequence: list[str]
+    expected_retrieval_terms: list[str]
     expected_answer_terms: list[str]
     queries: list[str]
     retrievals: list[dict[str, Any]]
@@ -51,11 +54,16 @@ class RunResult:
     first_query: str | None
     matched_expected_term: bool
     matched_expected_sequence: bool
+    matched_retrieval_terms: list[str]
+    retrieval_term_coverage: float
+    retrieval_passed: bool
     matched_answer_terms: list[str]
     answer_term_coverage: float
     query_passed: bool
     answer_passed: bool
     passed: bool
+    max_retrieval_calls: int | None
+    retrieval_limit_exceeded: bool
     retrieval_calls: int
     returncode: int
     stdout_tail: str
@@ -63,16 +71,24 @@ class RunResult:
     session_file: str | None
 
 
-def _make_compressible_payload(payload: str) -> str:
+def _make_compressible_payload(scenario: dict[str, Any]) -> str:
     """Bury the scenario in ordinary noise so the model must retrieve it.
 
     Active compression keeps line heads/tails. Putting the target payload in the
     middle prevents the answer from being visible in the marker while preserving a
     realistic large-tool-output shape.
     """
+    payload = str(scenario["payload"])
     prefix = "\n".join(f"noise_prefix_{i:03d}: unrelated background row" for i in range(80))
+    distractors: list[str] = []
+    distractor_lines = list(scenario.get("distractor_lines", []))
+    distractor_repeat = int(scenario.get("distractor_repeat", 1))
+    for i in range(distractor_repeat):
+        for line in distractor_lines:
+            distractors.append(f"distractor_{i:03d}: {line}")
+    distractor_text = "\n".join(distractors)
     suffix = "\n".join(f"noise_suffix_{i:03d}: unrelated trailing row" for i in range(30))
-    return f"{prefix}\n--- TARGET DATA START ---\n{payload}\n--- TARGET DATA END ---\n{suffix}\n"
+    return f"{prefix}\n{distractor_text}\n--- TARGET DATA START ---\n{payload}\n--- TARGET DATA END ---\n{suffix}\n"
 
 
 def _compress_payload(agent_dir: pathlib.Path, payload: str) -> str:
@@ -92,7 +108,7 @@ print(compress(text))
     ])
     proc = subprocess.run(
         [str(PY), "-c", code],
-        input=_make_compressible_payload(payload),
+        input=payload,
         text=True,
         capture_output=True,
         env=env,
@@ -153,6 +169,73 @@ def _extract_retrievals(session_file: pathlib.Path) -> list[dict[str, Any]]:
     return retrievals
 
 
+def _retrieval_call_count(session_file: pathlib.Path) -> int:
+    if not session_file.exists():
+        return 0
+    count = 0
+    for line in session_file.read_text(errors="replace").splitlines():
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        msg = obj.get("message", {})
+        if msg.get("role") != "assistant":
+            continue
+        for block in msg.get("content", []) or []:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "toolCall"
+                and block.get("name") == "ccr_retrieve"
+            ):
+                count += 1
+    return count
+
+
+def _run_with_retrieval_limit(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    timeout: int,
+    session_file: pathlib.Path,
+    max_retrieval_calls: int | None,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.Popen(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    deadline = time.monotonic() + timeout
+    limit_exceeded = False
+    try:
+        while proc.poll() is None:
+            if max_retrieval_calls is not None and _retrieval_call_count(session_file) > max_retrieval_calls:
+                limit_exceeded = True
+                proc.terminate()
+                break
+            if time.monotonic() > deadline:
+                proc.kill()
+                break
+            time.sleep(0.25)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+    returncode = proc.returncode if proc.returncode is not None else 1
+    if limit_exceeded:
+        returncode = 2
+        stderr = (stderr or "") + f"\nccr_retrieve call limit exceeded: max={max_retrieval_calls}\n"
+    elif time.monotonic() > deadline and returncode == 0:
+        returncode = 124
+    return subprocess.CompletedProcess(cmd, returncode, stdout or "", stderr or "")
+
+
 def _extract_final_answer(session_file: pathlib.Path) -> str:
     """Return the last assistant text response that was not solely a tool call."""
     final = ""
@@ -206,7 +289,7 @@ def run_one(scenario: dict[str, Any], args: argparse.Namespace, workdir: pathlib
     agent_dir.mkdir(parents=True, exist_ok=True)
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    marker = _compress_payload(agent_dir, scenario["payload"])
+    marker = _compress_payload(agent_dir, _make_compressible_payload(scenario))
     session_id = str(uuid.uuid4())
     prompt = f"""You are answering a search task from a compressed payload.
 
@@ -246,28 +329,61 @@ Use ccr_retrieve when you need evidence from the compressed payload. The payload
         "--print",
         prompt,
     ]
-    proc = subprocess.run(cmd, text=True, capture_output=True, env=env, timeout=args.timeout)
     session_file = session_dir / f"{session_id}.jsonl"
+    max_retrieval_calls = scenario.get("max_retrieval_calls")
+    if max_retrieval_calls is not None:
+        max_retrieval_calls = int(max_retrieval_calls)
+    proc = _run_with_retrieval_limit(
+        cmd,
+        env=env,
+        timeout=args.timeout,
+        session_file=session_file,
+        max_retrieval_calls=max_retrieval_calls,
+    )
     retrievals = _extract_retrievals(session_file)
     final_answer = _extract_final_answer(session_file)
     queries = [r["query"] for r in retrievals if isinstance(r.get("query"), str)]
+    retrieval_limit_exceeded = (
+        max_retrieval_calls is not None and len(queries) > max_retrieval_calls
+    )
     expected_terms = list(scenario.get("expected_query_terms", []))
     expected_sequence = list(scenario.get("expected_query_sequence", []))
+    expected_retrieval_terms = list(scenario.get("expected_retrieval_terms", []))
     expected_answer_terms = list(scenario.get("expected_answer_terms", expected_terms))
     matched_term = _matched_expected(queries, expected_terms)
     matched_sequence = _matched_sequence(queries, expected_sequence)
+    retrieval_text = "\n".join(
+        str(r.get("result_text") or "")
+        for r in retrievals
+    )
+    matched_retrieval_terms = _matched_terms(retrieval_text, expected_retrieval_terms)
+    retrieval_term_coverage = (
+        len(matched_retrieval_terms) / len(expected_retrieval_terms) if expected_retrieval_terms else 1.0
+    )
+    retrieval_threshold = float(scenario.get("retrieval_term_threshold", 1.0))
+    retrieval_passed = retrieval_term_coverage >= retrieval_threshold
     matched_answer_terms = _matched_terms(final_answer, expected_answer_terms)
     answer_term_coverage = (
         len(matched_answer_terms) / len(expected_answer_terms) if expected_answer_terms else 1.0
     )
-    query_passed = matched_sequence if expected_sequence else matched_term
     answer_threshold = float(scenario.get("answer_term_threshold", 1.0))
     answer_passed = answer_term_coverage >= answer_threshold
-    passed = answer_passed if expected_answer_terms else query_passed
+    # Query terms/sequence are diagnostics for intent, not an exact-answer key.
+    # A query also passes when the retrieval itself contains the required evidence:
+    # the process goal is minimal sufficient evidence, not literal phrasing.
+    query_passed = (matched_sequence if expected_sequence else matched_term) or retrieval_passed
+    if expected_answer_terms and (expected_sequence or expected_terms):
+        passed = query_passed and retrieval_passed and answer_passed
+    elif expected_answer_terms:
+        passed = retrieval_passed and answer_passed
+    else:
+        passed = query_passed and retrieval_passed
+    passed = passed and not retrieval_limit_exceeded
     return RunResult(
         scenario_id=sid,
         expected_query_terms=expected_terms,
         expected_query_sequence=expected_sequence,
+        expected_retrieval_terms=expected_retrieval_terms,
         expected_answer_terms=expected_answer_terms,
         queries=queries,
         retrievals=retrievals,
@@ -275,11 +391,16 @@ Use ccr_retrieve when you need evidence from the compressed payload. The payload
         first_query=queries[0] if queries else None,
         matched_expected_term=matched_term,
         matched_expected_sequence=matched_sequence,
+        matched_retrieval_terms=matched_retrieval_terms,
+        retrieval_term_coverage=retrieval_term_coverage,
+        retrieval_passed=retrieval_passed,
         matched_answer_terms=matched_answer_terms,
         answer_term_coverage=answer_term_coverage,
         query_passed=query_passed,
         answer_passed=answer_passed,
         passed=passed,
+        max_retrieval_calls=max_retrieval_calls,
+        retrieval_limit_exceeded=retrieval_limit_exceeded,
         retrieval_calls=len(queries),
         returncode=proc.returncode,
         stdout_tail=proc.stdout[-1200:],

@@ -12,7 +12,10 @@ make search useful without turning the model into a search engineer:
 2. For line-based payloads, matched lines are returned with a small surrounding
    context window, because a single matching line is often too thin to reveal the
    next query term (code bodies, config aliases, records, logs, etc.).
-3. Retry once with high-signal tokens extracted from the query (IDs, constants,
+3. Route structural/instruction-style queries through deterministic label
+   discovery before BM25, and follow concrete IDs found there with a bounded
+   local relationship lookup.
+4. Retry once with high-signal tokens extracted from the query (IDs, constants,
    underscored/dashed terms, long rare terms) and merge any matches. This handles
    noisy model queries without any domain-specific rules.
 """
@@ -36,6 +39,10 @@ _LINE_WINDOW_BEFORE = 1
 _LINE_WINDOW_AFTER = 5
 _MAX_RETURN_LINES = 80
 _MAX_FALLBACK_TERMS = 4
+_MAX_STRUCTURAL_LABELS = 8
+_MAX_WALK_TERMS = 6
+_MAX_TRACE_STEPS = 3
+_MAX_TRACE_DIRECT_MATCHES_PER_TERM = 12
 
 _STOPWORDS = {
     "a", "an", "and", "api", "are", "as", "at", "body", "by", "call", "called",
@@ -44,6 +51,23 @@ _STOPWORDS = {
     "payload", "provider", "request", "result", "return", "search", "status", "task",
     "the", "this", "to", "value", "what", "when", "where", "who", "why", "with",
 }
+
+_STRUCTURAL_TERMS = {
+    "actual", "answer", "expected", "goal", "id", "input", "instruction",
+    "instructions", "key", "operation", "output", "question", "schema",
+    "target", "task",
+}
+
+_RELATION_TERMS = {
+    "auth", "belongs_to", "call", "calls", "child", "children", "denial",
+    "denial_code", "edge", "edges", "escalation", "from", "job", "owner",
+    "parent", "parents", "policy", "provider", "risk_policy", "rule", "span",
+    "to", "trace", "vendor", "vendor_call",
+}
+
+_LABEL_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?([A-Za-z][A-Za-z0-9 _\-/]{1,60}?):\s*(.+?)\s*$"
+)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -157,9 +181,9 @@ def _fallback_query(query: str) -> str:
     kept: list[str] = []
     seen: set[str] = set()
     for score, _length, token in ranked:
-        if score <= 0:
-            continue
         key = token.lower()
+        if score < 4 and key not in _RELATION_TERMS:
+            continue
         if key in seen:
             continue
         seen.add(key)
@@ -169,11 +193,221 @@ def _fallback_query(query: str) -> str:
     return " ".join(reversed(kept))
 
 
-def _expand_line_windows(indices: list[int], total: int) -> list[int]:
+def _query_profile(query: str) -> dict[str, object]:
+    raw_tokens = _TOKEN_RE.findall(query)
+    tokens = [t.lower() for t in raw_tokens]
+    meaningful = [t for t in tokens if t not in _STOPWORDS and len(t) >= 3]
+    structural = [t for t in meaningful if t in _STRUCTURAL_TERMS]
+    relation = [t for t in meaningful if t in _RELATION_TERMS]
+    signals = [_signal_score(t)[0] for t in raw_tokens]
+    high_signal = sum(1 for s in signals if s >= 5)
+    return {
+        "tokens": tokens,
+        "meaningful": meaningful,
+        "structural": structural,
+        "relation": relation,
+        "high_signal": high_signal,
+        "structural_ratio": (len(structural) / len(meaningful)) if meaningful else 0.0,
+        "relation_ratio": (len(relation) / len(meaningful)) if meaningful else 0.0,
+    }
+
+
+def _structural_label_score(line: str, query_tokens: set[str]) -> tuple[int, str]:
+    """Score line-label candidates by stable structure, not corpus answers."""
+    match = _LABEL_RE.match(line)
+    if not match:
+        return (0, line)
+    label, value = match.groups()
+    label_tokens = set(_tokenize(label))
+    label_structural_tokens = label_tokens & _STRUCTURAL_TERMS
+    if not label_structural_tokens:
+        return (0, line)
+    overlap = len(label_tokens & query_tokens)
+    if overlap == 0:
+        return (0, line)
+    score = 10 + overlap
+    if label.strip().upper() == label.strip() and any(c.isalpha() for c in label):
+        score += 4
+    if any(t in label_tokens for t in ("target", "instruction", "operation", "question", "task", "input")):
+        score += 4
+    if value.strip():
+        score += 1
+    return (score, line)
+
+
+def _structural_label_matches(items: list[str], query: str, max_labels: int) -> list[int]:
+    query_tokens = set(_tokenize(query))
+    scored: list[tuple[int, int]] = []
+    for i, line in enumerate(items):
+        score, _ = _structural_label_score(line, query_tokens)
+        if score > 0:
+            scored.append((score, i))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [i for _score, i in scored[:max_labels]]
+
+
+def _structural_label_key(line: str) -> str | None:
+    match = _LABEL_RE.match(line)
+    if not match:
+        return None
+    label, _value = match.groups()
+    label_tokens = [t for t in _tokenize(label) if t in _STRUCTURAL_TERMS]
+    if not label_tokens:
+        return None
+    return " ".join(label_tokens)
+
+
+def _has_ambiguous_structural_labels(items: list[str], indices: list[int]) -> bool:
+    groups: dict[str, set[str]] = {}
+    for idx in indices:
+        key = _structural_label_key(items[idx])
+        if not key:
+            continue
+        groups.setdefault(key, set()).add(items[idx].strip().lower())
+    return any(len(values) > 1 for values in groups.values())
+
+
+def _extract_walk_terms(lines: list[str]) -> list[str]:
+    """Extract concrete terms worth following from retrieved structural evidence."""
+    ranked: list[tuple[int, int, str]] = []
+    for line in lines:
+        for raw in _TOKEN_RE.findall(line):
+            token = raw.strip("'\"`.,:;()[]{}")
+            score, length, normalized = _signal_score(token)
+            if score <= 0:
+                continue
+            if normalized.lower() in _STRUCTURAL_TERMS or normalized.lower() in _STOPWORDS:
+                continue
+            ranked.append((score, length, normalized))
+    ranked.sort(reverse=True)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for _score, _length, token in ranked:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(token)
+        if len(kept) >= _MAX_WALK_TERMS:
+            break
+    return kept
+
+
+def _line_indices_containing_terms(items: list[str], terms: list[str]) -> list[int]:
+    if not terms:
+        return []
+    term_lowers = [t.lower() for t in terms]
+    indices: list[int] = []
+    for i, line in enumerate(items):
+        lowered = line.lower()
+        if any(term in lowered for term in term_lowers):
+            indices.append(i)
+    return indices
+
+
+def _line_has_relation_shape(line: str) -> bool:
+    stripped = line.strip()
+    if "->" in line:
+        return True
+    if stripped.startswith("def ") or stripped.startswith("return ") or " return " in line:
+        return True
+    tokens = set(_tokenize(line))
+    if tokens & _RELATION_TERMS:
+        return True
+    return False
+
+
+def _extract_trace_terms(lines: list[str]) -> list[str]:
+    ranked: list[tuple[int, int, str]] = []
+    for line in lines:
+        if not _line_has_relation_shape(line):
+            continue
+        for raw in _TOKEN_RE.findall(line):
+            token = raw.strip("'\"`.,:;()[]{}")
+            score, length, normalized = _signal_score(token)
+            if score < 4:
+                continue
+            lowered = normalized.lower()
+            if lowered in _STRUCTURAL_TERMS or lowered in _STOPWORDS:
+                continue
+            ranked.append((score, length, normalized))
+    ranked.sort(reverse=True)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for _score, _length, token in ranked:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(token)
+        if len(kept) >= _MAX_WALK_TERMS:
+            break
+    return kept
+
+
+def _trace_related_indices(items: list[str], seed_indices: list[int], max_lines: int) -> tuple[list[int], list[str]]:
+    """Bounded deterministic relationship expansion from retrieved evidence.
+
+    Search finds anchors. Trace follows concrete IDs/symbols from relation-shaped
+    lines, adding rows that mention those terms and repeating for a few steps.
+    It does not infer answers; it only returns linked evidence.
+    """
+    chosen: set[int] = set(seed_indices)
+    frontier_terms = _extract_trace_terms([items[i] for i in sorted(chosen)])
+    seen_terms = {t.lower() for t in frontier_terms}
+    steps: list[str] = []
+
+    for step in range(_MAX_TRACE_STEPS):
+        if not frontier_terms or len(chosen) >= max_lines:
+            break
+        added: list[int] = []
+        for term in frontier_terms:
+            matches = _line_indices_containing_terms(items, [term])
+            for idx in matches[:_MAX_TRACE_DIRECT_MATCHES_PER_TERM]:
+                if idx not in chosen:
+                    chosen.add(idx)
+                    added.append(idx)
+                if len(chosen) >= max_lines:
+                    break
+            if len(chosen) >= max_lines:
+                break
+        if not added:
+            break
+        steps.append(f"trace_step_{step + 1}")
+        next_terms = _extract_trace_terms([items[i] for i in added])
+        frontier_terms = []
+        for term in next_terms:
+            key = term.lower()
+            if key in seen_terms:
+                continue
+            seen_terms.add(key)
+            frontier_terms.append(term)
+
+    return sorted(chosen), steps
+
+
+def _match_repetition_ratio(items: list[str], indices: list[int]) -> float:
+    if not indices:
+        return 0.0
+    normalized = []
+    for i in indices:
+        text = re.sub(r"\d+", "#", items[i].lower())
+        text = re.sub(r"^[a-z][a-z0-9_-]*_#:", "row_#:", text)
+        normalized.append(text)
+    return 1.0 - (len(set(normalized)) / len(normalized))
+
+
+def _expand_line_windows(
+    indices: list[int],
+    total: int,
+    *,
+    before: int = _LINE_WINDOW_BEFORE,
+    after: int = _LINE_WINDOW_AFTER,
+) -> list[int]:
     expanded: set[int] = set()
     for i in indices:
-        start = max(0, i - _LINE_WINDOW_BEFORE)
-        end = min(total, i + _LINE_WINDOW_AFTER + 1)
+        start = max(0, i - before)
+        end = min(total, i + after + 1)
         for j in range(start, end):
             expanded.add(j)
             if len(expanded) >= _MAX_RETURN_LINES:
@@ -194,6 +428,8 @@ def search_original(original: str, query: str, *, max_items: int = 40) -> dict:
       is_json          whether items were JSON elements (vs lines)
       effective_query  original query, annotated with deterministic fallback when used
       fallback_used    whether high-signal fallback matches were merged
+      route            deterministic retrieval route used
+      steps            route steps taken
     """
     items, is_json = _split_items(original)
     total = len(items)
@@ -206,23 +442,119 @@ def search_original(original: str, query: str, *, max_items: int = 40) -> dict:
             "is_json": is_json,
             "effective_query": query,
             "fallback_used": False,
+            "route": "empty",
+            "steps": [],
         }
 
-    chosen, _scores = _ranked_matches(items, query, max_items)
-    effective_query = query
+    profile = _query_profile(query)
+    route = "search"
+    steps: list[str] = []
+    chosen: list[int] = []
     fallback_used = False
+    effective_query = query
 
-    fallback = _fallback_query(query)
-    if fallback and fallback.strip().lower() != query.strip().lower():
-        fallback_chosen, _fallback_scores = _ranked_matches(items, fallback, max_items)
-        if fallback_chosen:
-            # Deterministically de-noise model queries. BM25 is OR-like: a noisy
-            # query can match generic words and miss the best identifier-centered
-            # slice. Add the high-signal retry matches to the candidate set so the
-            # result includes evidence around the distinctive task values.
-            chosen = sorted(set(chosen) | set(fallback_chosen))
-            effective_query = fallback if not chosen else f"{query} | fallback:{fallback}"
-            fallback_used = True
+    if not is_json and (
+        float(profile["structural_ratio"]) >= 0.5
+        or (
+            profile["structural"]
+            and int(profile["high_signal"]) == 0
+            and not profile["relation"]
+        )
+    ):
+        route = "structural_discovery"
+        structural = _structural_label_matches(items, query, _MAX_STRUCTURAL_LABELS)
+        if structural:
+            if _has_ambiguous_structural_labels(items, structural):
+                body = "\n".join(items[i] for i in structural)
+                return {
+                    "text": (
+                        "CCR retrieval blocked: multiple matching structural labels "
+                        "were found. Retry with a more specific label or identifier.\n"
+                        f"{body}"
+                    ),
+                    "total_items": total,
+                    "kept_items": len(structural),
+                    "matched_items": len(structural),
+                    "is_json": is_json,
+                    "effective_query": query,
+                    "fallback_used": False,
+                    "route": "structural_ambiguous",
+                    "steps": ["structural_labels", "ambiguity_guard"],
+                }
+            chosen = structural
+            steps.append("structural_labels")
+            walk_terms = _extract_walk_terms([items[i] for i in structural])
+            walked = _line_indices_containing_terms(items, walk_terms)
+            if walked:
+                chosen = sorted(set(chosen) | set(walked))
+                route = "structural_walk"
+                effective_query = f"{query} | walk:{' '.join(walk_terms)}"
+                steps.append("walk_terms")
+
+    if not chosen:
+        chosen, _scores = _ranked_matches(items, query, max_items)
+        route = "search"
+
+        if (
+            not is_json
+            and chosen
+            and int(profile["high_signal"]) == 0
+            and _match_repetition_ratio(items, chosen) > 0.75
+        ):
+            # Avoid flooding the model with repeated examples/tutorial text. When
+            # no concrete term anchors the query and the top hits are repetitive,
+            # return a small blocked result instead of a large repetitive slice.
+            return {
+                "text": (
+                    "CCR retrieval blocked: query matched repetitive or low-diversity "
+                    "content without a distinctive ID, symbol, label, or schema term. "
+                    "Retry with a concrete value or a structural label such as target, "
+                    "instruction, operation, question, key, or id."
+                ),
+                "total_items": total,
+                "kept_items": 1,
+                "matched_items": len(chosen),
+                "is_json": is_json,
+                "effective_query": query,
+                "fallback_used": False,
+                "route": "broad_query_rejected",
+                "steps": ["repetition_guard"],
+            }
+
+    if route == "search":
+        fallback = _fallback_query(query)
+        if fallback and fallback.strip().lower() != query.strip().lower():
+            fallback_chosen, _fallback_scores = _ranked_matches(items, fallback, max_items)
+            if fallback_chosen:
+                # Deterministically de-noise model queries. BM25 is OR-like: a noisy
+                # query can match generic words and miss the best identifier-centered
+                # slice. If the original hits are repetitive, replace them with the
+                # high-signal slice; otherwise merge to preserve useful nearby context.
+                if not is_json and _match_repetition_ratio(items, chosen) > 0.75:
+                    chosen = fallback_chosen
+                    steps.append("high_signal_replaced_repetitive")
+                else:
+                    chosen = sorted(set(chosen) | set(fallback_chosen))
+                effective_query = fallback if not chosen else f"{query} | fallback:{fallback}"
+                fallback_used = True
+                steps.append("high_signal_fallback")
+
+    if not is_json and chosen:
+        traced, trace_steps = _trace_related_indices(items, chosen, _MAX_RETURN_LINES)
+        if len(traced) > len(set(chosen)):
+            chosen = traced
+            steps.extend(trace_steps)
+            if route == "structural_discovery":
+                route = "structural_walk"
+            elif route == "search":
+                route = "search_then_trace"
+        elif (
+            route == "search"
+            and len(set(chosen)) > 1
+            and any(_line_has_relation_shape(items[i]) for i in set(chosen))
+        ):
+            route = "search_then_trace"
+            steps.append("trace_in_window")
 
     matched_items = len(chosen)
     chosen.sort()  # stable basis for JSON and for line window expansion
@@ -231,7 +563,12 @@ def search_original(original: str, query: str, *, max_items: int = 40) -> dict:
         kept = chosen
         body = "[" + ", ".join(items[i] for i in kept) + "]"
     else:
-        kept = _expand_line_windows(chosen, total)
+        if route in ("structural_discovery", "structural_walk"):
+            kept = _expand_line_windows(chosen, total, before=0, after=_LINE_WINDOW_AFTER)
+        elif "high_signal_replaced_repetitive" in steps:
+            kept = _expand_line_windows(chosen, total, before=0, after=_LINE_WINDOW_AFTER)
+        else:
+            kept = _expand_line_windows(chosen, total)
         body = "\n".join(items[i] for i in kept)
 
     return {
@@ -242,4 +579,6 @@ def search_original(original: str, query: str, *, max_items: int = 40) -> dict:
         "is_json": is_json,
         "effective_query": effective_query,
         "fallback_used": fallback_used,
+        "route": route,
+        "steps": steps,
     }

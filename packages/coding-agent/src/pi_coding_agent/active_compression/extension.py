@@ -39,9 +39,11 @@ def extension_factory(pi: Any) -> None:
         res = search_original(original, query)
         if res["kept_items"] > 0:
             note = (
-                f"[CCR query '{query}': {res['kept_items']} of {res['total_items']} "
-                f"items. Issue another ccr_retrieve with a different query to fetch "
-                f"other items.]"
+                f"[CCR query '{query}': route={res.get('route', 'unknown')} "
+                f"steps={','.join(res.get('steps') or []) or 'none'}; "
+                f"{res['kept_items']} of {res['total_items']} items. If insufficient, "
+                f"issue another ccr_retrieve with a more specific ID, symbol, label, "
+                f"schema word, or relationship term.]"
             )
             return {
                 "content": [{"type": "text", "text": f"{note}\n{res['text']}"}],
@@ -53,6 +55,8 @@ def extension_factory(pi: Any) -> None:
                     "total_items": res["total_items"],
                     "effective_query": res.get("effective_query"),
                     "fallback_used": res.get("fallback_used"),
+                    "route": res.get("route"),
+                    "steps": res.get("steps"),
                     "chars": len(res["text"]),
                 },
             }
@@ -69,6 +73,8 @@ def extension_factory(pi: Any) -> None:
                 "matched_items": res.get("matched_items"),
                 "effective_query": res.get("effective_query"),
                 "fallback_used": res.get("fallback_used"),
+                "route": res.get("route"),
+                "steps": res.get("steps"),
             },
         }
 
@@ -79,8 +85,11 @@ def extension_factory(pi: Any) -> None:
             "Retrieve the specific parts of a compressed payload needed for the "
             "current task. Use semantically rich task terms for `query`: exact IDs, "
             "node names, file paths, symbols, entity names, timestamps, or other "
-            "distinctive values from the task. Call again with another specific "
-            "query when you need more."
+            "distinctive values from the task. If the needed instruction or value is "
+            "hidden inside the compressed payload, search for distinctive labels or "
+            "schema words such as target, instruction, operation, question, key, or "
+            "id instead of broad generic terms. Call again with another "
+            "specific query when you need more."
         ),
         parameters={
             "type": "object",
@@ -92,7 +101,9 @@ def extension_factory(pi: Any) -> None:
                         "Required. Semantically rich search term for the next needed "
                         "piece of information: prefer exact IDs, node names, file "
                         "paths, symbols, entity names, timestamps, or other distinctive "
-                        "task values."
+                        "task values. For hidden payload instructions, use labels or "
+                        "schema words such as target, instruction, operation, question, "
+                        "key, or id."
                     ),
                 },
             },

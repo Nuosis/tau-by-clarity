@@ -100,6 +100,7 @@
     "id": "incident_trace_chain",
     "kind": "iterative_incident",
     "task": "Find the root cause for request req_741.",
+    "max_retrieval_calls": 5,
     "expected_query_terms": [
       "req_741",
       "job_91f",
@@ -111,12 +112,19 @@
       "job_91f",
       "ven_44c"
     ],
+    "expected_retrieval_terms": [
+      "req_741",
+      "job_91f",
+      "ven_44c",
+      "kyc_timeout"
+    ],
     "payload": "Example incident trace: req_demo -> job_demo -> vendor_demo -> demo_timeout.\nDo not use example identifiers for real incidents.\n\n2026-06-17T09:00:00Z trace=req_220 route=/checkout status=200 job=job_11a\n2026-06-17T09:00:01Z trace=req_741 route=/checkout status=500 job=job_91f account=acct_red\n2026-06-17T09:00:02Z trace=req_888 route=/profile status=200 job=job_22c\n2026-06-17T09:00:04Z job=job_91f worker=payment-enrichment vendor_call=ven_44c queue=payments\n2026-06-17T09:00:05Z job=job_11a worker=receipt-email vendor_call=ven_11x queue=email\n2026-06-17T09:00:06Z vendor_call=ven_44c provider=Alloy status=failed reason=kyc_timeout retryable=true\n2026-06-17T09:00:07Z vendor_call=ven_11x provider=Sendgrid status=ok\n"
   },
   {
     "id": "code_symbol_call_chain",
     "kind": "iterative_code",
     "task": "Trace what external provider call is reached from create_invoice_endpoint.",
+    "max_retrieval_calls": 5,
     "expected_query_terms": [
       "create_invoice_endpoint",
       "create_invoice_for_account",
@@ -128,12 +136,19 @@
       "create_invoice_for_account",
       "send_invoice"
     ],
+    "expected_retrieval_terms": [
+      "create_invoice_endpoint",
+      "create_invoice_for_account",
+      "send_invoice",
+      "stripe.Invoice.create"
+    ],
     "payload": "Example call chain: demo_handler -> demo_service -> demo_provider.call.\n\nsrc/api/routes.py\ndef create_invoice_endpoint(request):\n    account_id = request.json['account_id']\n    return create_invoice_for_account(account_id)\n\nsrc/billing/invoices.py\ndef create_invoice_for_account(account_id):\n    customer = load_billing_customer(account_id)\n    return send_invoice(customer.stripe_id)\n\nsrc/billing/customers.py\ndef load_billing_customer(account_id):\n    return BillingCustomer.get(account_id=account_id)\n\nsrc/billing/send.py\ndef send_invoice(stripe_id):\n    return stripe.Invoice.create(customer=stripe_id, collection_method='send_invoice')\n"
   },
   {
     "id": "customer_policy_chain",
     "kind": "iterative_records",
     "task": "Who is the escalation owner for customer CUST-918?",
+    "max_retrieval_calls": 5,
     "expected_query_terms": [
       "CUST-918",
       "ACC-44",
@@ -147,12 +162,20 @@
       "ORG-9",
       "POL-7"
     ],
+    "expected_retrieval_terms": [
+      "CUST-918",
+      "ACC-44",
+      "ORG-9",
+      "POL-7",
+      "Dana Ruiz"
+    ],
     "payload": "Example: customer CUST-000 belongs_to account ACC-00; account ACC-00 parent_org ORG-0.\n\ncustomer CUST-117 belongs_to account ACC-12\ncustomer CUST-918 belongs_to account ACC-44\ncustomer CUST-302 belongs_to account ACC-99\naccount ACC-44 parent_org ORG-9 region=west\naccount ACC-12 parent_org ORG-3 region=east\norg ORG-9 risk_policy POL-7 tier=high\norg ORG-3 risk_policy POL-2 tier=low\npolicy POL-7 escalation_owner Dana Ruiz pager=pager-duty-41\npolicy POL-2 escalation_owner Lee Wong pager=pager-duty-12\n"
   },
   {
     "id": "config_alias_chain",
     "kind": "iterative_config",
     "task": "What percentage rollout controls FEATURE_RECALL_ENABLED and who approves it?",
+    "max_retrieval_calls": 5,
     "expected_query_terms": [
       "FEATURE_RECALL_ENABLED",
       "ROLLOUT_VECTOR_RECALL",
@@ -164,6 +187,13 @@
       "FEATURE_RECALL_ENABLED",
       "ROLLOUT_VECTOR_RECALL",
       "rr_82"
+    ],
+    "expected_retrieval_terms": [
+      "FEATURE_RECALL_ENABLED",
+      "ROLLOUT_VECTOR_RECALL",
+      "rr_82",
+      "percentage=25",
+      "approver=Nina"
     ],
     "expected_answer_terms": [
       "FEATURE_RECALL_ENABLED",
@@ -177,6 +207,7 @@
     "id": "claim_denial_chain",
     "kind": "iterative_claims",
     "task": "Why was claim CLM-552 denied?",
+    "max_retrieval_calls": 5,
     "expected_query_terms": [
       "CLM-552",
       "DEN-14",
@@ -190,6 +221,44 @@
       "RULE-203",
       "AUTH-991"
     ],
+    "expected_retrieval_terms": [
+      "CLM-552",
+      "DEN-14",
+      "RULE-203",
+      "PLAN-GOLD",
+      "AUTH-991",
+      "submitted_late"
+    ],
     "payload": "Example claim: CLM-000 denied by DEN-00 due to RULE-00.\n\nclaim CLM-101 patient PAT-10 denial_code DEN-02 auth AUTH-120\nclaim CLM-552 patient PAT-88 denial_code DEN-14 auth AUTH-991\nclaim CLM-772 patient PAT-77 denial_code DEN-03 auth AUTH-772\npatient PAT-88 plan PLAN-GOLD\ndenial DEN-14 reason=missing_prior_auth rule=RULE-203\ndenial DEN-02 reason=coverage_expired rule=RULE-100\nrule RULE-203 requires prior authorization for CPT 70553 under PLAN-GOLD before date_of_service\nauth AUTH-991 status=submitted_late submitted_after=date_of_service channel=fax\nauth AUTH-120 status=approved submitted_before=date_of_service\n"
+  },
+  {
+    "id": "graphwalks_operation_chain",
+    "kind": "iterative_graphwalks",
+    "task": "Complete the graph task described inside the compressed payload. Return the final answer node id.",
+    "max_retrieval_calls": 5,
+    "expected_query_terms": [
+      "TARGET OPERATION",
+      "6c8349cc72",
+      "c81e728d9d"
+    ],
+    "expected_query_sequence": [
+      "TARGET OPERATION",
+      "6c8349cc72"
+    ],
+    "expected_retrieval_terms": [
+      "TARGET OPERATION",
+      "6c8349cc72",
+      "c81e728d9d -> 6c8349cc72"
+    ],
+    "expected_answer_terms": [
+      "c81e728d9d"
+    ],
+    "distractor_repeat": 150,
+    "distractor_lines": [
+      "Example graph task node final answer: demo_parent -> demo_child; do not use this example.",
+      "Example operation: Perform BFS from node cfcd208495 with depth 1; final answer examples are not the task.",
+      "Graph tutorial text: generic graph edges, task descriptions, node ids, and final answer labels."
+    ],
+    "payload": "You will be given a directed edge list plus one target operation.\nExamples above are distractors; do not answer from examples.\n\nEdges:\n0cc175b9c0 -> 92eb5ffee6\n92eb5ffee6 -> 4a8a08f09d\nc81e728d9d -> 6c8349cc72\n6c8349cc72 -> a87ff679a2\n45c48cce2e -> 9bf31c7ff0\n70efdf2ec9 -> 6f4922f455\n\nTARGET OPERATION: parents(6c8349cc72)\nRespond with the parent id list.\n"
   }
 ]
