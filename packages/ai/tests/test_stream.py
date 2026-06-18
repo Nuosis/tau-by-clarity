@@ -16,6 +16,7 @@ from pi_ai import (
     EventDone,
     EventError,
     TextContent,
+    ToolResultMessage,
     Usage,
     get_model,
     stream_simple,
@@ -42,6 +43,16 @@ def make_assistant_message(model, text: str = "Hello!") -> AssistantMessage:
         model=model.id,
         usage=Usage(),
         stop_reason="stop",
+        timestamp=int(time.time() * 1000),
+    )
+
+
+def make_tool_result(tool_name: str, text: str) -> ToolResultMessage:
+    import time
+    return ToolResultMessage(
+        tool_call_id=f"{tool_name}-1",
+        tool_name=tool_name,
+        content=[TextContent(type="text", text=text)],
         timestamp=int(time.time() * 1000),
     )
 
@@ -80,6 +91,29 @@ async def mock_stream_simple_fn(model, context, options=None):
         timestamp=int(time.time() * 1000),
     )
     yield EventDone(type="done", reason="stop", message=final)
+
+
+def test_compress_context_preserves_prompts_and_read_results():
+    import pi_ai
+    from pi_ai.compression import compress_context
+
+    pi_ai.register_compressor(lambda text: f"<<C>>{text[:5]}")
+    try:
+        ctx = Context(
+            messages=[
+                make_user_message("live prompt"),
+                make_tool_result("read", "fresh file content"),
+                make_tool_result("bash", "large command output"),
+            ]
+        )
+
+        out = compress_context(ctx)
+
+        assert out.messages[0].content == "live prompt"
+        assert out.messages[1].content[0].text == "fresh file content"
+        assert out.messages[2].content[0].text.startswith("<<C>>")
+    finally:
+        pi_ai.unregister_compressor()
 
 
 @pytest.mark.asyncio
