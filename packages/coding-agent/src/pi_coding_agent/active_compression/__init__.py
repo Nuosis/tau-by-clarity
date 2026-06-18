@@ -1,5 +1,11 @@
-"""Active compression — content-aware, reversible (CCR) compression of tool-output
-payloads, installed as pi_ai's universal outbound compressor.
+"""Legacy local active compression for Tau.
+
+This package is Tau's hand-rolled CCR/compression implementation. It is not the
+Headroom SDK path. Keep changes here isolated while real Headroom integration is
+designed and tested.
+
+It currently provides content-aware, reversible compression of tool-output
+payloads and installs itself as pi_ai's universal outbound compressor.
 
 Flag: `active_compression` in settings.json — **default ON if absent**. Env
 kill-switch `PI_ACTIVE_COMPRESSION_DISABLED=1`. Registered on import (the per-call

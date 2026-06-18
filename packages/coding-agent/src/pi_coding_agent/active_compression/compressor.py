@@ -1,8 +1,12 @@
-"""Content-aware compressor (Smart-Crusher-lite, §12 / Headroom architecture).
+"""Legacy local content-aware compressor.
 
-Compresses large tool-output payloads by content type, ALWAYS preserving error
-items, and caches the original in the CCR store so it stays retrievable. Lossy in
-the prompt, reversible via CCR. Short payloads pass through untouched.
+This is Tau's hand-rolled Smart-Crusher-like implementation, not Headroom.
+Keep it isolated while real Headroom behavior is probed and integrated.
+
+It compresses large tool-output payloads by content type, ALWAYS preserving
+error items, and caches the original in the local CCR store so it stays
+retrievable. Lossy in the prompt, reversible via local CCR. Short payloads pass
+through untouched.
 """
 
 from __future__ import annotations

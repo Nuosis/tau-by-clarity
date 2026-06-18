@@ -104,6 +104,14 @@ def parse_args(
     """Parse CLI arguments into an Args dataclass."""
     result = Args()
     i = 0
+    if args and args[0] == "resume":
+        next_arg = args[1] if len(args) > 1 else None
+        if next_arg is not None and not next_arg.startswith("-") and not next_arg.startswith("@"):
+            result.session = next_arg
+            i = 2
+        else:
+            result.resume = True
+            i = 1
     while i < len(args):
         arg = args[i]
 

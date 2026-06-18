@@ -207,3 +207,85 @@ class TestShell:
         from pi_coding_agent.utils.shell import get_shell_env
         env = get_shell_env()
         assert isinstance(env, dict)
+
+
+# ============================================================================
+# clarity pii
+# ============================================================================
+
+class TestClarityPiiWalk:
+    def test_provider_payload_tokenization_skips_response_protocol_ids(self):
+        from pi_coding_agent.clarity_pii.vault import Vault
+        from pi_coding_agent.clarity_pii.walk import (
+            provider_payload_protocol_slots,
+            provider_payload_string_slots,
+        )
+
+        raw_function_call_id = "fc_0400e0ad26af8453016a4111111111111111b166aefb19465b3"
+        payload = {
+            "model": "gpt-5.5",
+            "input": [
+                {
+                    "id": "rs_09dc8f8587d38d3e016a3340667384819b9b9e1efb018d3194",
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-4111111111111111",
+                    "summary": [],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "email jane@acme.com"}],
+                },
+                {
+                    "type": "function_call",
+                    "id": raw_function_call_id,
+                    "call_id": "call_4111111111111111",
+                    "name": "edit",
+                    "arguments": "{\"old_string\":\"email jane@acme.com\"}",
+                },
+            ],
+        }
+        vault = Vault()
+
+        for get, set_ in provider_payload_protocol_slots(payload):
+            set_(vault.detokenize(get()))
+        for get, set_ in provider_payload_string_slots(payload):
+            set_(vault.tokenize(get()))
+
+        reasoning = payload["input"][0]
+        assert reasoning["id"] == "rs_09dc8f8587d38d3e016a3340667384819b9b9e1efb018d3194"
+        assert reasoning["encrypted_content"] == "opaque-4111111111111111"
+        assert payload["input"][1]["content"][0]["text"] == "email [PII:EMAIL:1]"
+        assert payload["input"][2]["id"] == raw_function_call_id
+        assert payload["input"][2]["call_id"] == "call_4111111111111111"
+        assert payload["input"][2]["arguments"] == "{\"old_string\":\"email [PII:EMAIL:1]\"}"
+
+    def test_provider_payload_protocol_slots_restore_pretokenized_ids(self):
+        from pi_coding_agent.clarity_pii.vault import Vault
+        from pi_coding_agent.clarity_pii.walk import (
+            provider_payload_protocol_slots,
+            provider_payload_string_slots,
+        )
+
+        vault = Vault()
+        raw_card = "4111111111111111"
+        token = vault.tokenize(raw_card)
+        raw_id = f"fc_0400e0ad26af8453016a{raw_card}b166aefb19465b3"
+        payload = {
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": raw_id.replace(raw_card, token),
+                    "call_id": f"call_{token}",
+                    "arguments": "{\"note\":\"email jane@acme.com\"}",
+                }
+            ]
+        }
+
+        for get, set_ in provider_payload_protocol_slots(payload):
+            set_(vault.detokenize(get()))
+        for get, set_ in provider_payload_string_slots(payload):
+            set_(vault.tokenize(get()))
+
+        assert payload["input"][0]["id"] == raw_id
+        assert payload["input"][0]["call_id"] == f"call_{raw_card}"
+        assert payload["input"][0]["arguments"] == "{\"note\":\"email [PII:EMAIL:1]\"}"

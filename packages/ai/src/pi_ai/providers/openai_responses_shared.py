@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from pi_ai.utils.json_parse import parse_streaming_json
+from pi_ai.utils.json_parse import parse_streaming_json, parse_streaming_json_result
 from pi_ai.utils.sanitize_unicode import sanitize_surrogates
 
 if TYPE_CHECKING:
@@ -321,7 +321,13 @@ async def process_responses_stream(
                 args_str = event.get("arguments") if isinstance(event, dict) else getattr(event, "arguments", "")
                 current_partial_json = args_str or ""
                 current_block.arguments_raw = current_partial_json
-                current_block.arguments = parse_streaming_json(current_partial_json)
+                parse_result = parse_streaming_json_result(current_partial_json)
+                current_block.arguments = parse_result.value or {}
+                current_block.arguments_repaired_raw = parse_result.repaired_text
+                current_block.arguments_repair_applied = parse_result.repair_applied
+                current_block.arguments_parse_error = (
+                    parse_result.error if not parse_result.ok or parse_result.repair_applied else None
+                )
 
         elif event_type == "response.output_item.done":
             item = event.get("item") if isinstance(event, dict) else getattr(event, "item", {})
@@ -350,15 +356,24 @@ async def process_responses_stream(
 
             elif item_type == "function_call":
                 args_raw = current_partial_json or item_dict.get("arguments", "{}")
-                args = parse_streaming_json(args_raw)
+                parse_result = parse_streaming_json_result(args_raw)
+                args = parse_result.value or {}
                 if getattr(current_block, "type", None) == "toolCall":
                     current_block.arguments_raw = args_raw
                     current_block.arguments = args
+                    current_block.arguments_repaired_raw = parse_result.repaired_text
+                    current_block.arguments_repair_applied = parse_result.repair_applied
+                    current_block.arguments_parse_error = (
+                        parse_result.error if not parse_result.ok or parse_result.repair_applied else None
+                    )
                 tool_call = ToolCall(
                     id=f"{item_dict.get('call_id', '')}|{item_dict.get('id', '')}",
                     name=item_dict.get("name", ""),
                     arguments=args,
                     arguments_raw=args_raw,
+                    arguments_repaired_raw=parse_result.repaired_text,
+                    arguments_repair_applied=parse_result.repair_applied,
+                    arguments_parse_error=parse_result.error if not parse_result.ok or parse_result.repair_applied else None,
                 )
                 current_partial_json = ""
                 current_block = None
@@ -396,12 +411,10 @@ async def process_responses_stream(
                     output.stop_reason = "toolUse"
 
         elif event_type == "error":
-            code = event.get("code") if isinstance(event, dict) else getattr(event, "code", "")
-            msg_text = event.get("message") if isinstance(event, dict) else getattr(event, "message", "Unknown error")
-            raise RuntimeError(f"Error Code {code}: {msg_text}")
+            raise RuntimeError(_format_responses_error(event))
 
         elif event_type == "response.failed":
-            raise RuntimeError("Unknown error")
+            raise RuntimeError(_format_response_failed_error(event))
 
 
 def _map_stop_reason(status: str | None) -> "StopReason":
@@ -416,3 +429,38 @@ def _map_stop_reason(status: str | None) -> "StopReason":
         "queued": "stop",
     }
     return mapping.get(status, "stop")
+
+
+def _event_to_dict(event: Any) -> dict[str, Any]:
+    if isinstance(event, dict):
+        return event
+    data = getattr(event, "__dict__", None)
+    return data if isinstance(data, dict) else {}
+
+
+def _format_responses_error(event: Any) -> str:
+    event_dict = _event_to_dict(event)
+    nested = event_dict.get("error")
+    error_dict = nested if isinstance(nested, dict) else {}
+
+    code = event_dict.get("code") or error_dict.get("code") or error_dict.get("type")
+    message = event_dict.get("message") or error_dict.get("message")
+    request_id = event_dict.get("request_id") or error_dict.get("request_id")
+
+    if code or message:
+        suffix = f" request_id={request_id}" if request_id else ""
+        return f"Error Code {code or 'unknown'}: {message or 'Unknown error'}{suffix}"
+
+    return f"Responses stream error: {json.dumps(event_dict, ensure_ascii=False, default=str)}"
+
+
+def _format_response_failed_error(event: Any) -> str:
+    event_dict = _event_to_dict(event)
+    response = event_dict.get("response")
+    response_dict = response if isinstance(response, dict) else _event_to_dict(response)
+    error = response_dict.get("error")
+    if error:
+        return _format_responses_error({"type": "error", "error": error})
+    if response_dict:
+        return f"Response failed: {json.dumps(response_dict, ensure_ascii=False, default=str)}"
+    return f"Response failed: {json.dumps(event_dict, ensure_ascii=False, default=str)}"
