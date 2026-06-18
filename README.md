@@ -25,6 +25,24 @@ Requires **Python 3.11+**. Verify with `tau --help`.
 To embed the library instead of the CLI, `pip install tau-by-clarity` then
 `import pi_coding_agent` (or the Tau alias `import tau_coding_agent`).
 
+### Updating Tau
+
+If Tau was installed from PyPI, update it from the CLI:
+
+```bash
+tau update          # update Tau itself from PyPI
+tau update all      # update installed packages/extensions, then Tau
+```
+
+More targeted forms are also supported:
+
+```bash
+tau update self
+tau update tau
+tau update --extensions
+tau update --extension <source>
+```
+
 <details>
 <summary><b>From source (development)</b></summary>
 
@@ -58,25 +76,47 @@ Dev/test extras (`pytest`, `pytest-asyncio`, …) install with `uv sync --extra 
 
 ## Quick Start
 
-### 1. Set a provider key
-
-Tau reads provider keys from environment variables:
-
-```bash
-export ANTHROPIC_API_KEY=...     # or  OPENAI_API_KEY · GEMINI_API_KEY · GOOGLE_API_KEY
-# AWS Bedrock: export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...
-```
-
-Add the export to your shell profile to persist it. (A project-local `.env` is
-also auto-loaded when running from a source checkout — convenient for development.)
-
-### 2. Launch the Interactive TUI
+### 1. Launch the Interactive TUI
 
 ```bash
 tau
 ```
 
 This opens the full-featured terminal UI where you can chat with the coding agent.
+If no provider is configured yet, Tau will prompt you to log in.
+
+### 2. Log in and choose a model
+
+Use the built-in slash commands from the TUI:
+
+```text
+/login
+/model
+```
+
+`/login` opens the provider/auth flow and stores the credential in Tau's auth
+storage. For API-key providers you can also paste the key directly:
+
+```text
+/login openai sk-...
+/login anthropic sk-ant-...
+/login google ...
+```
+
+Then use `/model` to select the default model for the current/global settings.
+`/models` is an alias. For provider tier mappings, use `/set` interactively or
+set one directly:
+
+```text
+/set openai strong gpt-5.1
+/set google standard gemini-2.5-pro
+/set anthropic weak claude-haiku-4-5
+```
+
+Valid tiers are `strong`, `standard`, and `weak`. Tau still supports
+environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and
+`GEMINI_API_KEY` for CI/headless one-off runs, but shell exports are not the
+normal setup path.
 
 **Keyboard shortcuts:**
 
@@ -142,7 +182,10 @@ Type `/` in the interactive TUI to see available commands:
 
 | Command | Description |
 |---------|-------------|
-| `/model <name>` | Switch to a different model |
+| `/login [provider] [api_key]` | Store provider credentials through Tau auth storage |
+| `/model [provider/model]` | Select and persist the current/default model |
+| `/models [provider/model]` | Alias for `/model` |
+| `/set <provider> <tier> <model>` | Set a provider tier mapping (`strong`, `standard`, `weak`) |
 | `/thinking <level>` | Set thinking detail: `minimal` · `low` · `medium` · `high` · `xhigh` |
 | `/compact` | Compress conversation context to save tokens |
 | `/session` | Show session statistics (tokens used, cost estimate) |
@@ -152,6 +195,7 @@ Type `/` in the interactive TUI to see available commands:
 
 ```bash
 tau --help
+tau update --help
 ```
 
 ---
@@ -326,7 +370,7 @@ LIVE_TESTS=1 uv run pytest packages/ai/tests/ -v
 
 ```
 tau-by-clarity/
-├── .env                          ← API keys (never commit)
+├── .env                          ← optional local env overrides for dev/CI (never commit)
 ├── pyproject.toml                ← uv workspace root
 ├── conftest.py                   ← global pytest config (.env loader)
 └── packages/
@@ -374,7 +418,8 @@ tau-by-clarity/
 | Problem | Solution |
 |---------|----------|
 | `uv: command not found` | Run the install script: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| `GEMINI_API_KEY not set` | Add your key to `.env` |
+| No model or API key found | Run `tau`, then use `/login` and `/model` |
+| `GEMINI_API_KEY not set` in live tests | Add a temporary env var or `.env` value for the live test run |
 | `ModuleNotFoundError: pi_tui` | Use `uv run tau` instead of `python` directly |
 | TUI shows garbled characters | Ensure your terminal supports UTF-8 (iTerm2, Warp, or any modern terminal) |
 | Tests are skipped | Add `--live` to run real API tests |
