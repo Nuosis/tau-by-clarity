@@ -21,11 +21,6 @@ from typing import Any, Callable, Optional
 # gates and content-type-routes internally) and owns its CCR cache.
 CompressFn = Callable[[str], str]
 
-# Match Headroom's fresh-read guardrail: file/source inspection outputs are the
-# current working context, not stale log blobs. Compressing them can hide the
-# actual task/source anchor and force the model into broad CCR query fishing.
-EXCLUDED_TOOL_NAMES = frozenset({"read", "Read"})
-
 _compressor: Optional[CompressFn] = None
 
 
@@ -55,8 +50,6 @@ def _xform_message(msg: Any, fn: CompressFn) -> Any:
     # assistant's own messages. Tool outputs are the read-side bloat Headroom-style
     # compression targets; the current instruction must reach the model verbatim.
     if getattr(msg, "role", None) != "toolResult":
-        return msg
-    if getattr(msg, "tool_name", None) in EXCLUDED_TOOL_NAMES:
         return msg
     content = getattr(msg, "content", None)
     if isinstance(content, str):
