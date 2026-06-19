@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Mapping
 from typing import Any, Sequence
 
 from pi_coding_agent.config import VERSION, get_debug_log_path
@@ -39,6 +40,10 @@ _SECRET_KEYS = {
     "password",
     "secret",
 }
+IMAGE_BASE64_REDACT_THRESHOLD_BYTES = 1024
+IMAGE_BASE64_REPLACEMENT_TEMPLATE = "<image:base64-redacted bytes={n}>"
+_IMAGE_BEARING_FIELD_NAMES = frozenset({"data", "url", "image_url", "image"})
+_DATA_IMAGE_URL_PREFIX = "data:image/"
 
 
 def configure_cli_debug_logging(cwd: str | None = None, argv: Sequence[str] | None = None) -> str | None:
@@ -95,7 +100,7 @@ def log_event(event: str, **fields: Any) -> None:
         "pid": os.getpid(),
         "event": event,
     }
-    record.update(_sanitize(fields))
+    record.update(redact_image_base64(_sanitize(fields)))
     line = json.dumps(record, ensure_ascii=False, default=str)
     try:
         with _LOCK:
@@ -235,7 +240,36 @@ def _sanitize(value: Any) -> Any:
         return [_sanitize(item) for item in value]
     if isinstance(value, str) and value.startswith(("sk-", "sk_")):
         return "<redacted>"
+    return redact_image_base64(value)
+
+
+def _redact_image_base64_value(value: Any, *, in_image_path: bool = False) -> Any:
+    if isinstance(value, str):
+        should_redact = (
+            len(value) >= IMAGE_BASE64_REDACT_THRESHOLD_BYTES
+            and (value.startswith(_DATA_IMAGE_URL_PREFIX) or in_image_path)
+        )
+        if should_redact:
+            return IMAGE_BASE64_REPLACEMENT_TEMPLATE.format(n=len(value.encode("utf-8")))
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key: _redact_image_base64_value(
+                item,
+                in_image_path=str(key) in _IMAGE_BEARING_FIELD_NAMES,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_image_base64_value(item, in_image_path=in_image_path) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_image_base64_value(item, in_image_path=in_image_path) for item in value]
     return value
+
+
+def redact_image_base64(payload: Any) -> Any:
+    """Redact large image payloads from diagnostic logs without touching non-image blobs."""
+    return _redact_image_base64_value(payload)
 
 
 def _sanitize_argv(argv: list[str]) -> list[str]:

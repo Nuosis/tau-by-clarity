@@ -1,15 +1,15 @@
 """Tests for provider utilities."""
 from __future__ import annotations
 
-import pytest
-
-from pi_ai.utils.json_parse import parse_partial_json, parse_streaming_json_result
-from pi_ai.utils.validation import validate_tool_arguments
-from pi_ai.types import Tool, ToolCall
-from pi_ai.providers.transform_messages import transform_messages
-from pi_ai import Context, UserMessage, AssistantMessage, TextContent, ToolCall, Usage
 import time
 
+import pytest
+from pi_ai import AssistantMessage, Context, TextContent, Usage, UserMessage
+from pi_ai.providers.anthropic import _build_messages
+from pi_ai.providers.transform_messages import transform_messages
+from pi_ai.types import Tool, ToolCall, ToolResultMessage
+from pi_ai.utils.json_parse import parse_partial_json, parse_streaming_json_result
+from pi_ai.utils.validation import validate_tool_arguments
 
 # ── JSON parse tests ────────────────────────────────────────────────────────
 
@@ -118,7 +118,7 @@ def test_transform_messages_passthrough():
 
 
 def test_transform_messages_thinking_to_text():
-    from pi_ai.types import ThinkingContent, Model, ModelCost
+    from pi_ai.types import Model, ModelCost, ThinkingContent
     ts = int(time.time() * 1000)
     assistant_msg = AssistantMessage(
         role="assistant",
@@ -153,3 +153,30 @@ def test_transform_messages_thinking_to_text():
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 assert not isinstance(block, ThinkingContent), "Thinking block should be converted"
+
+
+def test_anthropic_payload_preserves_explicit_block_cache_control():
+    cache_control = {"type": "ephemeral"}
+    context = Context(
+        messages=[
+            ToolResultMessage(
+                tool_call_id="toolu_1",
+                tool_name="read",
+                content=[
+                    TextContent(type="text", text="cached bytes", cache_control=cache_control),
+                    TextContent(type="text", text="live bytes"),
+                ],
+                timestamp=0,
+            )
+        ]
+    )
+
+    messages = _build_messages(context, cache_control=None)
+
+    tool_result = messages[0]["content"][0]
+    assert tool_result["content"][0] == {
+        "type": "text",
+        "text": "cached bytes",
+        "cache_control": cache_control,
+    }
+    assert tool_result["content"][1] == {"type": "text", "text": "live bytes"}

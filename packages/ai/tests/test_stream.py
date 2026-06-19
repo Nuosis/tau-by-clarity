@@ -1,25 +1,27 @@
 """Tests for streaming functions (with mocked providers)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import patch
 
+import pytest
 from pi_ai import (
-    Context,
-    UserMessage,
     AssistantMessage,
-    SimpleStreamOptions,
+    Context,
+    EventDone,
     EventStart,
-    EventTextStart,
     EventTextDelta,
     EventTextEnd,
-    EventDone,
-    EventError,
+    EventTextStart,
+    SimpleStreamOptions,
     TextContent,
+    ToolResultMessage,
     Usage,
-    get_model,
-    stream_simple,
+    UserMessage,
     complete_simple,
+    get_model,
+    register_compressor,
+    stream_simple,
+    unregister_compressor,
 )
 
 
@@ -196,3 +198,98 @@ async def test_stream_unknown_api_raises():
     with pytest.raises(ValueError, match="No stream function"):
         async for _ in stream_simple(model, context):
             pass
+
+
+@pytest.mark.asyncio
+async def test_active_compression_freezes_cached_history_before_provider():
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    seen = {}
+
+    async def capturing_stream(m, ctx, opts=None):
+        seen["context"] = ctx
+        async for e in mock_stream_simple_fn(m, ctx, opts):
+            yield e
+
+    register_compressor(lambda text: f"COMPRESSED:{text[:8]}")
+    try:
+        context = Context(
+            messages=[
+                ToolResultMessage(
+                    tool_call_id="old-call",
+                    tool_name="bash",
+                    content=[TextContent(type="text", text="a" * 1000)],
+                    timestamp=0,
+                ),
+                UserMessage(role="user", content="continue", timestamp=0),
+                ToolResultMessage(
+                    tool_call_id="new-call",
+                    tool_name="bash",
+                    content=[TextContent(type="text", text="b" * 1000)],
+                    timestamp=0,
+                ),
+            ]
+        )
+        provider = type("P", (), {"stream_simple": staticmethod(capturing_stream), "stream": staticmethod(capturing_stream)})()
+        with patch("pi_ai.stream.get_api_provider", return_value=provider):
+            async for _ in stream_simple(model, context, SimpleStreamOptions(cache_retention="short")):
+                pass
+    finally:
+        unregister_compressor()
+
+    sent = seen["context"]
+    assert sent.compression_frozen_message_count == 2
+    assert sent.messages[0].content[0].text == "a" * 1000
+    assert sent.messages[2].content[0].text == "COMPRESSED:bbbbbbbb"
+    assert context.compression_frozen_message_count == 0
+    assert context.messages[2].content[0].text == "b" * 1000
+
+
+@pytest.mark.asyncio
+async def test_active_compression_leaves_all_messages_live_when_cache_disabled():
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022")
+    seen = {}
+
+    async def capturing_stream(m, ctx, opts=None):
+        seen["context"] = ctx
+        async for e in mock_stream_simple_fn(m, ctx, opts):
+            yield e
+
+    register_compressor(lambda text: f"COMPRESSED:{text[:8]}")
+    try:
+        context = Context(
+            messages=[
+                    ToolResultMessage(
+                        tool_call_id="old-call",
+                        tool_name="bash",
+                    content=[
+                        TextContent(
+                            type="text",
+                            text="aaaaaaaa alpha beta gamma delta epsilon zeta eta theta iota kappa " * 30,
+                        )
+                    ],
+                        timestamp=0,
+                    ),
+                    ToolResultMessage(
+                        tool_call_id="new-call",
+                        tool_name="bash",
+                    content=[
+                        TextContent(
+                            type="text",
+                            text="bbbbbbbb alpha beta gamma delta epsilon zeta eta theta iota kappa " * 30,
+                        )
+                    ],
+                        timestamp=0,
+                    ),
+            ]
+        )
+        provider = type("P", (), {"stream_simple": staticmethod(capturing_stream), "stream": staticmethod(capturing_stream)})()
+        with patch("pi_ai.stream.get_api_provider", return_value=provider):
+            async for _ in stream_simple(model, context, SimpleStreamOptions(cache_retention="none")):
+                pass
+    finally:
+        unregister_compressor()
+
+    sent = seen["context"]
+    assert sent.compression_frozen_message_count == 0
+    assert sent.messages[0].content[0].text == "COMPRESSED:aaaaaaaa"
+    assert sent.messages[1].content[0].text == "COMPRESSED:bbbbbbbb"

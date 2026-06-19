@@ -390,6 +390,7 @@ class SessionManager:
             lines.append(json.dumps(self._header, ensure_ascii=False))
         for entry in self._entries:
             lines.append(json.dumps(entry, ensure_ascii=False))
+        os.makedirs(os.path.dirname(self._session_file_path), exist_ok=True)
         with open(self._session_file_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
@@ -398,7 +399,11 @@ class SessionManager:
         path = self._session_file_path
         if not path:
             return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        should_restore_header = not os.path.exists(path) and self._header and obj is not self._header
         with open(path, "a", encoding="utf-8") as f:
+            if should_restore_header:
+                f.write(json.dumps(self._header, ensure_ascii=False) + "\n")
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     # ── Factory classmethods ──────────────────────────────────────────────────

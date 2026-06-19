@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 
 from .ccr import CCRStore
+from .compressor import CompressionConfig
 from .compressor import compress as _compress_text
 
 SETTING = "active_compression"
@@ -37,6 +38,7 @@ __all__ = [
     "builtin_extension_path",
     "SETTING",
     "DISABLE_ENV",
+    "CompressionConfig",
 ]
 
 
@@ -84,7 +86,42 @@ def _ccr() -> CCRStore:
 def compress(text: str) -> str:
     if not is_enabled():
         return text
-    return _compress_text(text, _ccr())
+    force = False
+    target_ratio = None
+    config = CompressionConfig()
+    try:
+        from pi_ai import (
+            get_current_compression_enable_ccr_marker,
+            get_current_compression_force_compression,
+            get_current_compression_lossless_min_savings_ratio,
+            get_current_compression_max_items_after_crush,
+            get_current_compression_min_tokens,
+            get_current_compression_target_ratio,
+        )
+
+        force = get_current_compression_force_compression()
+        target_ratio = get_current_compression_target_ratio()
+        min_tokens = get_current_compression_min_tokens()
+        max_items_after_crush = get_current_compression_max_items_after_crush()
+        lossless_min_savings_ratio = get_current_compression_lossless_min_savings_ratio()
+        enable_ccr_marker = get_current_compression_enable_ccr_marker()
+        config = CompressionConfig(
+            min_tokens=config.min_tokens if min_tokens is None else min_tokens,
+            max_items_after_crush=(
+                config.max_items_after_crush if max_items_after_crush is None else max_items_after_crush
+            ),
+            lossless_min_savings_ratio=(
+                config.lossless_min_savings_ratio
+                if lossless_min_savings_ratio is None
+                else lossless_min_savings_ratio
+            ),
+            enable_ccr_marker=config.enable_ccr_marker if enable_ccr_marker is None else enable_ccr_marker,
+        )
+    except Exception:
+        force = False
+        target_ratio = None
+        config = CompressionConfig()
+    return _compress_text(text, _ccr(), target_ratio=target_ratio, force=force, config=config)
 
 
 def retrieve(handle: str) -> str | None:

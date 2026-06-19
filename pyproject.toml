@@ -48,6 +48,8 @@ dependencies = [
     "pygments>=2.17.0",
     "wcwidth>=0.2.13",
     "mistune>=3.0.2",
+    "pillow>=11.0.0",
+    "tiktoken>=0.13.0",
 ]
 
 [project.optional-dependencies]

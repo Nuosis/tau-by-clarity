@@ -70,11 +70,32 @@ class CompactionSummaryMessage:
     timestamp: int = 0
 
 
+def _compress_bash_output(output: str) -> str:
+    """Compress bash output before it is converted into LLM context.
+
+    Headroom's router treats Bash output as a compression target because build
+    and test logs are high-volume, low-signal context. Tau's local active
+    compression hook only sees formal ``toolResult`` messages; ``bashExecution``
+    is a coding-agent custom message that is converted to a user message below.
+    Compress the output body here so large logs do not bypass active compression.
+    """
+    if not output:
+        return output
+    try:
+        from pi_coding_agent.active_compression import compress
+
+        return compress(output)
+    except Exception:
+        # Compression must never make shell-result context unavailable.
+        return output
+
+
 def bash_execution_to_text(msg: BashExecutionMessage) -> str:
     """Convert a BashExecutionMessage to user message text for LLM context."""
     text = f"Ran `{msg.command}`\n"
     if msg.output:
-        text += f"```\n{msg.output}\n```"
+        output = _compress_bash_output(msg.output)
+        text += f"```\n{output}\n```"
     else:
         text += "(no output)"
     if msg.cancelled:

@@ -5,12 +5,12 @@ Provides stream(), complete(), stream_simple(), complete_simple().
 """
 from __future__ import annotations
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from .api_registry import get_api_provider
 from .compression import compress_context
-from .pii import detok_event, protect_context
 from .env_api_keys import get_env_api_key
+from .pii import detok_event, protect_context
 from .providers import register_builtins
 from .types import (
     AssistantMessage,
@@ -40,6 +40,46 @@ from .types import (
 register_builtins()
 
 
+def _cache_retention_active(opts: StreamOptions | SimpleStreamOptions | None) -> bool:
+    if opts is None:
+        return True
+    if getattr(opts, "cache_retention", "short") == "none":
+        return bool(getattr(opts, "session_id", None))
+    return True
+
+
+def _trailing_live_start(messages: list) -> int:
+    """Return the first message index in the mutable live suffix.
+
+    Provider prompt caches protect the historical prefix. The latest user turn,
+    or the latest consecutive tool-result batch, remains live and can still be
+    compressed before dispatch.
+    """
+    if len(messages) <= 1:
+        return 0
+    last_role = getattr(messages[-1], "role", None)
+    if last_role == "toolResult":
+        i = len(messages) - 1
+        while i > 0 and getattr(messages[i - 1], "role", None) == "toolResult":
+            i -= 1
+        return i
+    return len(messages) - 1
+
+
+def _annotate_compression_cache_zone(context: Context, opts: StreamOptions | SimpleStreamOptions | None) -> Context:
+    """Mark provider-cache prefix messages as frozen before active compression."""
+    if not _cache_retention_active(opts):
+        return context
+    messages = list(getattr(context, "messages", []) or [])
+    if not messages:
+        return context
+    existing = max(0, int(getattr(context, "compression_frozen_message_count", 0) or 0))
+    frozen_count = max(existing, _trailing_live_start(messages))
+    if frozen_count == existing:
+        return context
+    return context.model_copy(update={"compression_frozen_message_count": frozen_count})
+
+
 async def stream_simple(
     model: Model,
     context: Context,
@@ -61,6 +101,7 @@ async def stream_simple(
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
     # Active compression (one-way), then the PII chokepoint.
+    context = _annotate_compression_cache_zone(context, opts)
     context = compress_context(context)
     context, _detok = protect_context(context)
     async for event in provider.stream_simple(model, context, opts):
@@ -113,6 +154,7 @@ async def stream(
         raise ValueError(f"No stream function registered for API: {model.api!r}")
 
     # Active compression (one-way), then the PII chokepoint.
+    context = _annotate_compression_cache_zone(context, opts)
     context = compress_context(context)
     context, _detok = protect_context(context)
     async for event in provider.stream(model, context, opts):
@@ -200,7 +242,7 @@ def _normalize_usage(value: object) -> Usage:
 
 
 def _normalize_content_block(block: object) -> TextContent | ThinkingContent | ToolCall:
-    if isinstance(block, (TextContent, ThinkingContent, ToolCall)):
+    if isinstance(block, TextContent | ThinkingContent | ToolCall):
         return block
     if not isinstance(block, dict):
         return TextContent(type="text", text=str(block))

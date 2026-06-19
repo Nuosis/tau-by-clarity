@@ -3,8 +3,9 @@ Core type definitions — mirrors packages/ai/src/types.ts
 """
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -108,13 +109,13 @@ class StreamOptions(BaseModel):
     cache_retention: CacheRetention | None = "short"
     session_id: str | None = None
     on_payload: (
-        Callable[[Any, "Model"], Any | None] | 
-        Callable[[Any, "Model"], Awaitable[Any | None]] | 
+        Callable[[Any, Model], Any | None] |
+        Callable[[Any, Model], Awaitable[Any | None]] |
         None
     ) = None
     on_response: (
-        Callable[[Any, "Model"], Any | None] |
-        Callable[[Any, "Model"], Awaitable[Any | None]] |
+        Callable[[Any, Model], Any | None] |
+        Callable[[Any, Model], Awaitable[Any | None]] |
         None
     ) = None
     headers: dict[str, str] | None = None
@@ -155,6 +156,9 @@ class TextContent(BaseModel):
     type: Literal["text"] = "text"
     text: str
     text_signature: str | None = None
+    cache_control: dict[str, Any] | None = None
+    cache_zone: str | None = None
+    mutable: bool | None = None
 
 
 class TextSignatureV1(BaseModel):
@@ -175,6 +179,9 @@ class ImageContent(BaseModel):
     type: Literal["image"] = "image"
     data: str  # base64 encoded
     mime_type: str  # e.g. "image/jpeg"
+    cache_control: dict[str, Any] | None = None
+    cache_zone: str | None = None
+    mutable: bool | None = None
 
 
 class ToolCall(BaseModel):
@@ -238,7 +245,7 @@ class ToolResultMessage(BaseModel):
     timestamp: int  # Unix ms
 
 
-Message = Union[UserMessage, AssistantMessage, ToolResultMessage]
+Message = UserMessage | AssistantMessage | ToolResultMessage
 
 
 # ─── Tool ─────────────────────────────────────────────────────────────────────
@@ -255,6 +262,25 @@ class Context(BaseModel):
     system_prompt: str | None = None
     messages: list[Message] = Field(default_factory=list)
     tools: list[Tool] | None = None
+    # Headroom-compatible active compression controls. Prompt/hot-zone text is
+    # protected by default; callers must explicitly opt into compressing it.
+    compression_compress_user_messages: bool = False
+    compression_compress_system_messages: bool = False
+    compression_protect_recent: int = 4
+    compression_target_ratio: float | None = None
+    compression_auth_mode: Literal["payg", "oauth", "subscription"] | str | None = None
+    compression_min_tokens: int | None = None
+    compression_max_items_after_crush: int | None = None
+    compression_lossless_min_savings_ratio: float | None = None
+    compression_enable_ccr_marker: bool | None = None
+    compression_image_optimize: bool = True
+    compression_compress_stale_reads: bool = True
+    compression_compress_superseded_reads: bool = False
+    compression_read_lifecycle_min_bytes: int = 512
+    # Provider/cache adapters can mark leading messages as frozen prompt-cache
+    # prefix. Active compression must not rewrite these bytes or it invalidates
+    # provider cache hits.
+    compression_frozen_message_count: int = 0
 
 
 # ─── Model ────────────────────────────────────────────────────────────────────
@@ -367,20 +393,20 @@ class EventError(BaseModel):
     error: AssistantMessage
 
 
-AssistantMessageEvent = Union[
-    EventStart,
-    EventTextStart,
-    EventTextDelta,
-    EventTextEnd,
-    EventThinkingStart,
-    EventThinkingDelta,
-    EventThinkingEnd,
-    EventToolCallStart,
-    EventToolCallDelta,
-    EventToolCallEnd,
-    EventDone,
-    EventError,
-]
+AssistantMessageEvent = (
+    EventStart
+    | EventTextStart
+    | EventTextDelta
+    | EventTextEnd
+    | EventThinkingStart
+    | EventThinkingDelta
+    | EventThinkingEnd
+    | EventToolCallStart
+    | EventToolCallDelta
+    | EventToolCallEnd
+    | EventDone
+    | EventError
+)
 
 # Async generator of AssistantMessageEvent
 AssistantMessageEventStream = AsyncGenerator[AssistantMessageEvent, None]

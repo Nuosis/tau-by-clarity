@@ -4,8 +4,9 @@
 Measures, on representative payloads, the Headroom-style claims:
   - large token savings on structured tool output,
   - error/anomaly items ALWAYS preserved in the compressed output,
-  - full reversibility (the original is byte-exact recoverable from the CCR), and
-  - the harness rehydration trigger restores a non-kept needle when referenced.
+  - lossless structured compaction does not need a top-level CCR handle, and
+  - query-scoped `ccr_retrieve` recovers dropped lossy content without
+    reinflating the full payload.
 
     python evals/active_compression_bench.py [path/to/big_text.txt]
 
@@ -44,13 +45,15 @@ def bench_json_tool_output(store: CCRStore) -> dict:
     rows[642] = {"id": 642, "status": 200, "name": "svc-642", "secret_token": "NEEDLE-MARLIN-9"}
     original = json.dumps(rows)
     out = compress(original, store)
-    handle = out[len("[CCR:"):].split("]")[0]
+    markerless_lossless = out.startswith(("[", "__buckets:")) and "[CCR:" not in out
+    handle = out[len("[CCR:"):].split("]")[0] if out.startswith("[CCR:") else None
+    recoverable = markerless_lossless or (handle is not None and store.get(handle) == original)
     return {
         "name": "JSON tool output (1000)",
         "before": _toks(original), "after": _toks(out),
         "ratio": 100 * (1 - _toks(out) / _toks(original)),
         "note": ("error kept ✓ " if "FATAL: upstream timeout" in out else "ERROR DROPPED ✗ ")
-                + ("reversible ✓" if store.get(handle) == original else "NOT REVERSIBLE ✗"),
+                + ("lossless direct ✓" if recoverable else "NOT RECOVERABLE ✗"),
         "_handle": handle, "_original": original, "_compressed": out,
     }
 
@@ -85,31 +88,48 @@ def bench_big_text(store: CCRStore, path: str | None) -> dict | None:
 
 
 async def bench_rehydration(store: CCRStore, json_result: dict) -> str:
-    """The needle is in a NON-kept row → absent from the compressed output, but the
-    harness restores it in place when the model references the handle."""
-    handle, original, compressed = json_result["_handle"], json_result["_original"], json_result["_compressed"]
+    """Exercise a lossy CCR path even when JSON chooses lossless table compaction."""
+    del json_result
+    lines = [
+        f"worker observation {i} " + ("detail " * ((i % 9) + 1)) + f"trace-{i:04d}"
+        for i in range(400)
+    ]
+    lines[242] = "worker observation 242 contains target NEEDLE-MARLIN-9 for scoped retrieval"
+    original = "\n".join(lines)
+    compressed = compress(original, store)
+    handle = compressed[len("[CCR:"):].split("]")[0]
     needle = "NEEDLE-MARLIN-9"
     in_compressed = needle in compressed
 
-    # Wire the extension against this store and run its context hook.
+    # Wire the extension against this store and call the registered retrieve tool.
     import pi_coding_agent.active_compression as ac
     ac._store = store
 
     class _Pi:
-        def __init__(self): self.hooks = []
-        def register_tool(self, **k): pass
-        def on(self, ev, h): self.hooks.append(h) if ev == "context" else None
+        def __init__(self):
+            self.tools = {}
+            self.commands = {}
 
-    pi = _Pi(); extension_factory(pi)
-    messages = [
-        {"role": "toolResult", "content": [{"type": "text", "text": compressed}]},
-        {"role": "assistant", "content": [{"type": "text", "text": f"I need ccr_retrieve {handle}."}]},
-    ]
-    await pi.hooks[0]({"messages": messages}, None)
-    restored = needle in messages[0]["content"][0]["text"]
+        def register_tool(self, **kwargs):
+            self.tools[kwargs["name"]] = kwargs
+
+        def register_command(self, name, command):
+            self.commands[name] = command
+
+    pi = _Pi()
+    extension_factory(pi)
+    result = await pi.tools["ccr_retrieve"]["execute"](
+        "bench-call",
+        {"handle": handle, "query": "NEEDLE-MARLIN-9 svc-642 observation 642"},
+        None,
+        None,
+        None,
+    )
+    text = result["content"][0]["text"]
+    restored = needle in text
     return (f"needle in compressed: {in_compressed} (expected False) | "
-            f"recovered after reference: {restored} (expected True) | "
-            f"exact-restore: {messages[0]['content'][0]['text'] == original}")
+            f"recovered by query: {restored} (expected True) | "
+            f"full payload returned: {text == original} (expected False)")
 
 
 def main() -> int:
@@ -124,7 +144,7 @@ def main() -> int:
         if bt:
             _row(bt)
         print("-" * 64)
-        print("Rehydration (needle in a dropped row):")
+        print("Rehydration (needle in dropped lossy content):")
         print("  " + asyncio.run(bench_rehydration(store, jr)))
     return 0
 

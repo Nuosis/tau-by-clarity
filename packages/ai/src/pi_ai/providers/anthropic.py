@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import anthropic as _anthropic
 
@@ -42,15 +43,12 @@ from ..types import (
     SimpleStreamOptions,
     TextContent,
     ThinkingContent,
-    ThinkingLevel,
     ToolCall,
     ToolResultMessage,
     Usage,
-    UsageCost,
     UserMessage,
 )
-from ..utils.event_stream import EventStream
-from ..utils.json_parse import parse_partial_json, parse_streaming_json_result
+from ..utils.json_parse import parse_streaming_json_result
 from ..utils.sanitize_unicode import sanitize_surrogates
 from .transform_messages import transform_messages as _transform_messages
 
@@ -238,16 +236,22 @@ def _convert_tool_result_block(tr_msg: ToolResultMessage, is_oauth: bool = False
     for block in tr_msg.content:
         if isinstance(block, TextContent):
             text = sanitize_surrogates(block.text)
-            cblocks.append({"type": "text", "text": text})
+            text_block: dict[str, Any] = {"type": "text", "text": text}
+            if block.cache_control:
+                text_block["cache_control"] = block.cache_control
+            cblocks.append(text_block)
         elif isinstance(block, ImageContent):
-            cblocks.append({
+            image_block = {
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": block.mime_type,
                     "data": block.data,
                 },
-            })
+            }
+            if block.cache_control:
+                image_block["cache_control"] = block.cache_control
+            cblocks.append(image_block)
     return {
         "type": "tool_result",
         "tool_use_id": tr_msg.tool_call_id,
@@ -287,16 +291,22 @@ def _build_messages(
                     if isinstance(block, TextContent):
                         text = sanitize_surrogates(block.text)
                         if text.strip():
-                            content_blocks.append({"type": "text", "text": text})
+                            text_block: dict[str, Any] = {"type": "text", "text": text}
+                            if block.cache_control:
+                                text_block["cache_control"] = block.cache_control
+                            content_blocks.append(text_block)
                     elif isinstance(block, ImageContent):
-                        content_blocks.append({
+                        image_block = {
                             "type": "image",
                             "source": {
                                 "type": "base64",
                                 "media_type": block.mime_type,
                                 "data": block.data,
                             },
-                        })
+                        }
+                        if block.cache_control:
+                            image_block["cache_control"] = block.cache_control
+                        content_blocks.append(image_block)
                 if is_last and cache_control and content_blocks:
                     content_blocks[-1] = {**content_blocks[-1], "cache_control": cache_control}
                 if content_blocks:

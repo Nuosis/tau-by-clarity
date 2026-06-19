@@ -7,6 +7,7 @@ Covers: utils/sleep.py, utils/git.py, utils/frontmatter.py,
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 import pytest
@@ -207,6 +208,54 @@ class TestShell:
         from pi_coding_agent.utils.shell import get_shell_env
         env = get_shell_env()
         assert isinstance(env, dict)
+
+
+# ============================================================================
+# cli debug log
+# ============================================================================
+
+class TestCliDebugLog:
+    def test_redact_image_base64_redacts_only_image_paths(self):
+        from pi_coding_agent.core.cli_debug_log import (
+            IMAGE_BASE64_REDACT_THRESHOLD_BYTES,
+            IMAGE_BASE64_REPLACEMENT_TEMPLATE,
+            redact_image_base64,
+        )
+
+        big = "A" * (IMAGE_BASE64_REDACT_THRESHOLD_BYTES + 20)
+        payload = {
+            "request": {
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "data": big}},
+                    {"type": "text", "text": big},
+                ],
+                "signature": big,
+            }
+        }
+
+        redacted = redact_image_base64(payload)
+
+        assert redacted["request"]["content"][0]["source"]["data"] == (
+            IMAGE_BASE64_REPLACEMENT_TEMPLATE.format(n=len(big))
+        )
+        assert redacted["request"]["content"][1]["text"] == big
+        assert redacted["request"]["signature"] == big
+
+    def test_log_event_writes_redacted_image_payload(self, tmp_path, monkeypatch):
+        from pi_coding_agent.core import cli_debug_log
+
+        log_path = tmp_path / "debug.jsonl"
+        big = "B" * (cli_debug_log.IMAGE_BASE64_REDACT_THRESHOLD_BYTES + 10)
+        monkeypatch.setattr(cli_debug_log, "_LOG_PATH", str(log_path))
+
+        cli_debug_log.log_event("image_payload", request={"source": {"type": "base64", "data": big}})
+
+        line = log_path.read_text(encoding="utf-8").strip()
+        parsed = json.loads(line)
+        assert big not in line
+        assert parsed["request"]["source"]["data"] == (
+            cli_debug_log.IMAGE_BASE64_REPLACEMENT_TEMPLATE.format(n=len(big))
+        )
 
 
 # ============================================================================
