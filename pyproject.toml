@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tau-by-clarity"
-version = "0.55.16"
+version = "0.55.17"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -84,6 +84,11 @@ tau = "pi_coding_agent.main:main"
 "packages/aliases/tau_agent" = "tau_agent"
 "packages/aliases/tau_coding_agent" = "tau_coding_agent"
 "packages/aliases/tau_tui" = "tau_tui"
+# Bundled, first-class skills (baked into the harness — see
+# `pi_coding_agent.bundled_skills`). The repo-root `skills/` tree is the
+# source of truth; the wheel ships it under `pi_coding_agent/bundled_skills/`
+# so `get_bundled_skills_dir()` resolves the same layout in dev and installed.
+"skills/agent-build-pattern" = "pi_coding_agent/bundled_skills/agent-build-pattern"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -96,6 +101,7 @@ include = [
     "packages/aliases/tau_agent",
     "packages/aliases/tau_coding_agent",
     "packages/aliases/tau_tui",
+    "skills/agent-build-pattern",
     "README.md",
     "LICENSE",
     "pyproject.toml",

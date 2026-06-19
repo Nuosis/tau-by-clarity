@@ -253,8 +253,17 @@ artifact, and reads back a typed output artifact.
 ### The build discipline
 
 Agent-authoring guidance — directory layout, `OBJECTIVES.md` contracts, prompt-last
-sequencing, and the **compile → unit-test → live-eval** gates — is vendored in
-[`skills/agent-build-pattern`](skills/agent-build-pattern/SKILL.md).
+sequencing, and the **compile → unit-test → live-eval** gates — ships with the
+harness as a **bundled, first-class skill** (`agent-build-pattern`). It is baked
+in: the loader picks it up on every launch, and the default system prompt
+advertises it as the `Agent build discipline` reference. You don't need to copy
+it into your `~/.tau/agent/skills/` or project `.tau/skills/` to use it.
+
+Source of truth: [`skills/agent-build-pattern/SKILL.md`](skills/agent-build-pattern/SKILL.md).
+At runtime the loader resolves the same file at
+`pi_coding_agent/bundled_skills/agent-build-pattern/SKILL.md` (wheel) or
+`<repo>/skills/agent-build-pattern/SKILL.md` (dev). Disable per-run with
+`PI_NO_BUNDLED_SKILLS=1`.
 
 ---
 

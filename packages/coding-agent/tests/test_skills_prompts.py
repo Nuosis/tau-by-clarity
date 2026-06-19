@@ -92,6 +92,58 @@ class TestSkills:
         assert "### health-ping" in prompt
         assert "Run /goal clear first." in prompt
 
+    def test_bundled_skills_dir_resolves(self):
+        """The bundled skills directory resolves in both wheel and dev layouts."""
+        from pi_coding_agent.bundled_skills import get_bundled_skills_dir, is_enabled
+
+        assert is_enabled() is True
+        bundled = get_bundled_skills_dir()
+        # Either the wheel-installed location or the dev location must resolve.
+        assert bundled is not None
+        assert os.path.isdir(bundled)
+
+    def test_load_skills_includes_bundled_agent_build_pattern(self):
+        """The bundled agent-build-pattern skill loads by default."""
+        from pi_coding_agent.bundled_skills import is_enabled
+        if not is_enabled():
+            pytest.skip("bundled skills disabled via PI_NO_BUNDLED_SKILLS")
+
+        from pi_coding_agent.core.skills import load_skills
+
+        result = load_skills()
+        bundled_skills = [s for s in result.skills if s.source == "bundled"]
+        assert any(s.name == "agent-build-pattern" for s in bundled_skills)
+
+    def test_load_skills_respects_no_bundled_env(self):
+        """PI_NO_BUNDLED_SKILLS=1 suppresses the bundled skill."""
+        from pi_coding_agent.core.skills import load_skills
+
+        old = os.environ.get("PI_NO_BUNDLED_SKILLS")
+        os.environ["PI_NO_BUNDLED_SKILLS"] = "1"
+        try:
+            result = load_skills()
+        finally:
+            if old is None:
+                os.environ.pop("PI_NO_BUNDLED_SKILLS", None)
+            else:
+                os.environ["PI_NO_BUNDLED_SKILLS"] = old
+
+        bundled_skills = [s for s in result.skills if s.source == "bundled"]
+        assert bundled_skills == []
+
+    def test_default_system_prompt_references_bundled_agent_build_skill(self):
+        """The default system prompt advertises the bundled agent-build-pattern skill."""
+        from pi_coding_agent.bundled_skills import is_enabled
+        if not is_enabled():
+            pytest.skip("bundled skills disabled via PI_NO_BUNDLED_SKILLS")
+
+        from pi_coding_agent.core.system_prompt import build_system_prompt
+
+        prompt = build_system_prompt("/tmp/project")
+        assert "Agent build discipline" in prompt
+        assert "agent-build-pattern" in prompt
+        assert "bundled_skills/agent-build-pattern/SKILL.md" in prompt
+
 
 # ============================================================================
 # Prompt Templates

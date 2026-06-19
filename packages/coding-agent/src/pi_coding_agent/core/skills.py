@@ -148,6 +148,10 @@ def create_skill_source_info(file_path: str, base_dir: str, source: str) -> Sour
         return create_synthetic_source_info(file_path, source="local", scope="user", base_dir=base_dir)
     if source == "project":
         return create_synthetic_source_info(file_path, source="local", scope="project", base_dir=base_dir)
+    if source == "bundled":
+        return create_synthetic_source_info(
+            file_path, source="package", scope="bundled", origin="package", base_dir=base_dir
+        )
     if source == "path":
         return create_synthetic_source_info(file_path, source="local", base_dir=base_dir)
     return create_synthetic_source_info(file_path, source=source, base_dir=base_dir)
@@ -328,6 +332,17 @@ def load_skills(options: LoadSkillsOptions | None = None) -> LoadSkillsResult:
                 real_path_set.add(real_path)
 
     if include_defaults:
+        # Bundled, first-class skills (lowest priority — user/project override).
+        # Baked in so the agent build discipline is always available to the
+        # agent when it authors or modifies a subagent. Disable with
+        # `PI_NO_BUNDLED_SKILLS=1` for tests that want a sterile default set.
+        from pi_coding_agent.bundled_skills import get_bundled_skills_dir, is_enabled as _bundled_enabled
+        if _bundled_enabled():
+            bundled_dir = get_bundled_skills_dir()
+            if bundled_dir:
+                add_skills(
+                    _load_skills_from_dir_internal(bundled_dir, "bundled", True)
+                )
         add_skills(
             _load_skills_from_dir_internal(
                 os.path.join(agent_dir, "skills"), "user", True

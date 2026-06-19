@@ -152,6 +152,31 @@ def build_system_prompt(
     docs_path     = _os.path.join(_pkg_root, "docs")
     examples_path = _os.path.join(_pkg_root, "examples")
 
+    # Bundled, first-class agent build skill (baked in, not user/opt-in).
+    # The `agent-build-pattern` skill is the prompt-last, control-plane
+    # discipline the harness itself uses when building new agents and
+    # subagents. The path is resolved at runtime so wheel and dev layouts
+    # both resolve correctly.
+    try:
+        from pi_coding_agent.bundled_skills import get_bundled_skills_dir
+        _bundled_dir = get_bundled_skills_dir()
+    except Exception:
+        _bundled_dir = None
+    _agent_build_skill_path = (
+        _os.path.join(_bundled_dir, "agent-build-pattern", "SKILL.md")
+        if _bundled_dir
+        else None
+    )
+    _agent_build_block = (
+        f"\n\nAgent build discipline (baked into the harness — always available when "
+        f"authoring or modifying an agent or subagent):\n"
+        f"- Skill: {_agent_build_skill_path}\n"
+        f"- Read it with the read tool before scaffolding any new agent, subagent, or "
+        f"agent-local skill. It owns the directory layout (`OBJECTIVES.md`, `.tau/SYSTEM.md`, "
+        f"`extensions/`, `skills/`, `evals/`), the artifact-contract discipline, and the "
+        f"compile → unit-test → live-eval gate order."
+    ) if _agent_build_skill_path else ""
+
     prompt = (
         f"You are an expert coding assistant operating inside pi, a coding agent harness. "
         f"You help users by reading files, executing commands, editing code, and writing new files.\n\n"
@@ -162,6 +187,7 @@ def build_system_prompt(
         f"- Main documentation: {readme_path}\n"
         f"- Additional docs: {docs_path}\n"
         f"- Examples: {examples_path} (extensions, custom tools, SDK)"
+        f"{_agent_build_block}"
     )
 
     if append_section:

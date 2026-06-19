@@ -16,8 +16,13 @@ _TAU = r""" _____     _     _   _
   | |   / ___ \ | |_| |
   |_|  /_/   \_\ \___/ """
 
-_LINE1 = "claritycustomsoftware.com"
-_LINE2 = "tau · by clarity"
+# Sub-tagline lines shown below the block art. The first entry is the website;
+# the next two identify what tau is and who ships it.
+_SUB_LINES: tuple[str, ...] = (
+    "claritycustomsoftware.com",
+    "tau · the python variant of pi",
+    "by Clarity",
+)
 
 # 256-color cyan — renders in Terminal.app AND iTerm2/kitty (truecolor 38;2 is
 # silently dropped by Terminal.app, which is why it showed gray).
@@ -49,10 +54,10 @@ def render_banner(color: bool = True) -> str:
     # independently skews the diagonal strokes). Only the sub-lines are centered.
     if color:
         body = "\n".join(f"{_CYAN}{line}{_RST}" for line in art_lines)
-        sub = f"{_DIM}{center(_LINE1)}{_RST}\n{_DIM}{center(_LINE2)}{_RST}"
+        sub = "\n".join(f"{_DIM}{center(line)}{_RST}" for line in _SUB_LINES)
     else:
         body = "\n".join(art_lines)
-        sub = f"{center(_LINE1)}\n{center(_LINE2)}"
+        sub = "\n".join(center(line) for line in _SUB_LINES)
 
     return f"{body}\n\n{sub}\n"
 

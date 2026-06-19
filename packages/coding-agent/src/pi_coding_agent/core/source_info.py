@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-SourceScope = Literal["user", "project", "temporary"]
+SourceScope = Literal["user", "project", "temporary", "bundled"]
 SourceOrigin = Literal["package", "top-level"]
 
 
