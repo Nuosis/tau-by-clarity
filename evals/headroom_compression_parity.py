@@ -2660,47 +2660,37 @@ def _run_ccr_recovery_case(tempdir: str) -> CaseResult:
         pi = _FakePi()
         extension_factory(pi)
         failures: list[str] = []
-        if "headroom_retrieve" not in pi.tools:
-            failures.append("Headroom-compatible headroom_retrieve tool was not registered")
-            full_result = {"content": [{"text": ""}], "details": {}}
+        if "headroom_retrieve" in pi.tools:
+            failures.append("headroom_retrieve compatibility tool should not be registered")
+        if "ccr_retrieve" not in pi.tools:
+            failures.append("canonical ccr_retrieve tool was not registered")
             query_result = {"content": [{"text": ""}], "details": {}}
         else:
-            schema = pi.tools["headroom_retrieve"]["parameters"]
-            if schema.get("required") != ["hash"]:
-                failures.append("headroom_retrieve does not accept Headroom's hash-only required schema")
-            execute = pi.tools["headroom_retrieve"]["execute"]
-            full_result = asyncio.run(execute("tool-1", {"hash": handle}, None, None, None))
+            schema = pi.tools["ccr_retrieve"]["parameters"]
+            if schema.get("required") != ["handle", "query"]:
+                failures.append("ccr_retrieve must require handle and query")
+            execute = pi.tools["ccr_retrieve"]["execute"]
             query_result = asyncio.run(
-                execute("tool-2", {"hash": handle, "query": "needle payment"}, None, None, None)
+                execute("tool-1", {"handle": handle, "query": "needle payment"}, None, None, None)
             )
     finally:
         active_compression_runtime._store = previous_store
-
-    try:
-        payload = json.loads(full_result["content"][0]["text"])
-    except Exception as exc:
-        failures.append(f"full CCR retrieval did not return JSON payload: {exc}")
-        payload = {}
-    if payload.get("hash") != handle:
-        failures.append("full CCR retrieval did not echo hash")
-    if payload.get("original_content") != original:
-        failures.append("full CCR retrieval did not recover original")
-    if not store.is_expanded(handle):
-        failures.append("full CCR retrieval did not mark handle expanded")
 
     query_text = query_result["content"][0]["text"]
     if "needle payment failure" not in query_text:
         failures.append("query CCR retrieval did not return matching item")
     if "ordinary startup" in query_text:
         failures.append("query CCR retrieval returned unrelated item")
+    if store.is_expanded(handle):
+        failures.append("query CCR retrieval should not mark handle expanded")
 
     return CaseResult(
         group=CCR_RECOVERY_GROUP,
-        name="headroom_retrieve_alias",
+        name="ccr_retrieve_only",
         ok=not failures,
         before_chars=len(original),
         after_chars=len(query_text),
-        checks=["headroom_retrieve"] if not failures else [],
+        checks=["ccr_retrieve"] if not failures else [],
         failures=failures,
     )
 

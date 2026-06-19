@@ -88,53 +88,24 @@ async def test_compression_command_reports_real_runtime_stats():
         pi_ai.reset_cache_alignment_stats()
 
 
-def test_extension_registers_headroom_compatible_retrieve_alias():
+def test_extension_registers_only_canonical_ccr_retrieve_tool():
     pi = _FakePi()
     extension_factory(pi)
 
     assert "ccr_retrieve" in pi.tools
-    assert "headroom_retrieve" in pi.tools
-    schema = pi.tools["headroom_retrieve"]["parameters"]
-    assert schema["required"] == ["hash"]
+    assert "headroom_retrieve" not in pi.tools
+    schema = pi.tools["ccr_retrieve"]["parameters"]
+    assert schema["required"] == ["handle", "query"]
+    assert "handle" in schema["properties"]
     assert "query" in schema["properties"]
 
 
 @pytest.mark.asyncio
-async def test_headroom_retrieve_alias_full_retrieval_uses_hash_param(tmp_path):
+async def test_ccr_retrieve_requires_query_scoped_retrieval(tmp_path):
     store = CCRStore(str(tmp_path / "ccr.db"))
     previous_store = active_compression_runtime._store
     active_compression_runtime._store = store
     handle = "abc123abc123"
-    original = json.dumps([{"id": i, "target": i == 2} for i in range(4)])
-    store.put_with_handle(handle, original)
-    try:
-        pi = _FakePi()
-        extension_factory(pi)
-        result = await pi.tools["headroom_retrieve"]["execute"](
-            "tool-1",
-            {"hash": handle},
-            None,
-            None,
-            None,
-        )
-    finally:
-        active_compression_runtime._store = previous_store
-
-    text = result["content"][0]["text"]
-    payload = json.loads(text)
-    assert payload["hash"] == handle
-    assert payload["original_content"] == original
-    assert payload["original_item_count"] == 4
-    assert result["details"]["full_retrieval"] is True
-    assert store.is_expanded(handle) is True
-
-
-@pytest.mark.asyncio
-async def test_headroom_retrieve_alias_query_scopes_retrieval(tmp_path):
-    store = CCRStore(str(tmp_path / "ccr.db"))
-    previous_store = active_compression_runtime._store
-    active_compression_runtime._store = store
-    handle = "def456def456"
     original = json.dumps([
         {"id": "a", "message": "ordinary startup"},
         {"id": "b", "message": "needle payment failure"},
@@ -144,9 +115,9 @@ async def test_headroom_retrieve_alias_query_scopes_retrieval(tmp_path):
     try:
         pi = _FakePi()
         extension_factory(pi)
-        result = await pi.tools["headroom_retrieve"]["execute"](
+        result = await pi.tools["ccr_retrieve"]["execute"](
             "tool-1",
-            {"hash": handle, "query": "needle payment"},
+            {"handle": handle, "query": "needle payment"},
             None,
             None,
             None,
@@ -160,6 +131,7 @@ async def test_headroom_retrieve_alias_query_scopes_retrieval(tmp_path):
     assert "ordinary startup" not in text
     assert result["details"]["handle"] == handle
     assert result["details"]["query"] == "needle payment"
+    assert store.is_expanded(handle) is False
 
 
 def test_ccr_store_expires_entries_and_reports_status(tmp_path, monkeypatch):

@@ -12,10 +12,9 @@ Loaded standalone by the extension loader → absolute imports.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from pi_coding_agent.active_compression import is_enabled, mark_expanded, retrieve
+from pi_coding_agent.active_compression import is_enabled, retrieve
 from pi_coding_agent.active_compression.search import search_original
 
 
@@ -168,47 +167,6 @@ def _retrieve_tool_response(handle: str, query: str, *, tool_name: str) -> dict[
     }
 
 
-def _headroom_retrieve_tool_response(handle: str, query: str) -> dict[str, Any]:
-    original = retrieve(handle)
-    if original is None:
-        return {
-            "content": [{"type": "text", "text": f"No CCR entry for hash {handle!r}."}],
-            "isError": True,
-        }
-    if query.strip():
-        return _retrieve_tool_response(handle, query, tool_name="headroom_retrieve")
-
-    mark_expanded(handle)
-    try:
-        parsed = json.loads(original)
-    except Exception:
-        original_item_count = len(original.splitlines()) if original else 0
-    else:
-        original_item_count = len(parsed) if isinstance(parsed, list) else 1
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": json.dumps(
-                    {
-                        "hash": handle,
-                        "original_content": original,
-                        "original_item_count": original_item_count,
-                    },
-                    indent=2,
-                ),
-            }
-        ],
-        "details": {
-            "handle": handle,
-            "query": None,
-            "kept_items": original_item_count,
-            "total_items": original_item_count,
-            "full_retrieval": True,
-        },
-    }
-
-
 def extension_factory(pi: Any) -> None:
     # ---- model-driven: the explicit tool ---------------------------------- #
     async def execute(tool_call_id, params, signal, on_update, ctx):
@@ -249,34 +207,6 @@ def extension_factory(pi: Any) -> None:
             "required": ["handle", "query"],
         },
         execute=execute,
-    )
-
-    async def execute_headroom_compatible(tool_call_id, params, signal, on_update, ctx):
-        params = params or {}
-        handle = params.get("hash") or params.get("handle") or ""
-        query = (params.get("query") or "").strip()
-        return _headroom_retrieve_tool_response(handle, query)
-
-    pi.register_tool(
-        name="headroom_retrieve",
-        label="Retrieve original compressed payload",
-        description=(
-            "Retrieve original uncompressed content that was compressed to save tokens. "
-            "Use `hash` from compression markers. Optionally provide `query` to return "
-            "only matching parts."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "hash": {"type": "string", "description": "CCR hash from the compression marker"},
-                "query": {
-                    "type": "string",
-                    "description": "Optional search query to filter results; omit to retrieve the full original.",
-                },
-            },
-            "required": ["hash"],
-        },
-        execute=execute_headroom_compatible,
     )
 
     async def compression_command(args: str, ctx: Any = None) -> str:

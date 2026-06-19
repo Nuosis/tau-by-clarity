@@ -539,7 +539,7 @@ class CCRStore:
         payload: str,
     ) -> None:
         event = {
-            "event": "headroom_retrieve",
+            "event": "ccr_retrieve",
             "hash": entry.hash,
             "retrieval_type": retrieval_type,
             "query": query,
@@ -555,6 +555,6 @@ class CCRStore:
             **_payload_for_retrieval_log(payload),
         }
         logger.info(
-            "event=headroom_retrieve %s",
+            "event=ccr_retrieve %s",
             json.dumps(event, ensure_ascii=False, separators=(",", ":")),
         )
