@@ -39,6 +39,7 @@ BUILTIN_SLASH_COMMANDS: list[BuiltinSlashCommand] = [
     BuiltinSlashCommand("scoped-models", "Enable/disable models for Ctrl+P cycling"),
     BuiltinSlashCommand("export", "Export session to HTML file"),
     BuiltinSlashCommand("share", "Share session as a secret GitHub gist"),
+    BuiltinSlashCommand("feedback", "Submit bug reports and feature requests"),
     BuiltinSlashCommand("copy", "Copy last agent message to clipboard"),
     BuiltinSlashCommand("name", "Set session display name"),
     BuiltinSlashCommand("session", "Show session info and stats"),

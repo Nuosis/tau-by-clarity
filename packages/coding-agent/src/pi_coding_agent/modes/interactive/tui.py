@@ -510,7 +510,7 @@ def _loaded_resource_lines(session: Any, *, show_listing: bool = True, show_diag
         extension_diagnostics.extend(_built_in_command_conflict_diagnostics(
             extension_runner,
             {
-                "settings", "chat", "model", "models", "set", "scoped-models", "export", "import", "share", "copy", "name",
+                "settings", "chat", "model", "models", "set", "scoped-models", "export", "import", "share", "feedback", "copy", "name",
                 "session", "changelog", "hotkeys", "fork", "clone", "tree", "trust", "login",
                 "logout", "new", "compact", "resume", "reload", "quit", "exit", "clear",
                 "help", "thinking", "tools",
@@ -1060,6 +1060,7 @@ async def _run_pi_tui(
         ("export", "Export session as HTML"),
         ("import", "Import and resume a session"),
         ("share", "Share session"),
+        ("feedback", "Submit feedback"),
         ("copy", "Copy last assistant message"),
         ("name", "Set session display name"),
         ("session", "Show session statistics"),
@@ -1563,6 +1564,7 @@ async def _run_pi_tui(
                 f"  {cyan('/chat')}     — Render the session chat transcript",
                 f"  {cyan('/goal')}     — Show, set, or clear current session goal",
                 f"  {cyan('/model')}    — List available models / switch model",
+                f"  {cyan('/feedback')} — Submit a bug report or feature request",
                 f"  {cyan('/copy')}     — Copy last assistant message",
                 f"  {cyan('/name')}     — Set session display name",
                 f"  {cyan('/export')}   — Export session as HTML or JSONL",
@@ -1595,6 +1597,20 @@ async def _run_pi_tui(
             except Exception as exc:
                 append_history(f"{red('Copy failed:')} {exc}")
             tui.request_render()
+            return
+
+        if stripped == "/feedback" or stripped.startswith("/feedback "):
+            await _handle_feedback_command(
+                stripped,
+                session,
+                append_history,
+                tui,
+                show_extension_selector,
+                show_extension_input,
+                dim,
+                red,
+                green,
+            )
             return
 
         if stripped == "/new":
@@ -2591,6 +2607,91 @@ async def _handle_login_command(
         update_footer()
     except Exception as exc:
         append_history(f"{red('Login failed:')} {exc}")
+    tui.request_render()
+
+
+async def _handle_feedback_command(
+    stripped: str,
+    session: "AgentSession",
+    append_history,
+    tui,
+    show_select,
+    show_input,
+    dim,
+    red,
+    green,
+) -> None:
+    from pi_coding_agent.core.feedback import (
+        FeedbackError,
+        FeedbackRequest,
+        collect_session_snapshot,
+        parse_feedback_args,
+        submit_github_issue,
+    )
+
+    args = stripped[len("/feedback"):].strip()
+    try:
+        request = parse_feedback_args(args)
+    except FeedbackError as exc:
+        append_history(f"{red('Feedback failed:')} {exc}")
+        tui.request_render()
+        return
+
+    if request is None:
+        if show_select is None or show_input is None:
+            append_history(dim('Usage: /feedback <bug|feature> <yes|no> "<issue/request>" ["expected behavior"]'))
+            tui.request_render()
+            return
+
+        selected_type = await show_select("Feedback type", ["Bug", "Feature request"], None)
+        if selected_type is None:
+            append_history(dim("Feedback cancelled."))
+            tui.request_render()
+            return
+        include_session_value = await show_select("Include session?", ["Yes", "No"], None)
+        if include_session_value is None:
+            append_history(dim("Feedback cancelled."))
+            tui.request_render()
+            return
+        issue = await show_input("What's the issue/request?", "Describe the issue or request", None)
+        if issue is None or not issue.strip():
+            append_history(dim("Feedback cancelled."))
+            tui.request_render()
+            return
+        expected = None
+        if str(selected_type).lower().startswith("bug"):
+            expected = await show_input(
+                "What would you like to have happened instead?",
+                "Expected behavior",
+                None,
+            )
+            if expected is None or not expected.strip():
+                append_history(dim("Feedback cancelled."))
+                tui.request_render()
+                return
+        request = FeedbackRequest(
+            feedback_type="bug" if str(selected_type).lower().startswith("bug") else "feature",
+            include_session=str(include_session_value).lower().startswith("y"),
+            issue=issue,
+            expected=expected,
+        )
+
+    if request.include_session:
+        request = FeedbackRequest(
+            feedback_type=request.feedback_type,
+            include_session=True,
+            issue=request.issue,
+            expected=request.expected,
+            session_snapshot=collect_session_snapshot(session),
+        )
+
+    try:
+        submitted = await asyncio.to_thread(submit_github_issue, request)
+    except FeedbackError as exc:
+        append_history(f"{red('Feedback failed:')} {exc}")
+    else:
+        label = f" #{submitted.number}" if submitted.number is not None else ""
+        append_history(f"{green('Feedback submitted')}{label}: {submitted.url}")
     tui.request_render()
 
 
