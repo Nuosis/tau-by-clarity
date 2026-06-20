@@ -12,6 +12,9 @@ PYTHONPATH=packages/ai/src:packages/coding-agent/src:packages/agent/src:packages
 uv run python evals/headroom_compression_parity.py /tmp/headroom-src
 # all 208 fixtures passed
 
+# 2026-06-19 focused re-check:
+# all 208 fixtures passed; aggregate char savings 62.9%
+
 PYTHONPATH=packages/ai/src:packages/coding-agent/src:packages/agent/src:packages/tui/src \
 uv run pytest packages/ai/tests/test_compression_policy.py \
   packages/coding-agent/tests/test_active_compression_routes.py \
@@ -21,6 +24,14 @@ uv run pytest packages/ai/tests/test_compression_policy.py \
   packages/ai/tests/test_pii_hook.py packages/ai/tests/test_stream.py \
   packages/ai/tests/test_tokenization.py -q
 # 171 passed
+
+# 2026-06-19 focused active-compression re-check:
+# packages/ai/tests/test_compression_policy.py
+# packages/coding-agent/tests/test_active_compression_routes.py
+# packages/coding-agent/tests/test_active_compression_extension.py
+# packages/coding-agent/tests/test_bash_active_compression.py
+# packages/ai/tests/test_tokenization.py
+# 84 passed
 ```
 
 ## Requirement Matrix

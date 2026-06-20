@@ -2820,7 +2820,11 @@ def _compress_context_inner(context: Any, fn: CompressFn, policy: CompressionPol
         0,
         min_read_lifecycle_value if min_read_lifecycle_value is not None else READ_LIFECYCLE_MIN_BYTES,
     )
-    protect_recent_value = _int_or_none(getattr(context, "compression_protect_recent", RECENT_CODE_PROTECTION_MESSAGES))
+    protect_recent_value = _int_or_none(
+        os.environ.get("PI_AI_COMPRESSION_PROTECT_RECENT")
+        if os.environ.get("PI_AI_COMPRESSION_PROTECT_RECENT") is not None
+        else getattr(context, "compression_protect_recent", RECENT_CODE_PROTECTION_MESSAGES)
+    )
     protect_recent = max(0, protect_recent_value if protect_recent_value is not None else RECENT_CODE_PROTECTION_MESSAGES)
     replacements = _read_lifecycle_replacements(
         messages,

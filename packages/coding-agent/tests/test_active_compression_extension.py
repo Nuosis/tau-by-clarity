@@ -5,6 +5,8 @@ import time
 import pi_ai
 import pytest
 from pi_ai import Context, TextContent, ToolResultMessage
+from pi_ai import compress_context, get_compression_stats, get_unit_outcome_stats
+from pi_ai import register_compressor, reset_compression_stats, unregister_compressor
 from pi_coding_agent import active_compression as active_compression_runtime
 from pi_coding_agent.active_compression.ccr import CCRStore
 from pi_coding_agent.active_compression.extension import extension_factory
@@ -33,6 +35,30 @@ def _tool_result(text: str) -> Context:
             )
         ]
     )
+
+
+def test_env_override_disables_recent_code_protection(monkeypatch):
+    pi_ai.unregister_compressor()
+    pi_ai.reset_compression_stats()
+    register_compressor(lambda text: f"[CCR:abc123abc123] compressed code\n{text[:80]}")
+    code = "\n".join(
+        f"class ContextRecord{i}:\n    def route_{i}(self):\n        return {i}\n"
+        for i in range(80)
+    )
+
+    try:
+        protected = compress_context(_tool_result(code))
+        assert protected.messages[0].content[0].text == code
+        assert get_unit_outcome_stats().outcomes_by_reason.get("protected_code_context") == 1
+
+        pi_ai.reset_compression_stats()
+        monkeypatch.setenv("PI_AI_COMPRESSION_PROTECT_RECENT", "0")
+        compressed = compress_context(_tool_result(code))
+        assert compressed.messages[0].content[0].text.startswith("[CCR:abc123abc123] compressed code")
+        assert get_compression_stats().total_compressions == 1
+    finally:
+        unregister_compressor()
+        reset_compression_stats()
 
 
 @pytest.mark.asyncio
