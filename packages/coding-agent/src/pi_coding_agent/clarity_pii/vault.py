@@ -61,7 +61,15 @@ class Vault:
             return text
 
         def _repl(m: re.Match[str]) -> str:
-            return self._to_value.get(m.group(0), m.group(0))
+            token = m.group(0)
+            value = self._to_value.get(token)
+            if value is not None:
+                return value
+            if "=" in token:
+                value = self._to_value.get(token.replace("=", ":"))
+                if value is not None:
+                    return value
+            return token
 
         return TOKEN_RE.sub(_repl, text)
 

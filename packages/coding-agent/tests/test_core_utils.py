@@ -263,6 +263,15 @@ class TestCliDebugLog:
 # ============================================================================
 
 class TestClarityPiiWalk:
+    def test_vault_detokenizes_legacy_equals_token_alias(self):
+        from pi_coding_agent.clarity_pii.vault import Vault
+
+        vault = Vault()
+        token = vault.tokenize("jane@acme.com")
+
+        assert token == "[PII:EMAIL:1]"
+        assert vault.detokenize("email [PII:EMAIL=1]") == "email jane@acme.com"
+
     def test_provider_payload_tokenization_skips_response_protocol_ids(self):
         from pi_coding_agent.clarity_pii.vault import Vault
         from pi_coding_agent.clarity_pii.walk import (
@@ -338,6 +347,40 @@ class TestClarityPiiWalk:
         assert payload["input"][0]["id"] == raw_id
         assert payload["input"][0]["call_id"] == f"call_{raw_card}"
         assert payload["input"][0]["arguments"] == "{\"note\":\"email [PII:EMAIL:1]\"}"
+
+    def test_provider_payload_tokenization_skips_anthropic_tool_use_id(self):
+        from pi_coding_agent.clarity_pii.vault import Vault
+        from pi_coding_agent.clarity_pii.walk import (
+            provider_payload_protocol_slots,
+            provider_payload_string_slots,
+        )
+
+        raw_card = "4111111111111111"
+        raw_tool_use_id = f"tc_prefix{raw_card}suffix"
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": raw_tool_use_id,
+                            "content": "email jane@acme.com",
+                        }
+                    ],
+                }
+            ]
+        }
+        vault = Vault()
+
+        for get, set_ in provider_payload_protocol_slots(payload):
+            set_(vault.detokenize(get()))
+        for get, set_ in provider_payload_string_slots(payload):
+            set_(vault.tokenize(get()))
+
+        tool_result = payload["messages"][0]["content"][0]
+        assert tool_result["tool_use_id"] == raw_tool_use_id
+        assert tool_result["content"] == "email [PII:EMAIL:1]"
 
 
 def _graphwalks_like_prompt() -> str:

@@ -1101,6 +1101,275 @@ class AgentSession:
         await self._switch_to_session_manager(forked_sm)
         return {"cancelled": False, "selectedText": selected_text}
 
+    async def recover_session(self, target: str | int | None = None) -> dict[str, Any]:
+        """
+        Recover from a failed tail by branching before it and injecting a checkpoint.
+
+        `target` can be:
+        - None, "last", or "1": most recent failure
+        - "2", "3", ...: nth most recent failure
+        - an entry id: recover from that exact entry
+        """
+        entries = self._session_manager.get_entries()
+        if not entries:
+            return {"cancelled": True, "reason": "empty_session"}
+
+        source = self._select_recovery_source(entries, target)
+        if source is None:
+            return {"cancelled": True, "reason": "no_failure_found"}
+
+        branch_point_id = self._recovery_branch_point(entries, source)
+        source_index = next((i for i, entry in enumerate(entries) if entry.id == source.id), -1)
+        branch_index = (
+            next((i for i, entry in enumerate(entries) if entry.id == branch_point_id), -1)
+            if branch_point_id
+            else -1
+        )
+        dropped = [
+            entry.id
+            for entry in entries[branch_index + 1:source_index + 1]
+            if entry.id
+        ]
+        preserved = [entry.id for entry in entries[:branch_index + 1] if entry.id]
+        reason = self._classify_recovery_reason(source)
+        summary = self._build_recovery_summary(entries, source, reason, branch_point_id, dropped)
+
+        recovered_sm = self._session_manager.branch(branch_point_id, self.cwd)
+        recovery_entry_id = recovered_sm.append_recovery(
+            summary,
+            reason=reason,
+            source_entry_id=source.id,
+            branch_point_id=branch_point_id,
+            dropped_entry_ids=dropped,
+            preserved_entry_ids=preserved[-12:],
+            details={
+                "target": str(target or "last"),
+                "sourceType": source.type,
+                "sourceTimestamp": source.timestamp,
+            },
+        )
+        old_session_id = self.session_id
+        await self._switch_to_session_manager(recovered_sm)
+        return {
+            "cancelled": False,
+            "reason": reason,
+            "sourceEntryId": source.id,
+            "branchPointId": branch_point_id,
+            "recoveryEntryId": recovery_entry_id,
+            "droppedEntryIds": dropped,
+            "oldSessionId": old_session_id,
+            "newSessionId": self.session_id,
+            "summary": summary,
+        }
+
+    def _select_recovery_source(
+        self,
+        entries: list[SessionEntry],
+        target: str | int | None,
+    ) -> SessionEntry | None:
+        if isinstance(target, str):
+            raw = target.strip()
+            if raw and raw not in {"last", "latest"} and not raw.isdigit():
+                return self._session_manager.get_entry(raw)
+            target = raw or None
+
+        failures = [entry for entry in entries if self._is_recovery_failure(entry)]
+        if not failures:
+            return None
+        index = 1
+        if isinstance(target, int):
+            index = target
+        elif isinstance(target, str) and target.isdigit():
+            index = int(target)
+        index = max(1, index)
+        if index > len(failures):
+            return None
+        return list(reversed(failures))[index - 1]
+
+    def _is_recovery_failure(self, entry: SessionEntry) -> bool:
+        text = self._entry_text(entry).lower()
+        msg = entry.data.get("message", {})
+        if isinstance(msg, dict):
+            if msg.get("stop_reason") == "error" or msg.get("stopReason") == "error":
+                return True
+            if msg.get("error_message") or msg.get("errorMessage"):
+                return True
+            if msg.get("is_error") or msg.get("isError"):
+                return True
+            details = msg.get("details")
+            if isinstance(details, dict) and details.get("kind") == "tool_error":
+                return True
+        return any(
+            needle in text
+            for needle in (
+                "context_length_exceeded",
+                "context window",
+                "traceback",
+                "timeouterror",
+                "timed out",
+                "command exited with code 1",
+                "error code:",
+            )
+        )
+
+    def _recovery_branch_point(
+        self,
+        entries: list[SessionEntry],
+        source: SessionEntry,
+    ) -> str | None:
+        by_id = {entry.id: entry for entry in entries}
+        parent = by_id.get(source.parent_id) if source.parent_id else None
+        if parent and self._entry_is_tool_result(parent):
+            grandparent = by_id.get(parent.parent_id) if parent.parent_id else None
+            if grandparent and self._entry_has_tool_call(grandparent):
+                return grandparent.parent_id
+            return parent.parent_id
+        if self._entry_is_tool_result(source):
+            parent = by_id.get(source.parent_id) if source.parent_id else None
+            if parent and self._entry_has_tool_call(parent):
+                return parent.parent_id
+            return source.parent_id
+        return source.parent_id
+
+    def _classify_recovery_reason(self, entry: SessionEntry) -> str:
+        text = self._entry_text(entry).lower()
+        if "context_length_exceeded" in text or "context window" in text:
+            return "context_length_exceeded"
+        if "timed out" in text or "timeouterror" in text:
+            return "timeout"
+        if "traceback" in text:
+            return "exception"
+        msg = entry.data.get("message", {})
+        if isinstance(msg, dict):
+            details = msg.get("details")
+            if isinstance(details, dict) and details.get("kind") == "tool_error":
+                return "tool_error"
+            if msg.get("stop_reason") == "error" or msg.get("stopReason") == "error":
+                return "model_error"
+        return "failure"
+
+    def _build_recovery_summary(
+        self,
+        entries: list[SessionEntry],
+        source: SessionEntry,
+        reason: str,
+        branch_point_id: str | None,
+        dropped_entry_ids: list[str],
+    ) -> str:
+        recent_user = [
+            self._entry_text(entry)
+            for entry in entries
+            if entry.type == "message"
+            and isinstance(entry.data.get("message"), dict)
+            and entry.data["message"].get("role") == "user"
+            and self._entry_text(entry).strip()
+        ][-4:]
+        branch_index = (
+            next((i for i, entry in enumerate(entries) if entry.id == branch_point_id), -1)
+            if branch_point_id
+            else -1
+        )
+        preserved_entries = entries[:branch_index + 1] if branch_index >= 0 else []
+        useful_tool_outputs = [
+            self._summarize_tool_result(entry)
+            for entry in preserved_entries
+            if self._entry_is_tool_result(entry) and not self._is_recovery_failure(entry)
+        ]
+        useful_tool_outputs = [text for text in useful_tool_outputs if text][-4:]
+        failure_excerpt = self._clip_text(self._entry_text(source), 1200)
+
+        lines = [
+            "## Recovery Point",
+            f"Recovered from `{reason}` at entry `{source.id}`.",
+            "",
+            "## Failure",
+            failure_excerpt or "(no failure text captured)",
+            "",
+            "## Preserved Context",
+        ]
+        if recent_user:
+            lines.append("Recent user requests:")
+            lines.extend(f"- {self._clip_text(item, 240)}" for item in recent_user)
+        else:
+            lines.append("- No recent user request text found.")
+        if useful_tool_outputs:
+            lines.append("")
+            lines.append("Recent successful tool evidence:")
+            lines.extend(f"- {item}" for item in useful_tool_outputs)
+        lines.extend([
+            "",
+            "## Dropped Tail",
+            f"- Branch point: `{branch_point_id or 'session-root'}`",
+            f"- Dropped entries: {', '.join(dropped_entry_ids) if dropped_entry_ids else '(none)'}",
+            "",
+            "## Next Step",
+            "Continue from the preserved branch. Treat the failure above as diagnostic evidence, "
+            "but do not re-load the dropped raw tool output unless it is specifically needed.",
+        ])
+        return "\n".join(lines)
+
+    def _entry_text(self, entry: SessionEntry) -> str:
+        msg = entry.data.get("message", {})
+        if isinstance(msg, dict):
+            parts: list[str] = []
+            err = msg.get("error_message") or msg.get("errorMessage")
+            if err:
+                parts.append(str(err))
+            content = msg.get("content", [])
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                        elif isinstance(block.get("thinking"), str):
+                            parts.append(block["thinking"])
+                        elif block.get("type") in {"toolCall", "tool_call"}:
+                            parts.append(str(block.get("name") or "tool_call"))
+                            arguments = block.get("arguments") or block.get("input")
+                            if arguments is not None:
+                                try:
+                                    parts.append(json.dumps(arguments, ensure_ascii=False))
+                                except TypeError:
+                                    parts.append(str(arguments))
+            return "\n".join(parts)
+        if entry.type in {"branch_summary", "recovery", "compaction"}:
+            summary = entry.data.get("summary")
+            return str(summary or "")
+        if entry.type == "custom_message":
+            return str(entry.data.get("content") or "")
+        return ""
+
+    def _entry_is_tool_result(self, entry: SessionEntry) -> bool:
+        msg = entry.data.get("message", {})
+        return isinstance(msg, dict) and msg.get("role") == "toolResult"
+
+    def _entry_has_tool_call(self, entry: SessionEntry) -> bool:
+        msg = entry.data.get("message", {})
+        if not isinstance(msg, dict):
+            return False
+        content = msg.get("content", [])
+        return isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") in {"toolCall", "tool_call"}
+            for block in content
+        )
+
+    def _summarize_tool_result(self, entry: SessionEntry) -> str:
+        text = self._entry_text(entry)
+        if not text.strip():
+            return ""
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if not first_line:
+            return ""
+        return self._clip_text(first_line, 220)
+
+    def _clip_text(self, text: str, limit: int) -> str:
+        cleaned = " ".join(str(text).split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: max(0, limit - 3)] + "..."
+
     def get_session_tree_entries(self) -> list[dict[str, Any]]:
         """Return a flat session-tree listing for RPC/TUI fallback commands."""
         rows: list[dict[str, Any]] = []
@@ -2523,6 +2792,7 @@ class AgentSession:
     newSession = new_session
     cloneSession = clone_session
     forkSession = fork_session
+    recoverSession = recover_session
     getSessionTreeEntries = get_session_tree_entries
     navigateTree = navigate_tree
     getSteeringMessages = get_steering_messages

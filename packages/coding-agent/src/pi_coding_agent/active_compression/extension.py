@@ -12,10 +12,13 @@ Loaded standalone by the extension loader → absolute imports.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pi_coding_agent.active_compression import is_enabled, retrieve
 from pi_coding_agent.active_compression.search import search_original
+
+_VALID_CCR_HANDLE_RE = re.compile(r"^[0-9a-fA-F]{12}$")
 
 
 def _format_count_map(values: dict[str, int]) -> str:
@@ -112,6 +115,18 @@ def _stats_text() -> str:
 
 
 def _retrieve_tool_response(handle: str, query: str, *, tool_name: str) -> dict[str, Any]:
+    if not _VALID_CCR_HANDLE_RE.fullmatch(handle or ""):
+        return {
+            "content": [{
+                "type": "text",
+                "text": (
+                    f"Invalid CCR handle {handle!r}. CCR handles are 12 hex characters "
+                    "from a [CCR:<handle>] marker; do not use task IDs or needle IDs as handles."
+                ),
+            }],
+            "isError": True,
+        }
+
     original = retrieve(handle)
     if original is None:
         return {

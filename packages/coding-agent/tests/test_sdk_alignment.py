@@ -1195,6 +1195,118 @@ class TestSDKAlignment:
         assert session._session_manager.get_leaf_id() == first_id
 
     @pytest.mark.asyncio
+    async def test_recover_session_branches_before_context_overflow_tail(self, tmp_path):
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
+                cwd=str(tmp_path),
+                model=get_model("anthropic", "claude-3-5-sonnet-20241022"),
+                resource_loader=_FakeResourceLoader(),
+            )
+        )
+        session = result.session
+        user_id = session._session_manager.append_message({
+            "role": "user",
+            "content": "Investigate the TauClaire timeout",
+            "timestamp": 1,
+        })
+        tool_call_id = session._session_manager.append_message({
+            "role": "assistant",
+            "content": [{
+                "type": "toolCall",
+                "name": "bash",
+                "arguments": {"command": "run huge eval"},
+            }],
+            "stop_reason": "toolUse",
+            "timestamp": 2,
+        })
+        tool_result_id = session._session_manager.append_message({
+            "role": "toolResult",
+            "content": [{"type": "text", "text": "SQL log line\n" * 5000}],
+            "timestamp": 3,
+        })
+        error_id = session._session_manager.append_message({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "error",
+            "error_message": (
+                "Error Code context_length_exceeded: Your input exceeds the "
+                "context window of this model."
+            ),
+            "timestamp": 4,
+        })
+        old_id = session.session_id
+
+        recover_result = await session.recover_session()
+
+        assert recover_result["cancelled"] is False
+        assert recover_result["reason"] == "context_length_exceeded"
+        assert recover_result["sourceEntryId"] == error_id
+        assert recover_result["branchPointId"] == user_id
+        assert recover_result["oldSessionId"] == old_id
+        assert recover_result["newSessionId"] != old_id
+        assert recover_result["droppedEntryIds"] == [tool_call_id, tool_result_id, error_id]
+        assert "TauClaire timeout" in recover_result["summary"]
+        assert "context_length_exceeded" in recover_result["summary"]
+
+        entries = session._session_manager.get_entries()
+        assert entries[-1].type == "recovery"
+        assert session._session_manager.get_leaf_id() == recover_result["recoveryEntryId"]
+        rendered = session.messages
+        assert rendered[0]["role"] == "user"
+        assert rendered[0]["content"] == "Investigate the TauClaire timeout"
+        assert rendered[-1]["role"] == "user"
+        assert "Recovery checkpoint" in rendered[-1]["content"][0]["text"]
+        assert "SQL log line" not in json.dumps(rendered)
+
+    @pytest.mark.asyncio
+    async def test_recover_session_accepts_numbered_tool_error(self, tmp_path):
+        result = await create_agent_session(
+            CreateAgentSessionOptions(
+                cwd=str(tmp_path),
+                model=get_model("anthropic", "claude-3-5-sonnet-20241022"),
+                resource_loader=_FakeResourceLoader(),
+            )
+        )
+        session = result.session
+        first_user = session._session_manager.append_message({
+            "role": "user",
+            "content": "First task",
+            "timestamp": 1,
+        })
+        session._session_manager.append_message({
+            "role": "assistant",
+            "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "bad"}}],
+            "stop_reason": "toolUse",
+            "timestamp": 2,
+        })
+        first_error = session._session_manager.append_message({
+            "role": "toolResult",
+            "content": [{"type": "text", "text": "Command exited with code 1"}],
+            "details": {"kind": "tool_error"},
+            "is_error": True,
+            "timestamp": 3,
+        })
+        session._session_manager.append_message({
+            "role": "user",
+            "content": "Second task",
+            "timestamp": 4,
+        })
+        session._session_manager.append_message({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "error",
+            "error_message": "TimeoutError: TauClaire timed out. stderr=",
+            "timestamp": 5,
+        })
+
+        recover_result = await session.recover_session("2")
+
+        assert recover_result["cancelled"] is False
+        assert recover_result["sourceEntryId"] == first_error
+        assert recover_result["reason"] == "tool_error"
+        assert recover_result["branchPointId"] == first_user
+
+    @pytest.mark.asyncio
     async def test_session_tree_entries_and_navigation_contract(self, tmp_path):
         result = await create_agent_session(
             CreateAgentSessionOptions(

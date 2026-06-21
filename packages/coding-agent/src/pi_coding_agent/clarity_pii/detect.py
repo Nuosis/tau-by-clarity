@@ -12,7 +12,10 @@ from typing import Any
 TOKEN_PREFIX = "PII"
 # e.g. [PII:EMAIL:1] — bracketed + colon-delimited so it round-trips through the
 # model verbatim and is trivial to detect/reverse with an exact string match.
-TOKEN_RE = re.compile(r"\[" + re.escape(TOKEN_PREFIX) + r":[A-Z_]+:\d+\]")
+#
+# Older/dev transcripts may contain [PII:EMAIL=1]. Accept that shape on read so
+# tool-call detokenization does not leak a shell-unsafe bracket token into bash.
+TOKEN_RE = re.compile(r"\[" + re.escape(TOKEN_PREFIX) + r":[A-Z_]+(?::|=)\d+\]")
 
 
 def make_token(label: str, n: int) -> str:

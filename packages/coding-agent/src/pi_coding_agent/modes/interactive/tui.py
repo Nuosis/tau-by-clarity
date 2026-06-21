@@ -1570,6 +1570,7 @@ async def _run_pi_tui(
                 f"  {cyan('/export')}   — Export session as HTML or JSONL",
                 f"  {cyan('/new')}      — Clear conversation and start a fresh session view",
                 f"  {cyan('/reload')}   — Reload settings and resources",
+                f"  {cyan('/recover')}  — Branch before a failed tail and inject a recovery checkpoint",
                 f"  {cyan('/compact')}  — Compact context to free tokens",
                 f"  {cyan('/kill')}     — Kill running tau sessions and subagents",
                 f"  {cyan('/thinking')} — Cycle thinking level",
@@ -1772,6 +1773,39 @@ async def _run_pi_tui(
                         append_history(green("Navigated session tree."))
                 except Exception as exc:
                     append_history(f"{red('Tree navigation failed:')} {exc}")
+            update_footer()
+            tui.request_render()
+            return
+
+        if stripped == "/recover" or stripped.startswith("/recover "):
+            target = stripped[9:].strip() if stripped.startswith("/recover ") else None
+            try:
+                recover = getattr(session, "recover_session", None) or getattr(session, "recoverSession", None)
+                if not callable(recover):
+                    raise RuntimeError("Recovery is not supported by this session")
+                result = await recover(target)
+                if result.get("cancelled"):
+                    reason = result.get("reason") or "unknown"
+                    append_history(dim(f"Recovery cancelled: {reason}."))
+                else:
+                    dropped = result.get("droppedEntryIds") or []
+                    lines = [
+                        green("Recovered session."),
+                        f"  Reason:        {result.get('reason')}",
+                        f"  Source entry:  {result.get('sourceEntryId')}",
+                        f"  Recovery:      {result.get('recoveryEntryId')}",
+                        f"  New session:   {result.get('newSessionId')}",
+                        f"  Dropped tail:  {len(dropped)} entr{'y' if len(dropped) == 1 else 'ies'}",
+                    ]
+                    summary = str(result.get("summary") or "")
+                    if summary:
+                        short = summary[:600] + "..." if len(summary) > 600 else summary
+                        lines.append("")
+                        lines.append(dim(short))
+                    append_history("\n".join(lines))
+                    rebuild_history_from_current_session()
+            except Exception as exc:
+                append_history(f"{red('Recover failed:')} {exc}")
             update_footer()
             tui.request_render()
             return

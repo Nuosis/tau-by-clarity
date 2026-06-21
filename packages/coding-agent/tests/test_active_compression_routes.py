@@ -785,6 +785,52 @@ def test_uniform_json_array_uses_lossless_table_compaction(tmp_path):
     assert "[CCR:" not in out
 
 
+def test_lossless_json_table_compaction_is_not_wrapped_on_second_pass(tmp_path):
+    rows = [
+        {
+            "record_id": f"json-record-{i:05d}",
+            "answer": f"JSON-{i:03d}",
+            "status": "blocked" if i % 17 == 0 else "active",
+            "owner": f"owner-json-{i % 7:02d}",
+            "payload": {"source": f"svc-{i % 3}", "target": f"svc-{i % 5}"},
+        }
+        for i in range(120)
+    ]
+    rows[7]["record_id"] = "json-32k-sentinel"
+    rows[7]["answer"] = "JSON-864-7"
+    original = json.dumps(rows, indent=2)
+    store = CCRStore(str(tmp_path / "ccr.db"))
+
+    first = compress(original, store, config=CompressionConfig(min_tokens=1))
+    second = compress(first, store, force=True, config=CompressionConfig(min_tokens=1))
+
+    assert first == second
+    assert "__buckets:status" in first
+    assert "[112]{record_id:string,answer:string,status:string,owner:string,payload.source:string,payload.target:string}" in first
+    assert "json-32k-sentinel,JSON-864-7,active,owner-json-00" in first
+    assert "json-32k-sentinel" in first
+    assert "JSON-864-7" in first
+    assert "[CCR:" not in second
+
+
+def test_json_object_containing_lossless_table_string_is_not_wrapped_on_second_pass(tmp_path):
+    rows = [
+        {"id": i, "status": "ok", "owner": f"owner-{i % 5}"}
+        for i in range(80)
+    ]
+    original = json.dumps({"records": rows}, indent=2)
+    store = CCRStore(str(tmp_path / "ccr.db"))
+
+    first = compress(original, store, config=CompressionConfig(min_tokens=1))
+    wrapped_table_result = json.dumps({"records": json.loads(first)["records"]})
+    second = compress(wrapped_table_result, store, force=True, config=CompressionConfig(min_tokens=1))
+
+    assert second == wrapped_table_result
+    assert "__buckets:owner" in second
+    assert "[16]{id:int,status:string,owner:string}" in second
+    assert "[CCR:" not in second
+
+
 def test_heterogeneous_json_array_compacts_into_discriminator_buckets(tmp_path):
     rows = []
     for i in range(30):

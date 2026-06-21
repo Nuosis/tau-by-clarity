@@ -160,6 +160,25 @@ async def test_ccr_retrieve_requires_query_scoped_retrieval(tmp_path):
     assert store.is_expanded(handle) is False
 
 
+@pytest.mark.asyncio
+async def test_ccr_retrieve_rejects_task_id_as_handle():
+    pi = _FakePi()
+    extension_factory(pi)
+
+    result = await pi.tools["ccr_retrieve"]["execute"](
+        "tool-1",
+        {"handle": "json-32k-sentinel", "query": "needle id json-32k-sentinel"},
+        None,
+        None,
+        None,
+    )
+
+    text = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert "Invalid CCR handle 'json-32k-sentinel'" in text
+    assert "do not use task IDs or needle IDs as handles" in text
+
+
 def test_ccr_store_expires_entries_and_reports_status(tmp_path, monkeypatch):
     store = CCRStore(str(tmp_path / "ccr.db"), default_ttl=10)
     monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1000.0)

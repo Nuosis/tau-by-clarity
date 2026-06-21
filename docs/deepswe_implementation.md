@@ -389,3 +389,27 @@ scaffold, the spec subagent's six-node pipeline, and the
 convergence loop wired through `/goal`. The build order is sequenced
 for independent validation. The failure is engineering. The solution
 is engineering.
+
+## Current Operational State
+
+The pattern cloud's compute and storage both live on the Mac mini
+(`macMiniServer2022.local`), not on the laptop. Day-one setup is
+complete on the Mac mini:
+
+- Data root at `/Users/server/store/` with the planned subdirectory
+  skeleton
+- DeepSWE exclusion list (92 URLs) extracted and in place
+- qdrant v1.16.1 running with storage bound to the data root
+- `patterns_typescript` collection (384-dim, cosine) created
+- SSH key-based access from the laptop (no password in use)
+
+The cloud is empty apart from the collection schema — no patterns
+have been ingested yet. The discovery, processing, and evaluator
+workers are not yet built. Backup posture is not yet operational
+(the data root is single-point-of-failure until restic is wired up).
+
+The full operational reference — access details, day-one setup
+script, current state, what's next, backup plan, operational notes —
+is in `docs/mac_mini_deployment.md`. That doc is the source of truth
+for the deployment; this section is the pointer from the build plan
+into the deployment.

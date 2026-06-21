@@ -28,6 +28,8 @@ PROVIDER_PAYLOAD_PROTOCOL_KEYS = frozenset({
     "tool_choice",
     "tool_call_id",
     "toolCallId",
+    "tool_use_id",
+    "toolUseId",
     "type",
 })
 

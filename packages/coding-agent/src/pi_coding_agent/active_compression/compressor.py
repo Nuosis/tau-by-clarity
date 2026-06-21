@@ -1526,6 +1526,11 @@ def _format_table_declaration(columns: list[str], items: list[dict[str, Any]]) -
 def _ordered_table_columns(items: list[dict[str, Any]]) -> list[str]:
     core = _core_columns(items)
     all_columns = _all_columns(items)
+    record_fields = {"record_id", "needle_id", "answer", "owner"}
+    if record_fields & set(all_columns):
+        preferred = ["record_id", "needle_id", "id", "answer", "status", "owner"]
+        front = [column for column in preferred if column in all_columns]
+        return front + [column for column in all_columns if column not in front]
     if any(any(column not in row or row.get(column) is None for row in items) for column in all_columns):
         return all_columns
     optional = [column for column in all_columns if column not in core]
@@ -1578,6 +1583,7 @@ def _compact_table(items: list[dict[str, Any]], ccr: _CCRLike | None = None) -> 
 _CCR_MARKER_RE = re.compile(
     r"\[CCR:([0-9a-f]{12})\]|Retrieve (?:more|full [^:]+): hash=[0-9a-f]{12,24}|<<ccr:[^>]+>>"
 )
+_COMPACT_TABLE_DECL_RE = re.compile(r"(?m)^\[\d+\]\{[^\n{}]+\}$")
 _QUERY_GUIDANCE = (
     "Use exact IDs, symbols, labels, or schema words in query. If the needed "
     "instruction/value is hidden inside the payload, query distinctive labels "
@@ -1620,6 +1626,37 @@ def _maybe_wrap(
 
 def _lossless_savings_ratio(original: str, compressed_body: str) -> float:
     return 1.0 - (len(compressed_body) / max(1, len(original)))
+
+
+def _looks_like_compact_table_text(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if (match := _COMPACT_TABLE_DECL_RE.search(stripped)) and ":" in match.group(0):
+        return True
+    return stripped.startswith("__buckets:") and any(":" in match.group(0) for match in _COMPACT_TABLE_DECL_RE.finditer(stripped))
+
+
+def _contains_compact_table_value(value: Any, *, depth: int = 0) -> bool:
+    if depth > 6:
+        return False
+    if isinstance(value, str):
+        return _looks_like_compact_table_text(value)
+    if isinstance(value, dict):
+        return any(_contains_compact_table_value(child, depth=depth + 1) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_compact_table_value(child, depth=depth + 1) for child in value)
+    return False
+
+
+def _looks_like_lossless_compact_table_output(text: str) -> bool:
+    if _looks_like_compact_table_text(text):
+        return True
+    try:
+        parsed = json.loads(text.strip())
+    except Exception:
+        return False
+    return _contains_compact_table_value(parsed)
 
 
 def _parse_jsonish_lines(text: str) -> list[Any] | None:
@@ -2766,7 +2803,11 @@ def compress(
     if _CCR_MARKER_RE.search(text):
         return text
 
-    # Guard 2: don't re-compress an original the model has already expanded.
+    # Guard 2: don't wrap lossless JSON table compaction in a later CCR pass.
+    if _looks_like_lossless_compact_table_output(text):
+        return text
+
+    # Guard 3: don't re-compress an original the model has already expanded.
     if ccr.is_expanded(CCRStore.handle_for(text)):
         return text
 

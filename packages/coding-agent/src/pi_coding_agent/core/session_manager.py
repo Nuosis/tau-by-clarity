@@ -29,6 +29,7 @@ SessionEntryType = Literal[
     "custom",
     "session_info",
     "label",
+    "recovery",
 ]
 
 
@@ -264,6 +265,14 @@ def build_session_context(
                     "content": [{"type": "text", "text": f"[Branch summary: {summary}]"}],
                     "timestamp": entry.timestamp,
                 })
+        elif entry.type == "recovery":
+            summary = entry.data.get("summary", "")
+            if summary:
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": f"[Recovery checkpoint:\n{summary}]"}],
+                    "timestamp": entry.timestamp,
+                })
 
     if compaction:
         first_kept = compaction.data.get("firstKeptEntryId")
@@ -474,6 +483,8 @@ class SessionManager:
         # Copy source entries into target
         for entry in source._entries:
             target._entries.append(entry)
+            if "id" in entry:
+                target._by_id[entry["id"]] = entry
             target._append_raw(entry)
         return target
 
@@ -854,6 +865,30 @@ class SessionManager:
             extra["fromHook"] = True
         return self._append_entry(self._make_entry("branch_summary", extra))
 
+    def append_recovery(
+        self,
+        summary: str,
+        *,
+        reason: str,
+        source_entry_id: str,
+        branch_point_id: str | None = None,
+        dropped_entry_ids: list[str] | None = None,
+        preserved_entry_ids: list[str] | None = None,
+        details: Any = None,
+    ) -> str:
+        """Append a recovery checkpoint entry injected into LLM context."""
+        extra: dict[str, Any] = {
+            "summary": summary,
+            "reason": reason,
+            "sourceEntryId": source_entry_id,
+            "branchPointId": branch_point_id,
+            "droppedEntryIds": list(dropped_entry_ids or []),
+            "preservedEntryIds": list(preserved_entry_ids or []),
+        }
+        if details is not None:
+            extra["details"] = details
+        return self._append_entry(self._make_entry("recovery", extra))
+
     def append_session_info(self, name: str | None = None) -> str:
         """Append a session_info entry (user-defined display name)."""
         extra: dict[str, Any] = {}
@@ -929,6 +964,8 @@ class SessionManager:
         # Copy entries up to branch_point
         for raw in self._entries:
             new_mgr._entries.append(raw)
+            if "id" in raw:
+                new_mgr._by_id[raw["id"]] = raw
             new_mgr._append_raw(raw)
             if branch_point_id and raw.get("id") == branch_point_id:
                 break

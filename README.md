@@ -188,6 +188,7 @@ Type `/` in the interactive TUI to see available commands:
 | `/set <provider> <tier> <model>` | Set a provider tier mapping (`strong`, `standard`, `weak`) |
 | `/thinking <level>` | Set thinking detail: `minimal` · `low` · `medium` · `high` · `xhigh` |
 | `/compact` | Compress conversation context to save tokens |
+| `/recover [n|entry_id]` | Branch before a failed tail and inject a recovery checkpoint |
 | `/session` | Show session statistics (tokens used, cost estimate) |
 | `/tools` | List all active tools available to the agent |
 
