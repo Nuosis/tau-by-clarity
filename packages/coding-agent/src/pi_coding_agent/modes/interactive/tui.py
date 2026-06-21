@@ -2898,7 +2898,62 @@ def _store_tier_config(provider: str, strength: str, model_id: str, thinking_lev
         "model": model_id,
         "thinkingLevel": thinking_level or "off",
     }
+    _upsert_known_model_metadata(provider, provider_config, model_id)
     _write_models_config(models_path, config)
+
+
+_KNOWN_PROVIDER_MODEL_METADATA: dict[tuple[str, str], dict[str, Any]] = {
+    (
+        "zai",
+        "glm-5.2",
+    ): {
+        "provider": {
+            "api": "openai-completions",
+            "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+            "name": "ZAI",
+        },
+        "model": {
+            "id": "glm-5.2",
+            "name": "GLM-5.2",
+            "reasoning": True,
+            "input": ["text"],
+            "contextWindow": 1_000_000,
+            "maxTokens": 131_072,
+            "compat": {
+                "supportsDeveloperRole": False,
+                "thinkingFormat": "zai",
+            },
+        },
+    },
+}
+
+
+def _upsert_known_model_metadata(provider: str, provider_config: dict[str, Any], model_id: str) -> None:
+    metadata = _KNOWN_PROVIDER_MODEL_METADATA.get((provider, model_id))
+    if metadata is None:
+        return
+
+    provider_defaults = metadata.get("provider", {})
+    for key, value in provider_defaults.items():
+        provider_config.setdefault(key, value)
+
+    models = provider_config.setdefault("models", [])
+    if not isinstance(models, list):
+        models = []
+        provider_config["models"] = models
+
+    model_defaults = metadata["model"]
+    for index, existing in enumerate(models):
+        if isinstance(existing, dict) and existing.get("id") == model_id:
+            merged = {**model_defaults, **existing}
+            merged["compat"] = {
+                **model_defaults.get("compat", {}),
+                **(existing.get("compat") if isinstance(existing.get("compat"), dict) else {}),
+            }
+            models[index] = merged
+            return
+
+    models.append(dict(model_defaults))
 
 
 def _thinking_level_for_tier(provider: str, strength: str, model: Any) -> str | None:

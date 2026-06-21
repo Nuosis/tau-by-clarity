@@ -879,6 +879,74 @@ async def test_tui_set_command_prompts_for_reasoning_level(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_tui_set_command_upserts_known_zai_model_metadata(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import pi_coding_agent.config as config
+    from pi_coding_agent.core.auth_storage import AuthStorage
+    from pi_coding_agent.core.model_registry import ModelRegistry
+    from pi_coding_agent.modes.interactive.tui import _handle_set_command
+
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "zai": {
+                        "name": "ZAI",
+                        "api": "openai-completions",
+                        "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+                        "models": [],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "get_models_path", lambda: str(models_path))
+
+    await _handle_set_command(
+        "/set zai strong glm-5.2",
+        SimpleNamespace(model_registry=SimpleNamespace(reload=lambda: None)),
+        lambda message: None,
+        lambda: None,
+        SimpleNamespace(request_render=lambda: None),
+        None,
+        None,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda text: text,
+        lambda updates: "global",
+    )
+
+    stored = json.loads(models_path.read_text(encoding="utf-8"))
+    model_def = stored["providers"]["zai"]["models"][0]
+    assert stored["providers"]["zai"]["tiers"]["strong"] == {
+        "model": "glm-5.2",
+        "thinkingLevel": "off",
+    }
+    assert model_def["id"] == "glm-5.2"
+    assert model_def["contextWindow"] == 1_000_000
+    assert model_def["maxTokens"] == 131_072
+    assert model_def["reasoning"] is True
+    assert model_def["compat"] == {
+        "supportsDeveloperRole": False,
+        "thinkingFormat": "zai",
+    }
+
+    auth = AuthStorage.create(str(tmp_path / "auth.json"))
+    auth.set_api_key("zai", "secret-key")
+    registry = ModelRegistry(auth_storage=auth, models_json_path=str(models_path))
+    model = registry.find("zai", "glm-5.2")
+    assert model is not None
+    assert model.context_window == 1_000_000
+    assert model.max_tokens == 131_072
+    assert model.reasoning is True
+
+
+@pytest.mark.asyncio
 async def test_tui_set_command_reasoning_no_sets_thinking_off(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace
