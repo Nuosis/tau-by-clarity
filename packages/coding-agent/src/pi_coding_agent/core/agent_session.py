@@ -502,6 +502,8 @@ class AgentSession:
         Will be connected to ExtensionRunner.emit_context when extension support is added.
         Mirrors the transform_context callback in TypeScript SDK.
         """
+        self._session_manager.refresh_active_compression_refs()
+        messages = self._session_manager.apply_persisted_active_compression(messages)
         if self._extension_runner.has_handlers("context"):
             messages = await self._extension_runner.emit_context(messages)
         # P1: memory recall — inject a tail recall block when a store is attached.
@@ -652,7 +654,21 @@ class AgentSession:
             if msg is not None:
                 role = getattr(msg, "role", "")
                 if role in ("user", "assistant", "toolResult"):
-                    self._session_manager.append_message(_message_to_dict(msg))
+                    persisted_msg = _message_to_dict(msg)
+                    active_compression_meta = None
+                    if role == "toolResult":
+                        try:
+                            from pi_coding_agent.active_compression.persisted_context import (
+                                compress_message_for_persistence,
+                            )
+
+                            persisted_msg, active_compression_meta = compress_message_for_persistence(persisted_msg)
+                        except Exception:
+                            active_compression_meta = None
+                    self._session_manager.append_message(
+                        persisted_msg,
+                        active_compression=active_compression_meta,
+                    )
                 # Track last assistant message for retry/compaction
                 if role == "assistant":
                     self._last_assistant_msg = msg

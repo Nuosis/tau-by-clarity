@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pi_coding_agent.core.messages import BashExecutionMessage, bash_execution_to_text
+from pi_coding_agent.core.messages import BashExecutionMessage, bash_execution_to_text, convert_to_llm
 
 
 def _agent_dir(tmp_path: Path, active: bool = True) -> Path:
@@ -42,3 +42,27 @@ def test_bash_execution_output_is_raw_when_active_compression_disabled(tmp_path,
 
     assert "[CCR:" not in rendered
     assert output in rendered
+
+
+def test_convert_to_llm_preserves_dict_messages_loaded_from_session():
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "hello from jsonl"}],
+            "timestamp": 1,
+        },
+        {
+            "role": "bashExecution",
+            "command": "pytest -q",
+            "output": "done",
+            "exit_code": 0,
+            "timestamp": 2,
+        },
+    ]
+
+    converted = convert_to_llm(messages)
+
+    assert converted[0]["content"][0]["text"] == "hello from jsonl"
+    assert converted[1]["role"] == "user"
+    assert "Ran `pytest -q`" in converted[1]["content"][0]["text"]
+    assert "done" in converted[1]["content"][0]["text"]

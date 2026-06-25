@@ -385,6 +385,11 @@ class SessionManager:
         except OSError:
             pass
 
+        if self._leaf_id is None and self._entries:
+            last_id = self._entries[-1].get("id")
+            if isinstance(last_id, str):
+                self._leaf_id = last_id
+
         # Run migrations if needed
         all_entries = ([self._header] if self._header else []) + self._entries
         if migrate_to_current_version(all_entries):
@@ -772,9 +777,29 @@ class SessionManager:
 
     def build_context(self, leaf_id: str | None = None) -> SessionContext:
         """Build session context for the agent from the entry tree."""
+        self.refresh_active_compression_refs()
         entries = self.get_entries()
         by_id = {e.id: e for e in entries}
         return build_session_context(entries, leaf_id or self._leaf_id, by_id)
+
+    def refresh_active_compression_refs(self) -> dict[str, int]:
+        """Refresh/rebuild CCR refs held by persisted compressed context entries."""
+        try:
+            from pi_coding_agent.active_compression.persisted_context import refresh_or_rebuild_session_refs
+
+            return refresh_or_rebuild_session_refs(self._entries)
+        except Exception:
+            # Session loading must not fail because the optimization cache is unavailable.
+            return {"refreshed": 0, "rebuilt": 0, "missing": 0}
+
+    def apply_persisted_active_compression(self, messages: list[Any]) -> list[Any]:
+        """Use persisted compressed tool-result messages in live model context."""
+        try:
+            from pi_coding_agent.active_compression.persisted_context import apply_persisted_compressed_messages
+
+            return apply_persisted_compressed_messages(messages, self._entries)
+        except Exception:
+            return messages
 
     # ── Append methods ─────────────────────────────────────────────────────
 
@@ -803,7 +828,12 @@ class SessionManager:
         self._append_raw(entry)
         return entry["id"]
 
-    def append_message(self, message: dict[str, Any], parent_id: str | None = None) -> str:
+    def append_message(
+        self,
+        message: dict[str, Any],
+        parent_id: str | None = None,
+        active_compression: dict[str, Any] | None = None,
+    ) -> str:
         """Append a message entry."""
         entry = {
             "id": self._new_id(),
@@ -812,6 +842,8 @@ class SessionManager:
             "parentId": parent_id or (self.get_leaf_entry().id if self.get_leaf_entry() else None),
             "message": message,
         }
+        if active_compression is not None:
+            entry["activeCompression"] = active_compression
         return self._append_entry(entry)
 
     def append_model_change(self, provider: str, model_id: str) -> str:

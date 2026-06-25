@@ -311,6 +311,29 @@ class CCRStore:
                 c.execute("DELETE FROM ccr WHERE handle = ?", (handle,))
             return False
 
+    def refresh(self, handle: str, *, ttl: int | None = None) -> bool:
+        """Refresh a live CCR entry so session-held refs do not expire mid-loop.
+
+        Returns False for missing or already-expired handles. Expired rows are
+        deleted instead of revived because callers that need durable recovery
+        must rebuild from the session-owned original.
+        """
+        now = time.time()
+        with self._lock, self._connect() as c:
+            entry = self._entry_locked(c, handle)
+            if entry is None:
+                return False
+            if entry.is_expired():
+                c.execute("DELETE FROM ccr WHERE handle = ?", (handle,))
+                return False
+            ttl_value = ttl if ttl is not None else entry.ttl
+            c.execute(
+                "UPDATE ccr SET created_at = ?, ttl = ? WHERE handle = ?",
+                (now, ttl_value, handle.lower()),
+            )
+            heapq.heappush(self._eviction_heap, (now, handle.lower()))
+            return True
+
     def get_metadata(self, handle: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as c:
             entry = self._entry_locked(c, handle)

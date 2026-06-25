@@ -70,6 +70,12 @@ class CompactionSummaryMessage:
     timestamp: int = 0
 
 
+def _msg_get(msg: Any, key: str, default: Any = None) -> Any:
+    if isinstance(msg, dict):
+        return msg.get(key, default)
+    return getattr(msg, key, default)
+
+
 def _compress_bash_output(output: str) -> str:
     """Compress bash output before it is converted into LLM context.
 
@@ -92,18 +98,24 @@ def _compress_bash_output(output: str) -> str:
 
 def bash_execution_to_text(msg: BashExecutionMessage) -> str:
     """Convert a BashExecutionMessage to user message text for LLM context."""
-    text = f"Ran `{msg.command}`\n"
-    if msg.output:
-        output = _compress_bash_output(msg.output)
+    text = f"Ran `{_msg_get(msg, 'command', '')}`\n"
+    msg_output = _msg_get(msg, "output", "")
+    if msg_output:
+        output = _compress_bash_output(msg_output)
         text += f"```\n{output}\n```"
     else:
         text += "(no output)"
-    if msg.cancelled:
+    if _msg_get(msg, "cancelled", False):
         text += "\n\n(command cancelled)"
-    elif msg.exit_code is not None and msg.exit_code != 0:
-        text += f"\n\nCommand exited with code {msg.exit_code}"
-    if msg.truncated and msg.full_output_path:
-        text += f"\n\n[Output truncated. Full output: {msg.full_output_path}]"
+    else:
+        exit_code = _msg_get(msg, "exit_code")
+        if exit_code is None:
+            exit_code = _msg_get(msg, "exitCode")
+        if exit_code is not None and exit_code != 0:
+            text += f"\n\nCommand exited with code {exit_code}"
+    full_output_path = _msg_get(msg, "full_output_path") or _msg_get(msg, "fullOutputPath")
+    if _msg_get(msg, "truncated", False) and full_output_path:
+        text += f"\n\n[Output truncated. Full output: {full_output_path}]"
     return text
 
 
@@ -154,43 +166,51 @@ def convert_to_llm(messages: list[Any]) -> list[dict[str, Any]]:
     """
     result: list[dict[str, Any]] = []
     for m in messages:
-        role = getattr(m, "role", None)
+        role = _msg_get(m, "role")
 
         if role == "bashExecution":
-            if getattr(m, "exclude_from_context", False):
+            if _msg_get(m, "exclude_from_context", False) or _msg_get(m, "excludeFromContext", False):
                 continue
             result.append({
                 "role": "user",
                 "content": [{"type": "text", "text": bash_execution_to_text(m)}],
-                "timestamp": getattr(m, "timestamp", 0),
+                "timestamp": _msg_get(m, "timestamp", 0),
             })
 
         elif role == "custom":
-            content = m.content
+            content = _msg_get(m, "content", "")
             if isinstance(content, str):
                 content = [{"type": "text", "text": content}]
             result.append({
                 "role": "user",
                 "content": content,
-                "timestamp": getattr(m, "timestamp", 0),
+                "timestamp": _msg_get(m, "timestamp", 0),
             })
 
         elif role == "branchSummary":
             result.append({
                 "role": "user",
-                "content": [{"type": "text", "text": BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX}],
-                "timestamp": getattr(m, "timestamp", 0),
+                "content": [{
+                    "type": "text",
+                    "text": BRANCH_SUMMARY_PREFIX + _msg_get(m, "summary", "") + BRANCH_SUMMARY_SUFFIX,
+                }],
+                "timestamp": _msg_get(m, "timestamp", 0),
             })
 
         elif role == "compactionSummary":
             result.append({
                 "role": "user",
-                "content": [{"type": "text", "text": COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX}],
-                "timestamp": getattr(m, "timestamp", 0),
+                "content": [{
+                    "type": "text",
+                    "text": COMPACTION_SUMMARY_PREFIX + _msg_get(m, "summary", "") + COMPACTION_SUMMARY_SUFFIX,
+                }],
+                "timestamp": _msg_get(m, "timestamp", 0),
             })
 
         elif role in ("user", "assistant", "toolResult"):
-            if hasattr(m, "model_dump"):
+            if isinstance(m, dict):
+                result.append(m)
+            elif hasattr(m, "model_dump"):
                 result.append(m.model_dump())
             elif hasattr(m, "__dict__"):
                 result.append(dict(m.__dict__))

@@ -193,6 +193,32 @@ def test_ccr_store_expires_entries_and_reports_status(tmp_path, monkeypatch):
     assert store.get(handle) is None
 
 
+def test_ccr_store_refresh_extends_live_entry_lifetime(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / "ccr.db"), default_ttl=10)
+    monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1000.0)
+    handle = store.put_with_handle("abababababab", "payload", ttl=5)
+
+    monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1004.0)
+    assert store.refresh(handle) is True
+
+    monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1008.0)
+    assert store.get(handle) == "payload"
+    status = store.get_entry_status(handle)
+    assert status["status"] == "available"
+    assert status["expires_at"] == 1009.0
+
+
+def test_ccr_store_refresh_does_not_revive_expired_entry(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / "ccr.db"), default_ttl=10)
+    monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1000.0)
+    handle = store.put_with_handle("cdcdcdcdcdcd", "payload", ttl=5)
+
+    monkeypatch.setattr("pi_coding_agent.active_compression.ccr.time.time", lambda: 1006.0)
+
+    assert store.refresh(handle) is False
+    assert store.get_entry_status(handle)["status"] == "missing"
+
+
 def test_ccr_store_eviction_removes_oldest_original(tmp_path):
     store = CCRStore(str(tmp_path / "ccr.db"), max_entries=2)
 
