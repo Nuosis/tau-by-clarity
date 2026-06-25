@@ -17,7 +17,7 @@ from .cli_sub.args import parse_args, print_help
 from .cli_sub.file_processor import process_file_arguments
 from .cli_sub.list_models import list_models
 from .cli_sub.session_picker import select_session
-from .config import APP_NAME, agent_dir_env, get_agent_dir
+from .config import APP_NAME, CONFIG_DIR_NAME, agent_dir_env, get_agent_dir
 from .core.agent_session_runtime import (
     CreateAgentSessionRuntimeResult,
     create_agent_session_runtime,
@@ -47,7 +47,8 @@ from .core.trust_manager import ProjectTrustStore, has_project_trust_inputs
 from .migrations import run_migrations, show_deprecation_warnings
 from .modes import run_interactive_mode, run_print_mode, run_rpc_mode
 
-_LOCAL_DISPATCH_ENV = "PI_PY_LOCAL_DISPATCH"
+_LOCAL_DISPATCH_ENV = "TAU_LOCAL_DISPATCH"
+_LEGACY_LOCAL_DISPATCH_ENV = "PI_PY_LOCAL_DISPATCH"
 
 
 def _find_local_project_root(cwd: str) -> str | None:
@@ -80,7 +81,7 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     global tau wrapper prefer the initialized project's uv environment even
     when the user's current terminal has not sourced the zsh helper yet.
     """
-    if os.environ.get(_LOCAL_DISPATCH_ENV):
+    if os.environ.get(_LOCAL_DISPATCH_ENV) or os.environ.get(_LEGACY_LOCAL_DISPATCH_ENV):
         return
     if "--init" in args:
         return
@@ -277,7 +278,9 @@ async def _create_runtime_host(
                 resource_loader=runtime_loader,
                 tools=parsed.tools,
                 exclude_tools=getattr(parsed, "exclude_tools", None),
-                no_tools="all" if parsed.no_tools else "builtin" if getattr(parsed, "no_builtin_tools", False) else None,
+                no_tools=(
+                    "all" if parsed.no_tools else "builtin" if getattr(parsed, "no_builtin_tools", False) else None
+                ),
                 session_vars=session_vars,
             )
         )
@@ -378,6 +381,164 @@ def _resolve_project_trusted(cwd: str, agent_dir: str, trust_override: bool | No
     return not has_project_trust_inputs(cwd) or ProjectTrustStore(agent_dir).get(cwd) is True
 
 
+# ── one-shot ops: --setup-ollama / --doctor ────────────────────────────────
+
+def _run_setup_ollama(parsed: Any) -> int:
+    """Install (best-effort) + start the local Ollama service and pre-pull the
+    default embed model. Runs in foreground; prints progress; exits 0 on
+    success, non-zero on failure.
+    """
+    from .utils.ollama import (
+        DEFAULT_MODEL,
+        health,
+        pull_model,
+        start,
+    )
+    model = (getattr(parsed, "pull_model", None) or DEFAULT_MODEL)
+    print("[tau] checking ollama at http://localhost:11434 ...", file=sys.stderr)
+    h = health()
+    if h.reachable:
+        print(f"[tau] ollama already running. models: {h.models}", file=sys.stderr)
+    else:
+        print(f"[tau] {h.error or 'unreachable'}. attempting to start ...", file=sys.stderr)
+        try:
+            pid = start()
+        except FileNotFoundError as exc:
+            print(f"[tau] {exc}", file=sys.stderr)
+            print("[tau] install ollama from https://ollama.ai and re-run.", file=sys.stderr)
+            log_event("setup_ollama_no_binary", error=str(exc))
+            return 1
+        except Exception as exc:
+            print(f"[tau] start failed: {exc}", file=sys.stderr)
+            log_event("setup_ollama_start_failed", error=str(exc))
+            return 1
+        print(f"[tau] ollama started (pid {pid})", file=sys.stderr)
+    # Verify the model is available; pull if missing.
+    h2 = health()
+    have_model = any(m.split(":")[0] == model.split(":")[0] for m in (h2.models or []))
+    if not have_model:
+        print(f"[tau] pulling model {model!r} (one-time) ...", file=sys.stderr)
+        try:
+            pull_model(model)
+        except Exception as exc:
+            print(f"[tau] pull failed: {exc}", file=sys.stderr)
+            log_event("setup_ollama_pull_failed", error=str(exc))
+            return 1
+        print(f"[tau] model {model!r} pulled.", file=sys.stderr)
+    else:
+        print(f"[tau] model {model!r} already present.", file=sys.stderr)
+    h3 = health()
+    print(
+        f"[tau] DONE: ollama reachable={h3.reachable} models={h3.models} "
+        f"base_url={h3.base_url}",
+        file=sys.stderr,
+    )
+    log_event("setup_ollama_ok", model=model, reachable=h3.reachable)
+    return 0
+
+
+def _run_doctor(parsed: Any) -> int:
+    """Smoke check the runtime. Returns 0 on green, 1 on red.
+
+    Checks: settings load, ollama health (warn-only — degraded fallback OK),
+    memory db path, ccr cache path, agent_session attach path (memory_enabled
+    is the normal control plane).
+    """
+    findings: list[tuple[str, str, str]] = []  # (level, name, detail)
+
+    def _add(level: str, name: str, detail: str) -> None:
+        findings.append((level, name, detail))
+
+    cwd = os.getcwd()
+    # 1. Settings
+    try:
+        sm = SettingsManager.create(cwd, get_agent_dir(), {}, inherit_global=False)
+        settings = sm.get()
+        _add("ok", "settings",
+             f"provider={settings.default_provider} model={settings.default_model} "
+             f"thinking={settings.thinking_level}")
+    except Exception as exc:
+        _add("err", "settings", f"failed to load: {exc}")
+
+    # 2. Ollama (warn-only — the resilient embedder handles unreachable)
+    try:
+        from .utils.ollama import health
+        h = health()
+        if h.reachable:
+            _add("ok", "ollama", f"reachable models={h.models}")
+        else:
+            _add("warn", "ollama",
+                 f"unreachable at {h.base_url}: {h.error}. "
+                 f"Memory recall will use deterministic fallback. "
+                 f"Run `tau --setup-ollama` to start the service.")
+    except Exception as exc:
+        _add("err", "ollama", f"health check crashed: {exc}")
+
+    # 3. Memory db (project-local, doesn't have to exist yet)
+    try:
+        mem_dir = os.path.join(cwd, CONFIG_DIR_NAME, "memory")
+        db_path = os.path.join(mem_dir, "memory.db")
+        if os.path.exists(db_path):
+            size = os.path.getsize(db_path)
+            _add("ok", "memory.db", f"{db_path} ({size} bytes)")
+        else:
+            _add("info", "memory.db", "not yet created (will be on first memory write)")
+    except Exception as exc:
+        _add("err", "memory.db", f"check failed: {exc}")
+
+    # 4. CCR cache
+    try:
+        ccr_path = os.path.join(get_agent_dir(), "ccr.db")
+        if os.path.exists(ccr_path):
+            size = os.path.getsize(ccr_path)
+            _add("ok", "ccr.db", f"{ccr_path} ({size} bytes)")
+        else:
+            _add("info", "ccr.db", f"not yet created at {ccr_path}")
+    except Exception as exc:
+        _add("err", "ccr.db", f"check failed: {exc}")
+
+    # 5. memory_enabled resolution
+    try:
+        # memory_enabled() only sees the env-var surface; we also check settings
+        from .core.memory.integration import memory_enabled
+        from .core.settings_manager import SettingsManager as _SM
+        sm = _SM.create(cwd, get_agent_dir(), {}, inherit_global=False)
+        s = sm.get()
+        settings_flag = getattr(s, "memory_enabled", None)
+        env_disabled = (
+            os.environ.get("PI_MEMORY_DISABLED", "") == "1"
+            or os.environ.get("PI_CODING_AGENT_MEMORY_DISABLED", "") == "1"
+        )
+        env_forced = memory_enabled()
+        if env_disabled:
+            effective = False
+        elif env_forced:
+            effective = True
+        elif settings_flag is None:
+            effective = True
+        else:
+            effective = bool(settings_flag)
+        _add("ok", "memory",
+             f"effective_enabled={effective} settings_flag={settings_flag} "
+             f"env_forced_on={env_forced} env_disabled={env_disabled}")
+    except Exception as exc:
+        _add("err", "memory", f"resolution failed: {exc}")
+
+    # Render report
+    err_count = sum(1 for f in findings if f[0] == "err")
+    warn_count = sum(1 for f in findings if f[0] == "warn")
+    print("=== tau doctor ===")
+    for level, name, detail in findings:
+        marker = {"ok": "  OK", "warn": " WARN", "err": " ERR ", "info": " INFO"}.get(level, level)
+        print(f"{marker}  {name:<14} {detail}")
+    print(f"=== {len(findings)} checks: "
+          f"{sum(1 for f in findings if f[0] == 'ok')} ok, "
+          f"{warn_count} warn, {err_count} err ===")
+    log_event("doctor", ok=sum(1 for f in findings if f[0] == "ok"),
+              warn=warn_count, err=err_count)
+    return 1 if err_count else 0
+
+
 def _parse_package_command(args: Sequence[str]) -> dict[str, Any] | None:
     if not args:
         return None
@@ -472,7 +633,9 @@ def _parse_package_command(args: Sequence[str]) -> dict[str, Any] | None:
     if command == "update":
         if extension_flag_source:
             if self_flag or extensions_flag:
-                conflicting_options = conflicting_options or "--extension cannot be combined with --self or --extensions"
+                conflicting_options = (
+                    conflicting_options or "--extension cannot be combined with --self or --extensions"
+                )
             if source:
                 conflicting_options = conflicting_options or "--extension cannot be combined with a positional source"
             update_target = {"type": "extensions", "source": extension_flag_source}
@@ -532,7 +695,10 @@ def _print_package_help(command: str) -> None:
     if command == "install":
         print(f"Usage:\n  {usage}\n\nInstall a package and add it to settings.\n")
     elif command == "remove":
-        print(f"Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nAlias: {APP_NAME} uninstall <source> [-l]\n")
+        print(
+            f"Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\n"
+            f"Alias: {APP_NAME} uninstall <source> [-l]\n"
+        )
     elif command == "update":
         print(
             f"Usage:\n  {usage}\n\n"
@@ -777,6 +943,15 @@ async def _run(args: Sequence[str]) -> int:
             )
         if not killed:
             print("No running tau sessions.")
+
+    # One-shot ops: --setup-ollama / --doctor / --pull-model.
+    # Each runs in foreground, prints to stdout/stderr, and exits before any
+    # session is created. Keep this branch BEFORE the session_manager path so
+    # a missing ollama doesn't block setup.
+    if getattr(parsed, "setup_ollama", False) or getattr(parsed, "pull_model", None):
+        return _run_setup_ollama(parsed)
+    if getattr(parsed, "doctor", False):
+        return _run_doctor(parsed)
         log_event("kill_complete", target=target, count=len(killed))
         return 0
 

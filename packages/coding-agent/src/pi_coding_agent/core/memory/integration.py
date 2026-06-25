@@ -1,13 +1,19 @@
 """
 Memory integration (P5) — bundle store + recall + curator + compression for a session.
 
-Flag-gated (settings.json memory_enabled=true or PI_MEMORY_ENABLED=1, default off,
-kill-switch retained). When enabled,
-AgentSession: attaches the store (recall read-path fires in _transform_context); curates
-each turn's evidence into the store via the async curator (_curate_turn in
-_post_turn_checks); and curates-before-compacting so facts survive the lossy summary and
-recall re-injects them. All three paths are unit- + live-session-tested. End-to-end
-task-success (does it beat a simple harness) is the separate P6 deep-swe acceptance run.
+Flag-gated: settings.json `memory_enabled` is the normal control plane; env vars
+``PI_MEMORY_DISABLED=1`` / ``PI_CODING_AGENT_MEMORY_DISABLED=1`` are explicit kill
+switches; ``PI_MEMORY_ENABLED=1`` / ``PI_CODING_AGENT_MEMORY_ENABLED=1`` force on
+for tests/CI. When the agent folder is silent on ``memory_enabled``, memory is
+**default-on** (Tau's memory system is native, not extension-based). When
+enabled, AgentSession: attaches the store (recall read-path fires in
+_transform_context); curates each turn's evidence into the store via the async
+curator (_curate_turn in _post_turn_checks); records every tool call to
+tool_log_memory and every conversation turn to conversation_memory (both
+programmatic, harness-driven, see LANES.md); and curates-before-compacting so
+facts survive the lossy summary and recall re-injects them. All four paths are
+unit- + live-session-tested. End-to-end task-success (does it beat a simple
+harness) is the separate P6 deep-swe acceptance run.
 """
 from __future__ import annotations
 

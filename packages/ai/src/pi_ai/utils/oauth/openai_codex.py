@@ -61,9 +61,12 @@ async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials
         "state": state,
     })
     auth_url = f"{_AUTHORIZE_URL}?{auth_params}"
+    ready: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+    callback_task = asyncio.create_task(_wait_for_callback_code(ready))
+    await ready
     callbacks.on_auth(OAuthAuthInfo(url=auth_url, instructions="Visit the URL to authorize ChatGPT access."))
 
-    code, returned_state = await _wait_for_callback_code()
+    code, returned_state = await callback_task
     if returned_state != state:
         raise ValueError("OAuth state mismatch during OpenAI login")
 
@@ -122,7 +125,7 @@ async def refresh_openai_codex_token(credentials: OAuthCredentials) -> OAuthCred
     return creds
 
 
-async def _wait_for_callback_code() -> tuple[str, str]:
+async def _wait_for_callback_code(ready: asyncio.Future[None] | None = None) -> tuple[str, str]:
     """Start a local HTTP server to receive the OAuth callback."""
     code_future: asyncio.Future[tuple[str, str]] = asyncio.get_event_loop().create_future()
 
@@ -145,12 +148,16 @@ async def _wait_for_callback_code() -> tuple[str, str]:
         await runner.setup()
         site = web.TCPSite(runner, "localhost", _REDIRECT_PORT)
         await site.start()
+        if ready is not None and not ready.done():
+            ready.set_result(None)
         try:
             return await asyncio.wait_for(code_future, timeout=300)
         finally:
             await runner.cleanup()
 
     except ImportError:
+        if ready is not None and not ready.done():
+            ready.set_result(None)
         code = await asyncio.get_event_loop().run_in_executor(
             None, input, "Enter the authorization code from the callback URL: "
         )
@@ -158,6 +165,10 @@ async def _wait_for_callback_code() -> tuple[str, str]:
             None, input, "Enter the state value from the callback URL: "
         )
         return code, state
+    except Exception as exc:
+        if ready is not None and not ready.done():
+            ready.set_exception(exc)
+        raise
 
 
 class _OpenAICodexOAuthProvider:

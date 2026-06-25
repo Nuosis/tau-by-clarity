@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -27,12 +27,12 @@ _TOOL_DETAIL_CHARS = 4000
 _SIGTERM_GRACE_SECONDS = 5
 
 
-def _resolve_pi_py_invocation() -> list[str]:
+def _resolve_tau_invocation() -> list[str]:
     """Prefer the explicit `tau` binary; never the Node `pi` on PATH. Fall back
     to the current interpreter running the module (works under `uv run`/venv)."""
-    pi_py = shutil.which("tau")
-    if pi_py:
-        return [pi_py]
+    tau_bin = shutil.which("tau")
+    if tau_bin:
+        return [tau_bin]
     return [sys.executable, "-m", "pi_coding_agent.main"]
 
 
@@ -71,7 +71,7 @@ def run_agent(
     timeout: int | None = None,
 ) -> IterationOutput:
     """Run one agent turn headlessly and return what the driver observed."""
-    argv = _resolve_pi_py_invocation() + ["--mode", "json", "-p", f"Task: {prompt}"]
+    argv = _resolve_tau_invocation() + ["--mode", "json", "-p", f"Task: {prompt}"]
 
     env = dict(os.environ)
     # Canonical PI_ name (back-compat) so the child resolves it via get_agent_dir().

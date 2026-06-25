@@ -158,6 +158,11 @@ class TestOpenAICodexOAuthProvider:
         from pi_ai.utils.oauth.types import OAuthLoginCallbacks
 
         auth_urls: list[str] = []
+        async def wait_for_callback(ready=None):
+            if ready is not None and not ready.done():
+                ready.set_result(None)
+            return "code", "state-123"
+
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "access_token": "access",
@@ -168,7 +173,7 @@ class TestOpenAICodexOAuthProvider:
         with (
             patch("pi_ai.utils.oauth.openai_codex.generate_pkce", return_value=("verifier", "challenge")),
             patch("pi_ai.utils.oauth.openai_codex.secrets.token_urlsafe", return_value="state-123"),
-            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(return_value=("code", "state-123"))),
+            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(side_effect=wait_for_callback)),
             patch("pi_ai.utils.oauth.openai_codex.httpx.AsyncClient") as MockClient,
         ):
             mock_ctx = AsyncMock()
@@ -204,10 +209,15 @@ class TestOpenAICodexOAuthProvider:
         from pi_ai.utils.oauth.openai_codex import login_openai_codex
         from pi_ai.utils.oauth.types import OAuthLoginCallbacks
 
+        async def wait_for_callback(ready=None):
+            if ready is not None and not ready.done():
+                ready.set_result(None)
+            return "code", "wrong-state"
+
         with (
             patch("pi_ai.utils.oauth.openai_codex.generate_pkce", return_value=("verifier", "challenge")),
             patch("pi_ai.utils.oauth.openai_codex.secrets.token_urlsafe", return_value="state-123"),
-            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(return_value=("code", "wrong-state"))),
+            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(side_effect=wait_for_callback)),
         ):
             with pytest.raises(ValueError, match="OAuth state mismatch"):
                 await login_openai_codex(
@@ -216,6 +226,49 @@ class TestOpenAICodexOAuthProvider:
                         on_prompt=AsyncMock(return_value=""),
                     )
                 )
+
+    @pytest.mark.asyncio
+    async def test_login_opens_browser_only_after_callback_server_ready(self):
+        from pi_ai.utils.oauth.openai_codex import login_openai_codex
+        from pi_ai.utils.oauth.types import OAuthLoginCallbacks
+
+        order: list[str] = []
+
+        async def wait_for_callback(ready=None):
+            order.append("server-start")
+            assert order == ["server-start"]
+            if ready is not None and not ready.done():
+                order.append("server-ready")
+                ready.set_result(None)
+            return "code", "state-123"
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        }
+
+        with (
+            patch("pi_ai.utils.oauth.openai_codex.generate_pkce", return_value=("verifier", "challenge")),
+            patch("pi_ai.utils.oauth.openai_codex.secrets.token_urlsafe", return_value="state-123"),
+            patch("pi_ai.utils.oauth.openai_codex._wait_for_callback_code", AsyncMock(side_effect=wait_for_callback)),
+            patch("pi_ai.utils.oauth.openai_codex.httpx.AsyncClient") as MockClient,
+        ):
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_ctx.post = AsyncMock(return_value=mock_resp)
+            MockClient.return_value = mock_ctx
+
+            await login_openai_codex(
+                OAuthLoginCallbacks(
+                    on_auth=lambda info: order.append("browser-open"),
+                    on_prompt=AsyncMock(return_value=""),
+                )
+            )
+
+        assert order == ["server-start", "server-ready", "browser-open"]
 
 
 # ---------------------------------------------------------------------------

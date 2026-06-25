@@ -20,11 +20,11 @@ step.** Not a fabricated result — the run itself is sustained and has open iss
 cd /tmp/deep-swe   # git clone https://github.com/datacurve-ai/deep-swe
 # baseline (memory off)
 pier run -p tasks --n-tasks 10 --sample-seed 0 \
-  --agent-import-path evals.deep_swe.pi_py_agent:PiPyAgent \
+  --agent-import-path evals.deep_swe.tau_agent:TauAgent \
   --model MiniMax-M3 --agent-env PI_MEMORY_ENABLED=0 -o jobs/baseline
 # memory-augmented
 pier run -p tasks --n-tasks 10 --sample-seed 0 \
-  --agent-import-path evals.deep_swe.pi_py_agent:PiPyAgent \
+  --agent-import-path evals.deep_swe.tau_agent:TauAgent \
   --model MiniMax-M3 --agent-env PI_MEMORY_ENABLED=1 -o jobs/memory
 # compare pass@1 across the two job dirs; full 113 only if the micro delta looks right.
 ```

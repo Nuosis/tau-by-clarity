@@ -350,6 +350,10 @@ class AuthStorage:
         oauth_tokens = self._data.get("oauth_tokens", {})
         if isinstance(oauth_tokens, dict) and provider in oauth_tokens:
             return dict(oauth_tokens[provider])
+        if isinstance(oauth_tokens, dict):
+            for token in oauth_tokens.values():
+                if isinstance(token, dict) and token.get("oauth_provider") == provider:
+                    return dict(token)
         credential = self._data.get(provider)
         if isinstance(credential, dict) and credential.get("type") == "oauth":
             token = dict(credential)
@@ -404,10 +408,10 @@ class AuthStorage:
         # 2. Try OAuth token
         oauth = self.get_oauth_token(provider)
         if oauth:
-            access_token = oauth.get("access_token")
+            access_token = oauth.get("access_token") or oauth.get("access")
             if access_token:
                 # Check expiry
-                expires_at = oauth.get("expires_at", 0)
+                expires_at = self._oauth_expires_at_seconds(oauth)
                 import time
                 if expires_at and expires_at > time.time():
                     return access_token
@@ -415,6 +419,7 @@ class AuthStorage:
                 refreshed = self._refresh_oauth_token(provider)
                 if refreshed:
                     return refreshed
+                return access_token
 
         # 3. Stored key from auth.json
         stored = self.get_api_key(provider)
@@ -566,6 +571,16 @@ class AuthStorage:
             return token_data.get("access_token")
         except Exception:
             return None
+
+    @staticmethod
+    def _oauth_expires_at_seconds(oauth: dict[str, Any]) -> float:
+        expires_at = oauth.get("expires_at")
+        if isinstance(expires_at, int | float) and expires_at:
+            return float(expires_at)
+        expires = oauth.get("expires")
+        if isinstance(expires, int | float) and expires:
+            return float(expires) / 1000 if expires > 10_000_000_000 else float(expires)
+        return 0
 
     def get_oauth_providers(self) -> list[str]:
         """Get list of providers with OAuth credentials."""

@@ -728,7 +728,7 @@ harness outperform a simple one?* — needs a task-success metric, and **deep-sw
 (`github.com/datacurve-ai/deep-swe`) fits: **113 long-horizon SWE tasks** (TS/Go/Python/
 JS/Rust), **test-based pass/fail**, run via the **Pier** runner (`--agent`/`--model`).
 Plan: plug tau in as a Harbor/Pier agent and run **baseline tau vs memory-augmented
-pi-py, same model (M3), same tasks → pass@1 delta.** Long-horizon = the realistic
+tau, same model (M3), same tasks → pass@1 delta.** Long-horizon = the realistic
 context accumulation our micro-evals lacked; pass/fail = objective (no judge). This is
 the **acceptance test run after the system is built** (113 long tasks × 2 harnesses × M3
 = real compute), and the guard against the harness *degrading* vs a simple baseline.
@@ -743,7 +743,7 @@ delta looks right.**
 `datacurve-pier` installed, deep-swe clones, custom-agent hook confirmed
 (`--agent-import-path module:Class` + `--agent-env PI_MEMORY_ENABLED=0|1`); Pier
 `BaseAgent` interface mapped (`name/version/setup/run`, `env.exec/upload_file`). The
-pi-py adapter is **scaffolded** (`pi_py_agent.py`, mirrors `mini_swe_agent`). The actual
+Tau adapter is **scaffolded** (`tau_agent.py`, mirrors `mini_swe_agent`). The actual
 pass@1 micro run is the **remaining step**, gated on three open issues (see
 `evals/deep_swe/README.md`): (1) headless tau invocation contract, (2) M3 wiring +
 sandbox network allowlist for `api.minimax.io`, (3) **embeddings in the sandbox** —

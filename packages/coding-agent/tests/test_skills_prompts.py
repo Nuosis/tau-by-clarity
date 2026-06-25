@@ -131,15 +131,22 @@ class TestSkills:
         bundled_skills = [s for s in result.skills if s.source == "bundled"]
         assert bundled_skills == []
 
-    def test_default_system_prompt_references_bundled_agent_build_skill(self):
-        """The default system prompt advertises the bundled agent-build-pattern skill."""
+    def test_default_system_prompt_references_bundled_agent_build_skill(self, tmp_path):
+        """The default system prompt advertises the bundled agent-build-pattern skill.
+
+        Uses the test-isolated tmp_path as the cwd so any stray SYSTEM.md
+        files in /tmp (e.g. leaked from another agent's session) don't
+        hijack the prompt. The function walks up from cwd looking for
+        SYSTEM.md; with a fresh tmp_path, it finds nothing and uses the
+        default branch, which embeds the agent-build-pattern reference.
+        """
         from pi_coding_agent.bundled_skills import is_enabled
         if not is_enabled():
             pytest.skip("bundled skills disabled via PI_NO_BUNDLED_SKILLS")
 
         from pi_coding_agent.core.system_prompt import build_system_prompt
 
-        prompt = build_system_prompt("/tmp/project")
+        prompt = build_system_prompt(str(tmp_path))
         assert "Agent build discipline" in prompt
         assert "agent-build-pattern" in prompt
         assert "bundled_skills/agent-build-pattern/SKILL.md" in prompt

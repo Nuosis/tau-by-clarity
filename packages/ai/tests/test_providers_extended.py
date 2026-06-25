@@ -254,6 +254,57 @@ class TestOpenAIResponsesParams:
 
         assert "stream" not in params
 
+
+class TestOpenAICompletions:
+    @pytest.mark.asyncio
+    async def test_empty_choice_stream_defaults_stop_reason(self):
+        from pi_ai.providers.openai_completions import stream_simple
+
+        class EmptyChoiceStream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if getattr(self, "_done", False):
+                    raise StopAsyncIteration
+                self._done = True
+                return SimpleNamespace(
+                    usage=SimpleNamespace(prompt_tokens=2, completion_tokens=0, total_tokens=2),
+                    choices=[],
+                )
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=AsyncMock(return_value=EmptyChoiceStream()))
+            )
+        )
+
+        with patch("pi_ai.providers.openai_completions._openai.AsyncOpenAI", return_value=client):
+            events = [
+                event async for event in stream_simple(
+                    _make_model(id_="local-model", provider="lmstudio", api="openai-completions"),
+                    _make_context(),
+                    SimpleNamespace(
+                        api_key="local-key",
+                        headers=None,
+                        max_tokens=None,
+                        temperature=None,
+                        reasoning=None,
+                        signal=None,
+                        on_payload=None,
+                    ),
+                )
+            ]
+
+        assert events[-1].type == "done"
+        assert events[-1].reason == "stop"
+
     def test_openai_codex_responses_body_omits_standard_max_output_tokens(self):
         from pi_ai.providers.openai_codex_responses import _build_request_body
 

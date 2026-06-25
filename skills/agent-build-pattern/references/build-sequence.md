@@ -1,15 +1,15 @@
 # Build Sequence Reference
 
-Long-form rationale for the pi-py agent build order in `SKILL.md`.
+Long-form rationale for the Tau agent build order in `SKILL.md`.
 
-## Why pi-py build order beats prompt-first
+## Why Tau build order beats prompt-first
 
 Prompt-first agent work fails because it puts the weakest control plane in
 charge of the most important boundaries. The system prompt can describe an
 agent, but it cannot create the scaffold, enforce artifact schemas, make tools
 callable, validate malformed handoffs, or prove model behavior under eval.
 
-The pi-py build order forces the durable pieces into the places that own them:
+The Tau build order forces the durable pieces into the places that own them:
 
 1. Directory and `.tau/` scaffold establish the deployment unit.
 2. `OBJECTIVES.md` defines what the agent is expected to do.
@@ -23,11 +23,10 @@ The pi-py build order forces the durable pieces into the places that own them:
 
 ## Step 1 — Create and initialize the agent
 
-Create `/Users/marcusswift/agents/<AgentName>` and run the pi-py initializer in
-that directory. Use the installed command for the environment:
+Create `/Users/marcusswift/agents/<AgentName>` and run the Tau initializer in
+that directory:
 
-- `py-py --init` when that is the project command.
-- `pi-py --init` when that is what the local install exposes.
+- `tau --init`
 
 Do not manually mimic the scaffold unless the initializer is genuinely
 unavailable. Missing scaffold details tend to surface later as confusing
@@ -153,7 +152,7 @@ the trace.
 ## Anti-pattern recap
 
 - Prompt-first development.
-- Hand-building a scaffold instead of initializing pi-py.
+- Hand-building a scaffold instead of initializing Tau.
 - Writing tools before `OBJECTIVES.md` defines the capability boundary.
 - Using loose dictionaries instead of Pydantic models for tool/artifact
   contracts.

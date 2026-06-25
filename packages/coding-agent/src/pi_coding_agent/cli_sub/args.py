@@ -14,7 +14,9 @@ from pi_coding_agent.config import APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV
 
 Mode = Literal["text", "json", "rpc"]
 
-VALID_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+VALID_THINKING_LEVELS = (
+    "off", "minimal", "low", "medium", "high", "xhigh", "adaptive",
+)
 
 
 def is_valid_thinking_level(level: str) -> bool:
@@ -74,6 +76,12 @@ class Args:
     inherit: bool = False
     # Scaffold the project-local .tau structure here, then launch.
     init: bool = False
+    # One-shot ops: --setup-ollama (ensure local embedding service is up +
+    # pre-pulled model), --doctor (smoke check the runtime: settings, ollama,
+    # memory db, ccr cache). Each runs in foreground, prints results, exits.
+    setup_ollama: bool = False
+    doctor: bool = False
+    pull_model: str | None = None  # --pull-model <name> for setup-ollama flow
 
 
 VALID_TOOL_NAMES = {"read", "bash", "edit", "write", "grep", "find", "ls"}
@@ -283,6 +291,13 @@ def parse_args(
             result.inherit = True
         elif arg == "--init":
             result.init = True
+        elif arg == "--setup-ollama":
+            result.setup_ollama = True
+        elif arg == "--doctor":
+            result.doctor = True
+        elif arg == "--pull-model":
+            i += 1
+            result.pull_model = (args[i] if i < len(args) else "") or None
         elif arg.startswith("@"):
             result.file_args.append(arg[1:])
         elif arg.startswith("--"):
@@ -394,6 +409,12 @@ Options:
                                    settings, and ~/.tau/extensions (default: project-local only)
   --init                         Scaffold a .tau project (settings, skills/, prompts/,
                                    extensions/, AGENTS.md) in the current dir, then launch
+  --setup-ollama                 Install + start the local Ollama service and pre-pull
+                                   the default embed model. Required for memory recall.
+  --pull-model <name>             With --setup-ollama, pull a different model instead
+                                   of the default (nomic-embed-text).
+  --doctor                       Run a smoke check: settings, ollama, memory db, ccr
+                                   cache. Exits 0 on green, 1 on red, prints a report.
   --help, -h                     Show this help
   --version, -v                  Show version number
   --kill [session]               Kill a running tau session by id/pid, or all sessions if omitted

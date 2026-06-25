@@ -848,8 +848,12 @@ async def test_tui_initial_messages_render_without_text_delta(monkeypatch):
     )
     assert "你好" in clean        # user message (gray box, no "You:" label)
     assert "hello" in clean
-    assert "Assistant: Echo: 你好" in clean
-    assert "Assistant: Echo: hello" in clean
+    # TUI persona label is "Tau:" (not "You:" / "Assistant:") — the
+    # assistant's name is Tau, the Python mirror of pi. The TUI splits the
+    # label from the body with a newline, so check both pieces.
+    assert "Tau:" in clean
+    assert "Echo: 你好" in clean
+    assert "Echo: hello" in clean
 
 
 @pytest.mark.asyncio
@@ -918,8 +922,10 @@ async def test_tui_chat_command_renders_session_transcript(monkeypatch):
         "",
         terminal.all_output,
     )
-    assert "You: What changed?" in clean
-    assert "Assistant: The transcript rendered." in clean
+    assert "What changed?" in clean  # user message; "You:" label is suppressed in the TUI
+    # TUI persona label is "Tau:" (split from body by a newline).
+    assert "Tau:" in clean
+    assert "The transcript rendered." in clean
 
 
 @pytest.mark.asyncio
@@ -2436,6 +2442,65 @@ async def test_tui_assistant_markdown_is_styled(monkeypatch):
     # backticks are removed by the markdown parser
     clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw)
     assert "inline_code" in clean and "`inline_code`" not in clean
+
+
+@pytest.mark.asyncio
+async def test_tui_chat_replay_filters_tools_and_renders_markdown(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    import pi_tui
+    from pi_coding_agent.modes.interactive.tui import _run_pi_tui
+
+    class MockTerminal:
+        rows = 24
+        columns = 100
+        kitty_protocol_active = False
+
+        def __init__(self) -> None:
+            self._writes: list[str] = []
+
+        def start(self, on_input, on_resize) -> None: pass
+        def stop(self) -> None: pass
+        async def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None: return
+        def write(self, data: str) -> None: self._writes.append(data)
+        def move_by(self, lines: int) -> None: pass
+        def hide_cursor(self) -> None: pass
+        def show_cursor(self) -> None: pass
+        def clear_line(self) -> None: pass
+        def clear_from_cursor(self) -> None: pass
+        def clear_screen(self) -> None: pass
+        def set_title(self, title: str) -> None: pass
+
+    class FakeSession:
+        model = SimpleNamespace(id="local", provider="lmstudio")
+        thinking_level = "off"
+
+        def get_context_usage(self): return None
+        def get_active_tool_names(self): return ["bash"]
+        def get_session_stats(self):
+            return {"sessionId": "t", "userMessages": 1, "assistantMessages": 1,
+                    "toolCalls": 1, "tokens": {"total": 0}, "cost": 0.0}
+        def get_messages(self):
+            return [
+                {"role": "user", "content": [{"type": "text", "text": "## User heading"}]},
+                {"role": "toolResult", "content": [{"type": "text", "text": "secret tool output"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "</think>**Answer** with `code`"}]},
+            ]
+        def subscribe(self, fn): return lambda: None
+        async def prompt(self, text, images=None, source=None) -> None: pass
+
+    terminal = MockTerminal()
+    monkeypatch.setattr(pi_tui, "ProcessTerminal", lambda: terminal)
+    await _run_pi_tui(FakeSession(), initial_messages=["/chat", "/exit"])
+
+    raw = "".join(terminal._writes)
+    clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw)
+    assert "User heading" in clean
+    assert "Answer" in clean
+    assert "secret tool output" not in clean
+    assert "</think>" not in clean
+    assert "`code`" not in clean
 
 
 @pytest.mark.asyncio

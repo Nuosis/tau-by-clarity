@@ -1,17 +1,17 @@
 ---
 name: agent-build-pattern
-description: Use when designing, scoping, or building a new pi-py/PyPi LLM-backed agent or subagent — including creating /Users/marcusswift/agents/<AgentName>, running py-py/pi-py init, writing OBJECTIVES.md and .tau/SYSTEM.md, building extension tools with Pydantic contracts, adding agent-local skills, defining input/output artifacts, compiling the agent as an importable Python function, and sequencing unit tests plus live evals. Forces prompt-last control-plane discipline, instrumentation before iteration, and clear separation between stub tests and live-LLM evals.
+description: Use when designing, scoping, or building a new Tau LLM-backed agent or subagent — including creating /Users/marcusswift/agents/<AgentName>, running tau --init, writing OBJECTIVES.md and .tau/SYSTEM.md, building extension tools with Pydantic contracts, adding agent-local skills, defining input/output artifacts, compiling the agent as an importable Python function, and sequencing unit tests plus live evals. Forces prompt-last control-plane discipline, instrumentation before iteration, and clear separation between stub tests and live-LLM evals.
 ---
 
 # Agent Build Pattern
 
 When the user says "build an agent", "write a new subagent", or "draft a prompt
-for X", default to a pi-py agent build. The agent directory is the deployment
+for X", default to a Tau agent build. The agent directory is the deployment
 unit; prompts, objectives, extensions, skills, evals, and compile/test artifacts
 belong inside that agent, not scattered through generic application code.
 
 This skill preserves the old control-plane discipline, but the working order is
-now the pi-py build order. Load `references/control-planes.md` when mapping
+now the Tau build order. Load `references/control-planes.md` when mapping
 behavior to planes. Load `references/build-sequence.md` only when you need the
 long-form rationale for prompt-last development.
 
@@ -21,11 +21,10 @@ Use companion skills when they apply:
 - `agent-repair-pattern` when compile, unit, or eval failures require diagnosis.
 - `skill-creator` when creating agent-local skills.
 
-## Pi-py Build Order
+## Tau Build Order
 
 1. Create the agent directory under `/Users/marcusswift/agents/<AgentName>`.
-2. Initialize pi-py in that directory with the project initializer
-   (`py-py --init`; if this install exposes `pi-py`, use that command).
+2. Initialize Tau in that directory with the project initializer (`tau --init`).
 3. Write root `OBJECTIVES.md` with intended user stories and expected
    capabilities.
 4. Build extensions that provide the tools the agent needs. Every tool gets
@@ -58,7 +57,7 @@ Use companion skills when they apply:
   reusable, or domain-specific for the system prompt.
 - `.tau/evals/`: scenarios that validate the expectations in `OBJECTIVES.md`.
 
-In pi-py, a subagent is a full agent. It needs its own initialized directory,
+In Tau, a subagent is a full agent. It needs its own initialized directory,
 `OBJECTIVES.md`, `.tau/SYSTEM.md`, extensions, settings, tests, and evals.
 The parent agent owns delegation policy; the subagent owns its own success
 conditions and return artifact.
@@ -205,8 +204,8 @@ handling truncates the body.
 ## Anti-patterns this skill blocks
 
 - **Prompt-first development** — writing the system prompt, hoping it covers all behaviors, then writing tests against whatever the model produces.
-- **Skipping the pi-py scaffold** — hand-building files without `py-py --init` /
-  `pi-py --init`, then debugging missing settings, extension, skill, or eval
+- **Skipping the Tau scaffold** — hand-building files without `tau --init`,
+  then debugging missing settings, extension, skill, or eval
   paths later.
 - **Leaving contracts undocumented** — creating extensions or prompts before
   `OBJECTIVES.md` names the user stories, input artifact, output artifact, and
@@ -227,7 +226,7 @@ handling truncates the body.
 
 When reporting agent build work, include:
 
-- The agent directory and pi-py init command used.
+- The agent directory and Tau init command used.
 - The objective/user-story coverage added to `OBJECTIVES.md`.
 - The artifact contracts (Pydantic input/output model names) and return-result
   tool or strict schema used.

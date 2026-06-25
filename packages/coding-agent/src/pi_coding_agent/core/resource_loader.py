@@ -41,7 +41,7 @@ def get_extension_discovery_paths(
     cwd: str,
     agent_dir: str | None = None,
     *,
-    inherit_global: bool = True,
+    inherit_global: bool = False,
 ) -> list[str]:
     """Return extension module paths discovered from configured extensions dirs."""
     from pi_coding_agent.config import CONFIG_DIR_NAME, agent_dir_env, get_agent_dir
@@ -132,13 +132,18 @@ def _load_context_file_from_dir(dir_path: str) -> dict[str, str] | None:
 def _load_project_context_files(
     cwd: str | None = None,
     agent_dir: str | None = None,
-    project_trusted: bool | None = True,
-    walk_ancestors: bool = True,
+    project_trusted: bool | None = False,
+    walk_ancestors: bool = False,
 ) -> list[dict[str, str]]:
-    """Load AGENTS.md / CLAUDE.md from global and project ancestors.
+    """Load AGENTS.md / CLAUDE.md for the agent.
 
-    When walk_ancestors is False the search is contained to the launch dir
-    (cwd) — context from parent directories is not pulled in.
+    Default behavior (project_trusted=False, walk_ancestors=False): only the
+    agent_dir AGENTS.md is loaded. Nothing from cwd or any ancestor directory
+    is read. This is the foundational guarantee — callers must opt in
+    explicitly to load project-scope context.
+
+    When project_trusted is True and walk_ancestors is True the search also
+    includes the cwd and walks up to filesystem root.
     """
     from pi_coding_agent.config import get_agent_dir
 
@@ -182,10 +187,16 @@ def _load_project_context_files(
 def load_project_context_files(
     cwd: str | None = None,
     agent_dir: str | None = None,
-    project_trusted: bool | None = True,
+    project_trusted: bool | None = False,
+    walk_ancestors: bool = False,
 ) -> list[dict[str, str]]:
-    """Load AGENTS.md / CLAUDE.md context files for the global and project scopes."""
-    return _load_project_context_files(cwd, agent_dir, project_trusted)
+    """Load AGENTS.md / CLAUDE.md context files for the global and project scopes.
+
+    Defaults are deny-by-default: only the agent_dir AGENTS.md is loaded.
+    Pass project_trusted=True (and optionally walk_ancestors=True) to opt in
+    to project-scope context.
+    """
+    return _load_project_context_files(cwd, agent_dir, project_trusted, walk_ancestors)
 
 
 def _resolve_prompt_input(input_path: str | None, description: str) -> str | None:
@@ -227,7 +238,7 @@ class DefaultResourceLoaderOptions:
     no_context_files: bool = False
     # When False (the harness default), skills/prompts/extensions/themes are
     # discovered from the project dir only; the global agent dir is not scanned.
-    inherit_global: bool = True
+    inherit_global: bool = False
     system_prompt: str | None = None
     append_system_prompt: str | list[str] | None = None
     extensions_override: Callable | None = None
@@ -389,13 +400,22 @@ class DefaultResourceLoader:
         project_trusted = True
         if self._settings_manager and hasattr(self._settings_manager, "is_project_trusted"):
             project_trusted = bool(self._settings_manager.is_project_trusted())
+        # Foundational guarantee: only agent_dir AGENTS.md is loaded unless the
+        # caller has opted in via --inherit (which sets inherit_global=True).
+        # project_trusted is AND-ed with inherit_global so a trusted project
+        # still does not leak cwd/ancestor context without an explicit --inherit.
+        effective_project_trusted = (
+            False
+            if self._explicit_agent_dir
+            else bool(project_trusted) and bool(self._inherit_global)
+        )
         context_files = (
             []
             if self._no_context_files
             else _load_project_context_files(
                 self._cwd,
                 self._agent_dir,
-                False if self._explicit_agent_dir else project_trusted,
+                effective_project_trusted,
                 walk_ancestors=self._inherit_global,
             )
         )

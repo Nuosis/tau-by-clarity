@@ -271,6 +271,19 @@ _current_text_compression_cache: ContextVar[dict[str, str] | None] = ContextVar(
     "pi_ai_text_compression_cache",
     default=None,
 )
+# Lane split (§LANES): the calling tool name + tool_call_id, set by
+# AgentSession before the tool result flows to the model. The active-compression
+# chokepoint reads these and embeds them in the CCR entry, so a CCR handle and a
+# memory.tool_log_lookup are addressable from each other (the durable record in
+# memory.tool_log_memory ↔ the in-flight compressed view in CCR).
+_current_tool_name: ContextVar[str | None] = ContextVar(
+    "pi_ai_compression_tool_name",
+    default=None,
+)
+_current_tool_call_id: ContextVar[str | None] = ContextVar(
+    "pi_ai_compression_tool_call_id",
+    default=None,
+)
 _breaker_failures = 0
 _breaker_open_until = 0.0
 
@@ -396,6 +409,42 @@ def get_current_compression_enable_ccr_marker() -> bool | None:
 
 def get_current_compression_image_optimize() -> bool:
     return _current_image_optimize.get()
+
+
+def get_current_compression_tool_name() -> str | None:
+    """The tool name of the call whose result is being compressed, or None.
+
+    Set by the harness (AgentSession) before the tool result reaches the
+    outbound chokepoint. Read by the active-compression chokepoint to embed
+    the tool name in the CCR entry for lane-cross-linking with
+    memory.tool_log_memory.
+    """
+    return _current_tool_name.get()
+
+
+def get_current_compression_tool_call_id() -> str | None:
+    """The tool_call_id of the call whose result is being compressed, or None.
+
+    Set by the harness before the result flows to the model. Embedded in the
+    CCR entry so a `[CCR:handle]` marker can be resolved back to the durable
+    record in memory.tool_log_memory via the shared `tool_call_id` key.
+    """
+    return _current_tool_call_id.get()
+
+
+def set_current_compression_tool_context(
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+) -> None:
+    """Pin tool_name + tool_call_id on the active compression chokepoint.
+
+    Use as a context-manager-free setter: agent_session calls this just before
+    the next outbound call, and the active-compression chokepoint reads the
+    values via get_current_compression_tool_*(). Setting either to None
+    clears that field; both default to None (no cross-link).
+    """
+    _current_tool_name.set(tool_name)
+    _current_tool_call_id.set(tool_call_id)
 
 
 def _current_min_tokens_to_compress() -> int:

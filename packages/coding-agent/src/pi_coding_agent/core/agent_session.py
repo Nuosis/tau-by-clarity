@@ -203,11 +203,27 @@ class AgentSession:
             from .cli_debug_log import log_event
             from .memory.integration import MemoryIntegration, memory_enabled
 
-            # settings.json `memory_enabled` is the normal control plane; env
-            # vars force on for tests/CI and one-off diagnostics.
-            settings_enabled = bool(getattr(self._settings, "memory_enabled", False))
-            env_enabled = memory_enabled()
-            enabled = settings_enabled or env_enabled
+            # settings.json `memory_enabled` is the normal control plane; the
+            # env-var surface (kill switches + force-on) is owned by
+            # `memory_enabled()` — single source of truth for the force-on
+            # branches. When settings.json is silent on memory_enabled, the
+            # runtime defaults to ON.
+            settings_flag = getattr(self._settings, "memory_enabled", None)
+            env_disabled = (
+                os.environ.get("PI_MEMORY_DISABLED", "") == "1"
+                or os.environ.get("PI_CODING_AGENT_MEMORY_DISABLED", "") == "1"
+            )
+            env_forced_on = memory_enabled()
+            if env_disabled:
+                enabled = False
+            elif env_forced_on:
+                enabled = True
+            elif settings_flag is None:
+                enabled = True  # default-on when settings.json is silent
+            else:
+                enabled = bool(settings_flag)
+            settings_enabled = enabled  # for the log_event field names below
+            env_enabled = enabled       # (same effective value, kept for back-compat with log readers)
             memory_root = os.path.abspath(os.path.expanduser(self.cwd))
             log_event(
                 "memory.attach_decision",
@@ -225,6 +241,20 @@ class AgentSession:
                     memory_root, allm_fn=self._memory_acomplete, model=model_name)
                 self._memory_store = self._memory.store
                 self._memory_scope = self._memory.scope
+                # Lane split (§LANES): auto-register the agent-triggered retrieval
+                # tools (memory.summarize_expand, memory.tool_log_lookup) on the
+                # extension runner. Native registration — no extension file or
+                # settings.json entry required. Idempotent.
+                try:
+                    from .memory.tools import register_memory_tools
+                    register_memory_tools(self._extension_runner, self._memory_store)
+                except Exception as exc:
+                    try:
+                        from .cli_debug_log import log_exception
+                        log_exception("memory.tools_registration_failed", exc,
+                                      session_id=self.session_id)
+                    except Exception:
+                        pass
                 log_event(
                     "memory.attached",
                     session_id=self.session_id,
@@ -248,6 +278,7 @@ class AgentSession:
                 pass
             self._memory = None  # never let memory wiring break session construction
         self._memory_cursor = 0  # index of last message curated into memory
+        self._memory_conv_cursor = 0  # index of last message appended to conversation_memory
 
     def _initial_goal_from_settings(self) -> str | None:
         session_vars = self._settings.session_vars or {}
@@ -556,11 +587,37 @@ class AgentSession:
         context: dict[str, Any],
         signal: asyncio.Event | None = None,
     ) -> dict[str, Any] | None:
-        if not self._extension_runner.has_handlers("tool_result"):
-            return None
+        # Lane split (§LANES): pin tool_name + tool_call_id on the active-compression
+        # chokepoint so the CCR row this tool result produces carries the same id as
+        # the durable record we'll write to tool_log_memory below. Read by the
+        # chokepoint via get_current_compression_tool_*(). The contextvar lives
+        # for the duration of the next outbound model call (and its child tasks).
+        # This MUST run before _record_tool_log so memory and CCR see the same id.
         tool_call = context.get("toolCall") or context.get("tool_call")
         tool_name = getattr(tool_call, "name", "")
         tool_call_id = getattr(tool_call, "id", "")
+        try:
+            from pi_ai import set_current_compression_tool_context
+            set_current_compression_tool_context(
+                tool_name=tool_name or None,
+                tool_call_id=tool_call_id or None,
+            )
+        except Exception:
+            pass
+        # Programmatic write: durable tool_log_memory row. Runs UNCONDITIONALLY
+        # (extension handlers are optional); the cross-link with CCR is the
+        # tool_call_id set just above.
+        try:
+            await self._record_tool_log(context)
+        except Exception as exc:
+            try:
+                from .cli_debug_log import log_exception
+                log_exception("memory.tool_log_write_failed", exc,
+                              session_id=self.session_id)
+            except Exception:
+                pass
+        if not self._extension_runner.has_handlers("tool_result"):
+            return None
         args = context.get("args") or {}
         result = context.get("result")
         is_error = bool(context.get("isError", context.get("is_error", False)))
@@ -639,6 +696,8 @@ class AgentSession:
                 return
         # Memory write path: curate this turn's new messages into the store (P5).
         await self._curate_turn()
+        # Conversation log (programmatic) — also harness-driven, runs every turn.
+        await self._record_conversation_turns()
         await self._check_compaction(msg)
 
     # ── Memory: live write path (curation) ───────────────────────────────────
@@ -746,6 +805,124 @@ class AgentSession:
             except Exception:
                 pass
             pass  # curation must never break the turn
+
+    # ── Memory: tool-log + conversation write paths ──────────────────────────
+    #
+    # Lane split (§LANES, see core/memory/LANES.md):
+    #   * tool_log_memory   — durable, project-local, cross-session record of
+    #                         every tool call. Cross-linked with CCR via
+    #                         shared tool_call_id (set in _after_tool_call).
+    #   * conversation_memory — exact conversation log; the agent can
+    #                         expand any compacted slice via
+    #                         memory.summarize_expand.
+    # Both writes are HARNESS-driven (always run), not agent-triggered.
+
+    async def _record_tool_log(self, context: dict[str, Any]) -> None:
+        """Programmatic write: append this tool call's input + output to tool_log_memory.
+
+        Called from ``_after_tool_call`` after every tool execution. Full
+        outputs go here so ``memory.tool_log_lookup(tool_call_id)`` can
+        recover them later without the agent re-issuing the call.
+        Skips silently if memory is disabled.
+        """
+        if self._memory_store is None:
+            return
+        tool_call = context.get("toolCall") or context.get("tool_call")
+        tool_name = getattr(tool_call, "name", "") or ""
+        tool_call_id = getattr(tool_call, "id", "") or ""
+        if not tool_name or not tool_call_id:
+            return
+        args = context.get("args") or {}
+        result = context.get("result")
+        output_text = ""
+        try:
+            content = (result.get("content", []) if isinstance(result, dict)
+                       else getattr(result, "content", []) or [])
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text" and block.get("text"):
+                        parts.append(str(block["text"]))
+                else:
+                    text = getattr(block, "text", None)
+                    if text:
+                        parts.append(str(text))
+            output_text = "\n".join(parts) if parts else ""
+            details = (result.get("details") if isinstance(result, dict)
+                       else getattr(result, "details", None))
+            if details is not None and not output_text:
+                try:
+                    output_text = json.dumps(_safe_json(details), ensure_ascii=False)[:8000]
+                except Exception:
+                    output_text = str(details)[:8000]
+        except Exception:
+            output_text = ""
+        try:
+            self._memory_store.record_tool_log(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                tool_args=args if isinstance(args, (dict, str)) else str(args),
+                output=output_text[:32_000],  # cap to keep the row bounded
+            )
+        except Exception as exc:
+            try:
+                from .cli_debug_log import log_exception
+                log_exception("memory.tool_log_write_failed", exc,
+                              session_id=self.session_id,
+                              tool_call_id=tool_call_id, tool_name=tool_name)
+            except Exception:
+                pass
+
+    async def _record_conversation_turns(self) -> None:
+        """Append every new user_turn / assistant_output to conversation_memory.
+
+        Thread-id is the agent session_id so each session gets its own
+        conversational history. This is the HARNESS-side write — the
+        agent never invokes this method; the runtime calls it after
+        every turn completes (mirrors Oracle's programmatic write path).
+        """
+        if self._memory_store is None:
+            return
+        try:
+            from .memory.models import ConversationTurn
+        except Exception:
+            return
+        msgs = self._agent.state.messages
+        start = self._memory_conv_cursor
+        self._memory_conv_cursor = len(msgs)
+        thread_id = self.session_id or ""
+        written = 0
+        for i, m in enumerate(msgs[start:], start=start):
+            role = getattr(m, "role", "")
+            if role not in ("user", "assistant"):
+                continue
+            text = _message_text(m)
+            if not text:
+                continue
+            try:
+                self._memory_store.append_turn(ConversationTurn(
+                    id="", project="", role=role, content=text,
+                    scope_id=thread_id,
+                ))
+                written += 1
+            except Exception as exc:
+                try:
+                    from .cli_debug_log import log_exception
+                    log_exception("memory.conversation_write_failed", exc,
+                                  session_id=self.session_id, msg_index=i)
+                except Exception:
+                    pass
+        if written:
+            try:
+                from .cli_debug_log import log_event
+                log_event(
+                    "memory.conversation_written",
+                    session_id=self.session_id,
+                    thread_id=thread_id,
+                    written=written,
+                )
+            except Exception:
+                pass
 
     def _emit(self, event: dict | Any) -> None:
         """Emit a synthetic session event to all listeners."""
@@ -2877,3 +3054,28 @@ def _message_text(msg: Any) -> str:
         else:
             parts.append(getattr(b, "text", "") or getattr(b, "thinking", "") or "")
     return "\n".join(p for p in parts if p)
+
+
+def _safe_json(obj: Any) -> Any:
+    """Best-effort JSON-safe coercion for tool_log writes.
+
+    Pydantic models → model_dump(mode='json'); dataclasses → __dict__;
+    other objects → str. Tuples → lists. Never raises — returns a
+    fallback string if all else fails, so the log row never blocks
+    tool execution.
+    """
+    try:
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump(mode="json")
+        if isinstance(obj, dict):
+            return {k: _safe_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_safe_json(v) for v in obj]
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        return str(obj)
+    except Exception:
+        try:
+            return str(obj)
+        except Exception:
+            return "<unserializable>"

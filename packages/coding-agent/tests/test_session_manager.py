@@ -461,6 +461,39 @@ def test_auth_storage_file_backend_exports_and_legacy_shape(tmp_path):
     assert auth.get("anthropic") is None
 
 
+def test_auth_storage_keeps_openai_and_anthropic_subscription_tokens_separate():
+    auth = AuthStorage.in_memory()
+
+    auth.set_oauth_token(
+        "openai",
+        {
+            "access_token": "openai-access",
+            "refresh_token": "openai-refresh",
+            "access": "openai-access",
+            "refresh": "openai-refresh",
+            "expires": 4_102_444_800_000,
+            "oauth_provider": "openai-codex",
+        },
+    )
+    auth.set_oauth_token(
+        "anthropic",
+        {
+            "access_token": "anthropic-access",
+            "refresh_token": "anthropic-refresh",
+            "access": "anthropic-access",
+            "refresh": "anthropic-refresh",
+            "expires": 4_102_444_800_000,
+            "oauth_provider": "anthropic",
+        },
+    )
+
+    assert auth.list_stored_providers() == ["anthropic", "openai"]
+    assert auth.resolve_api_key("openai") == "openai-access"
+    assert auth.resolve_api_key("anthropic") == "anthropic-access"
+    assert auth.get_oauth_token("openai")["oauth_provider"] == "openai-codex"
+    assert auth.get_oauth_token("anthropic")["oauth_provider"] == "anthropic"
+
+
 def test_auth_storage_file_backend_encrypts_on_write(tmp_path):
     auth_path = tmp_path / "auth.json"
     auth = AuthStorage.create(str(auth_path))

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from .ccr import CCRStore
 from .compressor import CompressionConfig
@@ -83,6 +84,61 @@ def _ccr() -> CCRStore:
     return _store
 
 
+class _CCRWithContext:
+    """Lane-cross-link proxy: threads tool_name + tool_call_id into CCR put().
+
+    When the active-compression chokepoint is hit for a toolResult whose
+    tool_call_id is known, we wrap the underlying CCR store in this proxy. Every
+    ``put`` / ``put_with_handle`` call (made deep inside compressor.py) gets the
+    tool context injected as metadata. The durable record is still in CCR; the
+    cross-link lets memory.tool_log_lookup(tool_call_id) be reachable from a
+    ``[CCR:handle]`` marker, and vice versa. See core/memory/LANES.md.
+
+    Read paths (``get`` / ``search`` / ``retrieve``) pass through untouched —
+    this is a write-side concern only.
+    """
+
+    __slots__ = ("_store", "_tool_name", "_tool_call_id")
+
+    def __init__(self, store: CCRStore, tool_name: str | None, tool_call_id: str | None) -> None:
+        self._store = store
+        self._tool_name = tool_name
+        self._tool_call_id = tool_call_id
+
+    def put(self, content: str, **kwargs: Any) -> str:
+        kwargs.setdefault("tool_name", self._tool_name)
+        kwargs.setdefault("tool_call_id", self._tool_call_id)
+        return self._store.put(content, **kwargs)
+
+    def put_with_handle(self, handle: str, content: str, **kwargs: Any) -> str:
+        kwargs.setdefault("tool_name", self._tool_name)
+        kwargs.setdefault("tool_call_id", self._tool_call_id)
+        return self._store.put_with_handle(handle, content, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+
+def _contextualized_store() -> CCRStore:
+    """Return the CCR store, wrapped with the current tool context if any.
+
+    The chokepoint reads ``get_current_compression_tool_*`` (set by
+    agent_session before the toolResult is sent). When either is set, the
+    returned store injects those values into every put() / put_with_handle()
+    call, which is the only write path the active-compression chokepoint uses.
+    """
+    store = _ccr()
+    try:
+        from pi_ai import get_current_compression_tool_call_id, get_current_compression_tool_name
+        tool_name = get_current_compression_tool_name()
+        tool_call_id = get_current_compression_tool_call_id()
+    except Exception:
+        return store
+    if tool_name is None and tool_call_id is None:
+        return store
+    return _CCRWithContext(store, tool_name, tool_call_id)
+
+
 def compress(text: str) -> str:
     if not is_enabled():
         return text
@@ -121,7 +177,7 @@ def compress(text: str) -> str:
         force = False
         target_ratio = None
         config = CompressionConfig()
-    return _compress_text(text, _ccr(), target_ratio=target_ratio, force=force, config=config)
+    return _compress_text(text, _contextualized_store(), target_ratio=target_ratio, force=force, config=config)
 
 
 def retrieve(handle: str) -> str | None:

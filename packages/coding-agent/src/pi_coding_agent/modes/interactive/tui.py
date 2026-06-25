@@ -767,7 +767,13 @@ async def _run_pi_tui(
 
     def assistant_rendered_line(text: str) -> str:
         label = _assistant_label(session)
+        text = _strip_think_tags(text).strip()
         return f"{bold(label)}\n{render_markdown(text)}"
+
+    def _strip_think_tags(text: str) -> str:
+        text = re.sub(r"(?is)<think\b[^>]*>.*?</think>", "", text)
+        text = re.sub(r"(?is)</?think\b[^>]*>", "", text)
+        return text
 
     # ── Output area ──────────────────────────────────────────────────────────
     header_text = Text("", padding_x=1, padding_y=0)
@@ -802,7 +808,7 @@ async def _run_pi_tui(
                 text = getattr(item, "text", "")
                 if isinstance(text, str) and text:
                     parts.append(text)
-        return "".join(parts)
+        return _strip_think_tags("".join(parts)).strip()
 
     def message_text_from_any(message: Any) -> tuple[str, str]:
         if isinstance(message, dict):
@@ -812,7 +818,7 @@ async def _run_pi_tui(
             role = str(getattr(message, "role", ""))
             content = getattr(message, "content", "")
         if isinstance(content, str):
-            return role, content
+            return role, _strip_think_tags(content).strip()
         if isinstance(content, list):
             parts: list[str] = []
             for item in content:
@@ -821,7 +827,7 @@ async def _run_pi_tui(
                         parts.append(str(item.get("text", "")))
                 elif getattr(item, "type", None) == "text":
                     parts.append(str(getattr(item, "text", "")))
-            return role, "".join(parts)
+            return role, _strip_think_tags("".join(parts)).strip()
         return role, ""
 
     def rebuild_history_from_current_session() -> None:
@@ -837,12 +843,9 @@ async def _run_pi_tui(
             if not body:
                 continue
             if role == "user":
-                blocks.append(_user_box(body))
+                blocks.append(f"{bold('User')}\n{render_markdown(body)}")
             elif role == "assistant":
                 blocks.append(assistant_rendered_line(body))
-            else:
-                label = role or "Message"
-                blocks.append(f"{label}: {body}")
         history_text.set_text("\n\n".join(blocks))
         history_text.invalidate()
 
@@ -3049,8 +3052,12 @@ async def _apply_profile_model(
         return
     try:
         await session.set_model(model)
-    except Exception:
-        pass
+    except Exception as exc:
+        append_history(
+            f"{red('Could not activate model:')} {selected_model_id} ({normalized_provider}) — {exc}"
+        )
+        update_footer()
+        return
     updates = {"defaultProvider": normalized_provider, "defaultModel": selected_model_id}
     if thinking_level is not None:
         effective_thinking = thinking_level
@@ -3203,6 +3210,9 @@ async def _subscription_login(provider: str, session: "AgentSession", append_his
         "access_token": credentials.access,
         "refresh_token": credentials.refresh,
         "expires_at": credentials.expires / 1000 if credentials.expires else 0,
+        "access": credentials.access,
+        "refresh": credentials.refresh,
+        "expires": credentials.expires,
         "oauth_provider": getattr(oauth_provider, "id", provider),
         **dict(credentials.extra),
     }

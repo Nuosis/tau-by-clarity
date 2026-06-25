@@ -14,11 +14,44 @@ import os
 import sqlite3
 import time
 import uuid
+from typing import Any
 
 from pi_coding_agent.config import CONFIG_DIR_NAME
 
-from .embeddings import EmbeddingProvider, cosine, embedding_provider_from_env
+from .embeddings import EmbeddingProvider, cosine
 from .models import ConversationTurn, MemoryHit, Scope, SemanticMemory
+
+
+def _resilient_embedder() -> EmbeddingProvider:
+    """Embedder that auto-degrades to deterministic when Ollama is unreachable.
+
+    Honors the PI_MEMORY_EMBED=deterministic env var for hermetic tests.
+    Without it, wraps OllamaEmbeddingProvider so a missing local service
+    logs a warning and falls back to the hash embedder — recall stays
+    functional (lexical-only) instead of silently breaking.
+    """
+    from .embeddings import DeterministicEmbeddingProvider, OllamaEmbeddingProvider
+    if os.environ.get("PI_MEMORY_EMBED", "").lower() == "deterministic":
+        return DeterministicEmbeddingProvider()
+    try:
+        from ...utils.ollama import embed_with_fallback
+    except Exception:
+        return OllamaEmbeddingProvider()
+    return _ResilientOllama(embed_with_fallback)
+
+
+class _ResilientOllama:
+    """Thin wrapper that delegates to utils.ollama.embed_with_fallback.
+
+    Implements the EmbeddingProvider Protocol (``embed(texts) -> list[list[float]]``)
+    while keeping the fallback policy in one place (utils/ollama.py).
+    """
+
+    def __init__(self, fn) -> None:
+        self._fn = fn
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._fn(texts, warn=True)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS semantic_memory (
@@ -62,7 +95,7 @@ class MemoryStore:
     def __init__(self, project_root: str, embedder: EmbeddingProvider | None = None,
                  db_path: str | None = None) -> None:
         self.project_root = os.path.abspath(project_root)
-        self.embedder = embedder or embedding_provider_from_env()
+        self.embedder = embedder or _resilient_embedder()
         if db_path is None:
             mem_dir = os.path.join(self.project_root, CONFIG_DIR_NAME, "memory")
             os.makedirs(mem_dir, exist_ok=True)
@@ -210,3 +243,57 @@ class MemoryStore:
                                  content=r["content"], scope_id=r["scope_id"],
                                  summary_id=r["summary_id"], created_at=r["created_at"])
                 for r in reversed(rows)]
+
+    # ── durable tool/conversation expansion read paths ──────────────────────
+
+    def record_tool_log(
+        self,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        tool_args: dict | str | None = None,
+        output: str = "",
+    ) -> str:
+        row_id = uuid.uuid4().hex
+        args_text = tool_args if isinstance(tool_args, str) else json.dumps(tool_args or {}, ensure_ascii=False)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO tool_log_memory "
+            "(id, project, tool_call_id, tool_name, tool_args, output, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (row_id, self.project_root, tool_call_id, tool_name, args_text, output, _now()),
+        )
+        self._conn.commit()
+        return row_id
+
+    def get_tool_log(self, tool_call_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM tool_log_memory WHERE project=? AND tool_call_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (self.project_root, tool_call_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "tool_call_id": row["tool_call_id"],
+            "tool_name": row["tool_name"],
+            "tool_args": row["tool_args"],
+            "output": row["output"],
+            "created_at": row["created_at"],
+        }
+
+    def get_summary(self, summary_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM summary_memory WHERE project=? AND id=?",
+            (self.project_root, summary_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "description": row["description"],
+            "summary": row["summary"],
+            "full_content": row["full_content"],
+            "source_ids": row["source_ids"],
+            "created_at": row["created_at"],
+        }

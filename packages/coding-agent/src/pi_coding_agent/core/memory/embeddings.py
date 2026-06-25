@@ -22,7 +22,11 @@ class EmbeddingProvider(Protocol):
 
 
 class OllamaEmbeddingProvider:
-    """Local Ollama embeddings (default model nomic-embed-text, 768-d)."""
+    """Local Ollama embeddings (default model nomic-embed-text, 768-d).
+
+    Raises on connection failure — the caller decides whether to fall back.
+    Use ``utils.ollama.embed_with_fallback`` for the auto-degrade path.
+    """
 
     def __init__(self, model: str = "nomic-embed-text",
                  base_url: str = "http://localhost:11434") -> None:
