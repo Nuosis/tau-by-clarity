@@ -443,7 +443,7 @@ def ensure_project_uv_runner(cwd: str | None = None) -> list[str]:
                         'name = "tau-agent-runner"',
                         'version = "0.1.0"',
                         'requires-python = ">=3.11,<3.15"',
-                        f'dependencies = ["tau-by-clarity=={VERSION}"]',
+                        'dependencies = ["tau-by-clarity>=0.55.21"]',
                         "",
                         "[tool.uv]",
                         "package = false",
