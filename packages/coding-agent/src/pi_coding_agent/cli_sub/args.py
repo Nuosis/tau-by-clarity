@@ -358,7 +358,7 @@ Commands:
   {APP_NAME} install <source> [-l]     Install extension source and add to settings
   {APP_NAME} remove <source> [-l]      Remove extension source from settings
   {APP_NAME} uninstall <source> [-l]   Alias for remove
-  {APP_NAME} update [self|pi|all]      Update tau; use all to include extensions
+  {APP_NAME} update [self|pi|tau|all]  Update tau; use all to include extensions
   tau update                         Update tau from PyPI
   {APP_NAME} list [--approve|--no-approve]
                                   List installed extensions from settings

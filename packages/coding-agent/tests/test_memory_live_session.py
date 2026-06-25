@@ -1,6 +1,6 @@
-"""P5 live-loop gate — a real AgentSession with PI_MEMORY_ENABLED=1 curates a turn into
-the store and the recall hook re-injects it. Exercises the session methods directly
-(curator LLM stubbed; no real model/network needed)."""
+"""P5 live-loop gate — a real AgentSession curates a turn into the store and the
+recall hook re-injects it. Exercises the session methods directly (curator LLM
+stubbed; no real model/network needed)."""
 from __future__ import annotations
 
 import json
@@ -23,19 +23,26 @@ class AStub:
             "source_ids": ["m0"], "verdict": "auto_commit", "confidence": 0.9}]})
 
 
-def _session(tmp_path, monkeypatch, *, memory: bool) -> AgentSession:
+def _session(tmp_path, monkeypatch, *, memory: bool | None = None) -> AgentSession:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("PI_MEMORY_ENABLED", raising=False)   # prove the SETTING path
     monkeypatch.setenv("PI_MEMORY_EMBED", "deterministic")
     monkeypatch.chdir(tmp_path)                       # store roots at cwd
     model = get_model("anthropic", "claude-3-5-sonnet-20241022")
     sm = SessionManager.create(cwd=str(tmp_path), session_dir=str(tmp_path))
+    settings = Settings(auto_compact=False)
+    if memory is not None:
+        settings.memory_enabled = memory
     return AgentSession(cwd=str(tmp_path), model=model,
-                        settings=Settings(auto_compact=False, memory_enabled=memory),
-                        session_manager=sm)
+                        settings=settings, session_manager=sm)
 
 
-async def test_memory_off_by_default(tmp_path, monkeypatch):
+async def test_memory_attached_by_default(tmp_path, monkeypatch):
+    s = _session(tmp_path, monkeypatch)
+    assert s._memory is not None and s._memory_store is not None
+
+
+async def test_memory_disabled_by_setting(tmp_path, monkeypatch):
     s = _session(tmp_path, monkeypatch, memory=False)
     assert s._memory is None and s._memory_store is None
 

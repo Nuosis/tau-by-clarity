@@ -36,8 +36,8 @@ def test_scaffold_seeds_memory_enabled_key(tmp_path, monkeypatch) -> None:
     assert settings_path in created
 
     data = json.loads(open(settings_path, encoding="utf-8").read())
-    # The toggle is always present and visible, defaulting off (kill-switch).
-    assert data["memory_enabled"] is False
+    # The toggle is always present and visible, defaulting on.
+    assert data["memory_enabled"] is True
     assert data["defaultProvider"] == "minimax"
 
 
@@ -53,6 +53,20 @@ def test_scaffold_inherits_global_memory_preference(tmp_path, monkeypatch) -> No
     config.ensure_project_settings(str(proj))
     data = json.loads(open(os.path.join(str(proj), ".tau", "settings.json"), encoding="utf-8").read())
     assert data["memory_enabled"] is True
+
+
+def test_scaffold_inherits_global_memory_kill_switch(tmp_path, monkeypatch) -> None:
+    from pi_coding_agent import config
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(home)) if p.startswith("~") else p)
+    _write_global(str(home / ".tau" / "agent"), {"memory_enabled": False})
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    config.ensure_project_settings(str(proj))
+    data = json.loads(open(os.path.join(str(proj), ".tau", "settings.json"), encoding="utf-8").read())
+    assert data["memory_enabled"] is False
 
 
 def test_scaffold_stands_up_memory_store(tmp_path) -> None:

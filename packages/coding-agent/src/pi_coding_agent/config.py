@@ -286,10 +286,9 @@ def _global_default_seed() -> dict:
         except (OSError, json.JSONDecodeError):
             pass
     # Always surface the memory toggle in a fresh project file so it's visible
-    # and one edit away from on — the flag's home is settings.json (env var only
-    # forces on for tests/CI). Inherit a global preference if one is set; else
-    # fall back to the product default (off / kill-switch retained).
-    seed["memory_enabled"] = bool(gdata.get("memory_enabled", False))
+    # and one edit away from the kill switch. Inherit a global preference if one
+    # is set; else fall back to the product default (on).
+    seed["memory_enabled"] = bool(gdata.get("memory_enabled", True))
     return seed
 
 

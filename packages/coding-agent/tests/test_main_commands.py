@@ -82,6 +82,15 @@ def test_package_help_mentions_uninstall_alias(capsys) -> None:
     assert "Alias: tau uninstall <source> [-l]" in out
 
 
+def test_main_help_mentions_tau_update_target(capsys) -> None:
+    from pi_coding_agent.cli_sub.args import print_help
+
+    print_help()
+
+    out = capsys.readouterr().out
+    assert "tau update [self|pi|tau|all]  Update tau" in out
+
+
 def test_ensure_project_uv_runner_creates_root_pyproject_and_venv(tmp_path, monkeypatch) -> None:
     from pi_coding_agent import config
 

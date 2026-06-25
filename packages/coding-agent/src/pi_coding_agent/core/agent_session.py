@@ -191,11 +191,10 @@ class AgentSession:
         self._scoped_models: list[dict[str, Model | ThinkingLevel | None]] | None = None
         self._bind_extension_context({})
 
-        # ── Project-local memory (P5) — flag-gated, default off ───────────────
-        # When settings.json memory_enabled=true or PI_MEMORY_ENABLED=1, attach
-        # the project-local store so the recall hook in _transform_context fires.
-        # Live auto-curation + compaction replacement are validated end-to-end by
-        # P6; default-off keeps existing behaviour unchanged.
+        # ── Project-local memory (P5) — native, with explicit kill switch ─────
+        # Memory is enabled by default; settings.json memory_enabled=false or
+        # PI_MEMORY_DISABLED=1 disables it. PI_MEMORY_ENABLED=1 force-enables it.
+        # When enabled, the recall hook in _transform_context fires.
         self._memory = None
         self._memory_store = None
         self._memory_scope = None
@@ -506,7 +505,6 @@ class AgentSession:
         if self._extension_runner.has_handlers("context"):
             messages = await self._extension_runner.emit_context(messages)
         # P1: memory recall — inject a tail recall block when a store is attached.
-        # Off by default (store is None) so existing behaviour is unchanged.
         store = getattr(self, "_memory_store", None)
         if store is not None:
             from .memory.recall import build_recall_block, latest_user_query

@@ -117,9 +117,10 @@ class Settings:
     enabled_models: list[str] | None = None
     tools: list[str] | None = None
 
-    # Project-local memory (off by default; kill-switch). See
-    # design/context-and-memory-management.md. Env PI_MEMORY_ENABLED=1 also forces on.
-    memory_enabled: bool = False
+    # Project-local memory is native and on by default. Set memory_enabled=false
+    # or PI_MEMORY_DISABLED=1 to use the kill switch; PI_MEMORY_ENABLED=1 also
+    # forces on for tests/CI.
+    memory_enabled: bool = True
 
     # Legacy/compat fields
     thinking_level: str = "off"

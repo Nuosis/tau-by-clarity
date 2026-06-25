@@ -25,7 +25,7 @@ def _integration(tmp_path):
     return MemoryIntegration(str(tmp_path), llm_fn=StubLlm(), config=cfg)
 
 
-def test_flag_default_off():
+def test_env_force_flag_defaults_off():
     os.environ.pop("PI_MEMORY_ENABLED", None)
     os.environ.pop("PI_CODING_AGENT_MEMORY_ENABLED", None)
     assert memory_enabled() is False
