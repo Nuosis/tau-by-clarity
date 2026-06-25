@@ -129,27 +129,27 @@ def test_ensure_project_uv_runner_preserves_existing_root_project(tmp_path, monk
     assert pyproject.read_text(encoding="utf-8") == "# existing project\n"
 
 
-def test_ensure_zsh_pi_py_alias_appends_managed_function(tmp_path) -> None:
+def test_ensure_zsh_tau_alias_appends_managed_function(tmp_path) -> None:
     from pi_coding_agent import config
 
     zshrc = tmp_path / ".zshrc"
     zshrc.write_text("# existing\n", encoding="utf-8")
 
-    created = config.ensure_zsh_pi_py_alias(str(zshrc))
-    created_again = config.ensure_zsh_pi_py_alias(str(zshrc))
+    created = config.ensure_zsh_tau_alias(str(zshrc))
+    created_again = config.ensure_zsh_tau_alias(str(zshrc))
 
     text = zshrc.read_text(encoding="utf-8")
     assert created == str(zshrc)
     assert created_again is None
     assert text.count("tau managed shell function") == 2
     assert 'grep -q "tau-by-clarity" "pyproject.toml"' in text
-    assert 'uv add --upgrade-package tau-by-clarity "tau-by-clarity==${_pi_py_latest}" "$@" && uv sync' in text
+    assert 'uv add --upgrade-package tau-by-clarity tau-by-clarity "$@" && uv sync' in text
     assert "command tau update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert 'command tau "$@"' in text
 
 
-def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> None:
+def test_ensure_zsh_tau_alias_replaces_existing_managed_function(tmp_path) -> None:
     from pi_coding_agent import config
 
     old_block = "\n".join(
@@ -165,14 +165,14 @@ def test_ensure_zsh_pi_py_alias_replaces_existing_managed_function(tmp_path) -> 
     zshrc = tmp_path / ".zshrc"
     zshrc.write_text(f"# before\n{old_block}# after\n", encoding="utf-8")
 
-    changed = config.ensure_zsh_pi_py_alias(str(zshrc))
+    changed = config.ensure_zsh_tau_alias(str(zshrc))
 
     text = zshrc.read_text(encoding="utf-8")
     assert changed == str(zshrc)
     assert "# before" in text
     assert "# after" in text
     assert text.count("tau()") == 1
-    assert 'uv add --upgrade-package tau-by-clarity "tau-by-clarity==${_pi_py_latest}" "$@" && uv sync' in text
+    assert 'uv add --upgrade-package tau-by-clarity tau-by-clarity "$@" && uv sync' in text
     assert "command tau update" not in text
     assert 'uv run python -m pi_coding_agent.main "$@"' in text
     assert '  uv run tau "$@"\n}' not in text
@@ -287,6 +287,7 @@ def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None
         calls.append((file, args, env))
         raise RuntimeError("exec")
 
+    monkeypatch.delenv("TAU_LOCAL_DISPATCH", raising=False)
     monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
     monkeypatch.setattr(main_mod.os, "execvpe", fake_execvpe)
 
@@ -296,7 +297,7 @@ def test_dispatch_to_local_project_reexecs_uv_run(tmp_path, monkeypatch) -> None
     file, args, env = calls[0]
     assert file == "uv"
     assert args == ["uv", "run", "--project", str(proj), "python", "-m", "pi_coding_agent.main", "--version"]
-    assert env["PI_PY_LOCAL_DISPATCH"] == "1"
+    assert env["TAU_LOCAL_DISPATCH"] == "1"
 
 
 def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypatch) -> None:
@@ -314,12 +315,12 @@ def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypa
         returncode = 0
 
     def fake_run(args: list[str], env: dict[str, str]):
-        assert env["PI_PY_LOCAL_DISPATCH"] == "1"
+        assert env["TAU_LOCAL_DISPATCH"] == "1"
         calls.append(args)
         return _Result()
 
+    monkeypatch.delenv("TAU_LOCAL_DISPATCH", raising=False)
     monkeypatch.delenv("PI_PY_LOCAL_DISPATCH", raising=False)
-    monkeypatch.setattr(main_mod, "_latest_clarity_pi_requirement", lambda: "tau-by-clarity==0.54.12")
     monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
     with pytest.raises(SystemExit) as exc:
@@ -334,7 +335,7 @@ def test_dispatch_to_local_project_updates_project_then_syncs(tmp_path, monkeypa
             str(proj),
             "--upgrade-package",
             "tau-by-clarity",
-            "tau-by-clarity==0.54.12",
+            "tau-by-clarity",
         ],
         ["uv", "sync", "--project", str(proj)],
     ]
@@ -516,8 +517,8 @@ async def test_handle_package_command_update_all_updates_extensions_then_self(mo
 
 @pytest.mark.asyncio
 async def test_package_manager_self_update_invokes_uv_tool_install(monkeypatch, tmp_path) -> None:
-    from pi_coding_agent.core.package_manager import DefaultPackageManager
     from pi_coding_agent.core import package_manager as package_manager_mod
+    from pi_coding_agent.core.package_manager import DefaultPackageManager
 
     commands: list[list[str]] = []
 
@@ -549,8 +550,8 @@ async def test_package_manager_self_update_invokes_uv_tool_install(monkeypatch, 
 async def test_package_manager_self_update_falls_back_to_python_pip(monkeypatch, tmp_path) -> None:
     import sys
 
-    from pi_coding_agent.core.package_manager import DefaultPackageManager
     from pi_coding_agent.core import package_manager as package_manager_mod
+    from pi_coding_agent.core.package_manager import DefaultPackageManager
 
     commands: list[list[str]] = []
 

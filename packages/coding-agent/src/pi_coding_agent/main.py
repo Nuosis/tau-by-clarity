@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import subprocess
 import sys
-import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -67,13 +65,6 @@ def _find_local_project_root(cwd: str) -> str | None:
     return None
 
 
-def _latest_clarity_pi_requirement() -> str:
-    with urllib.request.urlopen("https://pypi.org/pypi/tau-by-clarity/json", timeout=20) as response:
-        data = json.load(response)
-    version = str(data["info"]["version"])
-    return f"tau-by-clarity=={version}"
-
-
 def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     """Re-exec into the project-pinned tau-by-clarity when launched globally.
 
@@ -91,7 +82,6 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
     env = os.environ.copy()
     env[_LOCAL_DISPATCH_ENV] = "1"
     if args and args[0] == "update":
-        requirement = _latest_clarity_pi_requirement()
         update_result = subprocess.run(
             [
                 "uv",
@@ -100,7 +90,7 @@ def _dispatch_to_local_project(args: Sequence[str], cwd: str) -> None:
                 project_root,
                 "--upgrade-package",
                 "tau-by-clarity",
-                requirement,
+                "tau-by-clarity",
                 *args[1:],
             ],
             env=env,
