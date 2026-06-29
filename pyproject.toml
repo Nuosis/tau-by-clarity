@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tau-by-clarity"
-version = "0.56.0"
+version = "0.56.1"
 description = "Python port of pi-mono: coding agent with multi-provider LLM support, TUI, agent loop, and tools"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

@@ -31,6 +31,7 @@ from pi_ai.utils.oauth.google_gemini_cli import (
 )
 from pi_ai.utils.oauth.openai_codex import (
     login_openai_codex,
+    login_openai_codex_device_code,
     openai_codex_oauth_provider,
     refresh_openai_codex_token,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "gemini_cli_oauth_provider",
     "antigravity_oauth_provider",
     "openai_codex_oauth_provider",
+    "login_openai_codex_device_code",
 ]
 
 # ---------------------------------------------------------------------------

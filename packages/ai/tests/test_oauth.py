@@ -153,6 +153,80 @@ class TestOAuthRegistry:
 
 class TestOpenAICodexOAuthProvider:
     @pytest.mark.asyncio
+    async def test_device_code_login_uses_device_auth_without_callback_server(self):
+        from pi_ai.utils.oauth.openai_codex import login_openai_codex_device_code
+        from pi_ai.utils.oauth.types import OAuthLoginCallbacks
+
+        auth_infos = []
+        progress = []
+
+        device_resp = MagicMock()
+        device_resp.status_code = 200
+        device_resp.json.return_value = {
+            "device_auth_id": "device-123",
+            "user_code": "USER-CODE",
+            "interval": 1,
+        }
+
+        pending_resp = MagicMock()
+        pending_resp.status_code = 403
+        pending_resp.is_success = False
+        pending_resp.text = ""
+
+        token_resp = MagicMock()
+        token_resp.status_code = 200
+        token_resp.is_success = True
+        token_resp.json.return_value = {
+            "authorization_code": "auth-code",
+            "code_verifier": "device-verifier",
+        }
+
+        exchange_resp = MagicMock()
+        exchange_resp.status_code = 200
+        exchange_resp.json.return_value = {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        }
+
+        with (
+            patch("pi_ai.utils.oauth.openai_codex.asyncio.sleep", AsyncMock()),
+            patch("pi_ai.utils.oauth.openai_codex.httpx.AsyncClient") as MockClient,
+        ):
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_ctx.post = AsyncMock(side_effect=[device_resp, pending_resp, token_resp, exchange_resp])
+            MockClient.return_value = mock_ctx
+
+            creds = await login_openai_codex_device_code(
+                OAuthLoginCallbacks(
+                    on_auth=lambda info: auth_infos.append(info),
+                    on_prompt=AsyncMock(return_value=""),
+                    on_progress=lambda message: progress.append(message),
+                )
+            )
+
+        assert auth_infos[0].url == "https://auth.openai.com/codex/device"
+        assert auth_infos[0].instructions == "Enter code: USER-CODE"
+        assert progress == ["Visit https://auth.openai.com/codex/device and enter code: USER-CODE"]
+        assert creds.access == "access"
+        assert creds.refresh == "refresh"
+
+        calls = mock_ctx.post.call_args_list
+        assert calls[0].args[0] == "https://auth.openai.com/api/accounts/deviceauth/usercode"
+        assert calls[1].args[0] == "https://auth.openai.com/api/accounts/deviceauth/token"
+        assert calls[2].args[0] == "https://auth.openai.com/api/accounts/deviceauth/token"
+        assert calls[3].args[0] == "https://auth.openai.com/oauth/token"
+        assert calls[3].kwargs["data"]["redirect_uri"] == "https://auth.openai.com/deviceauth/callback"
+        assert calls[3].kwargs["data"]["code_verifier"] == "device-verifier"
+
+    def test_registered_provider_uses_device_code_login(self):
+        from pi_ai.utils.oauth.openai_codex import openai_codex_oauth_provider
+
+        assert openai_codex_oauth_provider.uses_callback_server is False
+
+    @pytest.mark.asyncio
     async def test_login_uses_current_authorize_endpoint_and_state(self):
         from pi_ai.utils.oauth.openai_codex import login_openai_codex
         from pi_ai.utils.oauth.types import OAuthLoginCallbacks

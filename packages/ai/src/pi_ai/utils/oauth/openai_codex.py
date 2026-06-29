@@ -21,11 +21,17 @@ from pi_ai.utils.oauth.pkce import generate_pkce
 from pi_ai.utils.oauth.types import OAuthAuthInfo, OAuthCredentials, OAuthLoginCallbacks
 
 _CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
-_TOKEN_URL = "https://auth.openai.com/oauth/token"
+_AUTH_BASE_URL = "https://auth.openai.com"
+_AUTHORIZE_URL = f"{_AUTH_BASE_URL}/oauth/authorize"
+_TOKEN_URL = f"{_AUTH_BASE_URL}/oauth/token"
 _REDIRECT_PORT = 1455
 _REDIRECT_PATH = "/auth/callback"
 _REDIRECT_URI = f"http://localhost:{_REDIRECT_PORT}{_REDIRECT_PATH}"
+_DEVICE_USER_CODE_URL = f"{_AUTH_BASE_URL}/api/accounts/deviceauth/usercode"
+_DEVICE_TOKEN_URL = f"{_AUTH_BASE_URL}/api/accounts/deviceauth/token"
+_DEVICE_VERIFICATION_URI = f"{_AUTH_BASE_URL}/codex/device"
+_DEVICE_REDIRECT_URI = f"{_AUTH_BASE_URL}/deviceauth/callback"
+_DEVICE_CODE_TIMEOUT_SECONDS = 15 * 60
 _SCOPES = "openid profile email offline_access"
 
 
@@ -38,9 +44,127 @@ def _get_account_id_from_jwt(access_token: str) -> str | None:
         padded = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded))
         auth_info = payload.get("https://api.openai.com/auth", {})
-        return auth_info.get("user_id") or auth_info.get("sub")
+        return auth_info.get("chatgpt_account_id") or auth_info.get("user_id") or auth_info.get("sub")
     except Exception:
         return None
+
+
+def _credentials_from_token_data(data: dict[str, object]) -> OAuthCredentials:
+    access = data.get("access_token", "")
+    refresh = data.get("refresh_token", "")
+    expires_in = data.get("expires_in", 3600)
+    expires_at = int(time.time() * 1000) + int(expires_in) * 1000 - 5 * 60 * 1000
+    creds = OAuthCredentials(
+        refresh=str(refresh),
+        access=str(access),
+        expires=expires_at,
+    )
+    account_id = _get_account_id_from_jwt(creds.access)
+    if account_id:
+        creds.extra["account_id"] = account_id
+    return creds
+
+
+async def _exchange_authorization_code(
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+) -> OAuthCredentials:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            _TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": _CLIENT_ID,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return _credentials_from_token_data(data)
+
+
+async def login_openai_codex_device_code(callbacks: OAuthLoginCallbacks) -> OAuthCredentials:
+    """Login with OpenAI Codex OAuth using device-code auth."""
+    async with httpx.AsyncClient() as client:
+        device_resp = await client.post(
+            _DEVICE_USER_CODE_URL,
+            json={"client_id": _CLIENT_ID},
+            headers={"Content-Type": "application/json"},
+        )
+        if device_resp.status_code == 404:
+            raise RuntimeError(
+                "OpenAI Codex device code login is not enabled for this server. "
+                "Use API-key login or verify the server URL."
+            )
+        device_resp.raise_for_status()
+        device_data = device_resp.json()
+
+        device_auth_id = device_data.get("device_auth_id", "")
+        user_code = device_data.get("user_code", "")
+        interval = device_data.get("interval", 5)
+        if isinstance(interval, str):
+            interval = float(interval.strip())
+        if not device_auth_id or not user_code or not isinstance(interval, int | float) or interval < 0:
+            raise RuntimeError(f"Invalid OpenAI Codex device code response: {device_data}")
+
+        callbacks.on_auth(
+            OAuthAuthInfo(
+                url=_DEVICE_VERIFICATION_URI,
+                instructions=f"Enter code: {user_code}",
+            )
+        )
+        if callbacks.on_progress:
+            callbacks.on_progress(f"Visit {_DEVICE_VERIFICATION_URI} and enter code: {user_code}")
+
+        deadline = time.monotonic() + _DEVICE_CODE_TIMEOUT_SECONDS
+        while True:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("OpenAI Codex device code login timed out")
+            await asyncio.sleep(float(interval))
+            token_resp = await client.post(
+                _DEVICE_TOKEN_URL,
+                json={
+                    "device_auth_id": device_auth_id,
+                    "user_code": user_code,
+                },
+                headers={"Content-Type": "application/json"},
+            )
+
+            if token_resp.is_success:
+                token_data = token_resp.json()
+                authorization_code = token_data.get("authorization_code")
+                code_verifier = token_data.get("code_verifier")
+                if not authorization_code or not code_verifier:
+                    raise RuntimeError(f"Invalid OpenAI Codex device auth token response: {token_data}")
+                return await _exchange_authorization_code(
+                    str(authorization_code),
+                    str(code_verifier),
+                    _DEVICE_REDIRECT_URI,
+                )
+
+            if token_resp.status_code in {403, 404}:
+                continue
+
+            response_body = token_resp.text
+            error_code = ""
+            try:
+                error = token_resp.json().get("error", "")
+                error_code = error.get("code", "") if isinstance(error, dict) else str(error)
+            except Exception:
+                pass
+            if error_code == "deviceauth_authorization_pending":
+                continue
+            if error_code == "slow_down":
+                interval = float(interval) + 5
+                continue
+            raise RuntimeError(
+                f"OpenAI Codex device auth failed with status {token_resp.status_code}"
+                f"{': ' + response_body if response_body else ''}"
+            )
 
 
 async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials:
@@ -70,31 +194,7 @@ async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials
     if returned_state != state:
         raise ValueError("OAuth state mismatch during OpenAI login")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            _TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "client_id": _CLIENT_ID,
-                "code": code,
-                "redirect_uri": _REDIRECT_URI,
-                "code_verifier": verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    expires_at = int(time.time() * 1000) + data.get("expires_in", 3600) * 1000 - 5 * 60 * 1000
-    creds = OAuthCredentials(
-        refresh=data.get("refresh_token", ""),
-        access=data.get("access_token", ""),
-        expires=expires_at,
-    )
-    account_id = _get_account_id_from_jwt(creds.access)
-    if account_id:
-        creds.extra["account_id"] = account_id
-    return creds
+    return await _exchange_authorization_code(code, verifier, _REDIRECT_URI)
 
 
 async def refresh_openai_codex_token(credentials: OAuthCredentials) -> OAuthCredentials:
@@ -112,13 +212,10 @@ async def refresh_openai_codex_token(credentials: OAuthCredentials) -> OAuthCred
         resp.raise_for_status()
         data = resp.json()
 
-    expires_at = int(time.time() * 1000) + data.get("expires_in", 3600) * 1000 - 5 * 60 * 1000
-    creds = OAuthCredentials(
-        refresh=data.get("refresh_token", credentials.refresh),
-        access=data.get("access_token", credentials.access),
-        expires=expires_at,
-        extra=dict(credentials.extra),
-    )
+    data.setdefault("refresh_token", credentials.refresh)
+    data.setdefault("access_token", credentials.access)
+    creds = _credentials_from_token_data(data)
+    creds.extra.update(credentials.extra)
     account_id = _get_account_id_from_jwt(creds.access)
     if account_id:
         creds.extra["account_id"] = account_id
@@ -174,10 +271,10 @@ async def _wait_for_callback_code(ready: asyncio.Future[None] | None = None) -> 
 class _OpenAICodexOAuthProvider:
     id = "openai-codex"
     name = "OpenAI Codex (ChatGPT Plus/Pro)"
-    uses_callback_server = True
+    uses_callback_server = False
 
     async def login(self, callbacks: OAuthLoginCallbacks) -> OAuthCredentials:
-        return await login_openai_codex(callbacks)
+        return await login_openai_codex_device_code(callbacks)
 
     async def refresh_token(self, credentials: OAuthCredentials) -> OAuthCredentials:
         return await refresh_openai_codex_token(credentials)
