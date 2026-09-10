@@ -180,3 +180,61 @@ def test_anthropic_payload_preserves_explicit_block_cache_control():
         "cache_control": cache_control,
     }
     assert tool_result["content"][1] == {"type": "text", "text": "live bytes"}
+
+
+@pytest.mark.parametrize("cache_control", [None, {"type": "ephemeral"}, {"type": "ephemeral", "ttl": "1h"}])
+@pytest.mark.parametrize("following_user", [False, True])
+def test_anthropic_tool_result_batch_cache_preserves_evidence(cache_control, following_user):
+    """The next inference caches the completed evidence batch, without changing it."""
+    from pi_ai.types import ImageContent
+
+    messages = [
+        UserMessage(content="Verify these functions", timestamp=0),
+        AssistantMessage(
+            api="anthropic-messages", provider="anthropic", model="claude-opus-4-8",
+            timestamp=1, stop_reason="toolUse",
+            content=[ToolCall(type="toolCall", id=key, name="read", arguments={"path": key})
+                     for key in ("toolu_a", "toolu_b")],
+        ),
+        ToolResultMessage(tool_call_id="toolu_a", tool_name="read", timestamp=2,
+                          content=[TextContent(type="text", text="function source")]),
+        ToolResultMessage(tool_call_id="toolu_b", tool_name="read", timestamp=3,
+                          is_error=True, content=[TextContent(type="text", text="failure evidence"),
+                          ImageContent(type="image", data="aGVsbG8=", mime_type="image/png")]),
+    ]
+    if following_user:
+        messages.append(UserMessage(content="Inspect the failure", timestamp=4))
+    context = Context(messages=messages)
+    before = context.model_dump()
+    actual = _build_messages(context, cache_control=cache_control)
+    baseline = _build_messages(context, cache_control=None)
+    assert len(actual[2]["content"]) == 2
+    assert [b["tool_use_id"] for b in actual[2]["content"]] == ["toolu_a", "toolu_b"]
+    assert actual[2]["content"][1]["is_error"] is True
+    if cache_control:
+        assert actual[-1]["content"][-1].pop("cache_control", None) == cache_control
+    assert actual == baseline
+    assert context.model_dump() == before
+
+
+@pytest.mark.parametrize("is_oauth", [False, True])
+def test_anthropic_appending_tool_turn_preserves_cacheable_prefix(is_oauth):
+    import copy
+
+    def turn(key):
+        return [
+            AssistantMessage(api="anthropic-messages", provider="anthropic", model="claude-opus-4-8",
+                             timestamp=1, stop_reason="toolUse", content=[
+                                 ToolCall(type="toolCall", id=key, name="read", arguments={"path": key})]),
+            ToolResultMessage(tool_call_id=key, tool_name="read", timestamp=2,
+                              content=[TextContent(type="text", text="source " + key)]),
+        ]
+
+    context = Context(messages=[UserMessage(content="Verify", timestamp=0), *turn("toolu_a")])
+    first = _build_messages(context, is_oauth=is_oauth, cache_control={"type": "ephemeral"})
+    context.messages.extend(turn("toolu_b"))
+    second = _build_messages(context, is_oauth=is_oauth, cache_control={"type": "ephemeral"})
+    assert second[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    prefix = copy.deepcopy(first)
+    assert prefix[-1]["content"][-1].pop("cache_control") == {"type": "ephemeral"}
+    assert second[:len(prefix)] == prefix

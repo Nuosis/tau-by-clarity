@@ -409,6 +409,11 @@ def _build_messages(
                 tool_results.append(_convert_tool_result_block(all_msgs[j], is_oauth))
                 j += 1
 
+            # Tool results end most agent turns. Cache the completed batch just
+            # as we cache a final user message, so subsequent tool calls can
+            # reuse the growing conversation instead of reprocessing it.
+            if j == len(all_msgs) and cache_control:
+                tool_results[-1]["cache_control"] = cache_control
             result.append({"role": "user", "content": tool_results})
             i = j
             continue
