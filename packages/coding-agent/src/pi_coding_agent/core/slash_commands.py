@@ -35,7 +35,7 @@ BUILTIN_SLASH_COMMANDS: list[BuiltinSlashCommand] = [
     BuiltinSlashCommand("chat", "Render chat transcript"),
     BuiltinSlashCommand("model", "Select model (opens selector UI)"),
     BuiltinSlashCommand("models", "Alias for /model"),
-    BuiltinSlashCommand("set", "Set provider tier model mapping"),
+    BuiltinSlashCommand("set", "Set provider or router tier model mapping"),
     BuiltinSlashCommand("scoped-models", "Enable/disable models for Ctrl+P cycling"),
     BuiltinSlashCommand("export", "Export session to HTML file"),
     BuiltinSlashCommand("share", "Share session as a secret GitHub gist"),

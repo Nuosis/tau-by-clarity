@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from pi_agent import Agent, AgentOptions
+from pi_agent import Agent, AgentOptions, ModelInvocation, ModelInvocationSelection
 from pi_agent.types import (
     AgentEvent,
     AgentMessage,
@@ -222,6 +222,7 @@ class AgentSession:
             get_api_key=self._resolve_api_key,
             convert_to_llm=convert_to_llm_fn,
             transform_context=self._transform_context,
+            before_model_invocation=self._before_model_invocation,
             on_payload=self._on_provider_payload,
             on_response=self._on_provider_response,
             prepareNextTurn=self._prepare_next_turn,
@@ -838,6 +839,28 @@ class AgentSession:
         except Exception:
             pass
         return key
+
+    async def _before_model_invocation(
+        self, invocation: ModelInvocation,
+    ) -> ModelInvocationSelection | None:
+        invocation = invocation.model_copy(update={"session_id": self.session_id})
+        selection = await self._extension_runner.emit_before_model_invocation(invocation)
+        model = selection.model if selection is not None else invocation.model
+        reasoning = selection.reasoning if selection is not None else invocation.reasoning
+        try:
+            _instr_emit("tau.model_invocation", metadata={
+                "session_id": self.session_id,
+                "configured_provider": invocation.model.provider,
+                "configured_model": invocation.model.id,
+                "configured_reasoning": invocation.reasoning,
+                "selected_provider": model.provider,
+                "selected_model": model.id,
+                "selected_reasoning": reasoning,
+                "assignment_returned": selection is not None,
+            })
+        except Exception:
+            pass
+        return selection
 
     async def _on_provider_payload(self, payload: Any, model: Model | None = None) -> Any:
         final_payload = payload

@@ -5027,3 +5027,127 @@ class TestDefaultValues:
         # Allowed: VALID_THINKING_LEVELS (off/minimal/low/medium/high/xhigh/adaptive)
         # plus 'off' is the fallback when the model doesn't support reasoning.
         assert session._settings.thinking_level in set(VALID_THINKING_LEVELS) | {"off"}
+
+
+@pytest.mark.asyncio
+async def test_model_invocation_hook_routes_each_call_before_auth(tmp_path, monkeypatch):
+    """Session + extensions + loop + disk read; only the provider is a test double."""
+    from pi_agent import ModelInvocation, ModelInvocationSelection
+    from pi_ai.types import AssistantMessage, EventDone, EventStart, TextContent, ToolCall, Usage
+    from pi_coding_agent.core.extensions.types import Extension
+    from pi_coding_agent.core.tools.read import create_read_tool
+
+    original = get_model("anthropic", "claude-3-5-sonnet-20241022").model_copy(update={"reasoning": True})
+    routed = original.model_copy(update={"id": "test-routed", "provider": "openai", "api": "openai-responses", "base_url": "http://unused.invalid"})
+    fixture = tmp_path / "hook-proof.txt"
+    fixture.write_text("observed-through-tau-read")
+    seen, dispatches, keys, traces = [], [], [], []
+    monkeypatch.setattr("pi_coding_agent.core.agent_session._instr_emit",
+                        lambda name, **kwargs: traces.append((name, kwargs)))
+
+    async def handler(event, ctx):
+        invocation = event["invocation"]
+        assert isinstance(invocation, ModelInvocation)
+        assert not hasattr(invocation, "api_key")
+        seen.append(invocation)
+        if len(seen) == 1:
+            # Only returned assignment is honored, not edits to the snapshot.
+            invocation.context.system_prompt = "must not reach provider"
+            return ModelInvocationSelection(model=routed, reasoning="low")
+        return None
+
+    extension = Extension(path="hook.py", resolved_path="hook.py",
+                          handlers={"before_model_invocation": [handler]})
+
+    class Loader(_FakeResourceLoader):
+        def get_extensions(self):
+            return {"extensions": [extension], "diagnostics": []}
+
+    result = await create_agent_session(CreateAgentSessionOptions(
+        cwd=str(tmp_path), model=original, thinking_level="high", resource_loader=Loader(),
+    ))
+    session = result.session
+    session.agent.set_tools([create_read_tool(str(tmp_path))])
+
+    def resolve(provider):
+        keys.append(provider)
+        return "test-key-for-" + provider
+
+    session.agent.get_api_key = resolve
+
+    async def provider(model, context, opts):
+        dispatches.append((model.id, opts.reasoning, opts.api_key))
+        assert context.system_prompt != "must not reach provider"
+        content = ([ToolCall(id="read-1", name="read", arguments={"path": str(fixture)})]
+                   if len(dispatches) == 1 else [TextContent(text="read complete")])
+        stop = "toolUse" if len(dispatches) == 1 else "stop"
+        message = AssistantMessage(content=content, api=model.api, provider=model.provider,
+                                   model=model.id, usage=Usage(), stop_reason=stop, timestamp=0)
+        yield EventStart(partial=message)
+        yield EventDone(reason=stop, message=message)
+
+    session.agent.stream_fn = provider
+    await session.prompt("Read hook-proof.txt")
+    assert dispatches == [(routed.id, "low", "test-key-for-openai"),
+                          (original.id, "high", "test-key-for-anthropic")]
+    assert keys == ["openai", "anthropic"]
+    assert len(seen) == 2
+    tool_results = [m for m in seen[1].context.messages if m.role == "toolResult"]
+    assert len(tool_results) == 1
+    assert "observed-through-tau-read" in tool_results[0].content[0].text
+    assert session.model.id == original.id
+    assert fixture.read_text() == "observed-through-tau-read"
+    selections = [kw["metadata"] for name, kw in traces if name == "tau.model_invocation"]
+    assert [s["selected_model"] for s in selections] == [routed.id, original.id]
+    assert [s["selected_reasoning"] for s in selections] == ["low", "high"]
+    # A later user turn starts from the configured model too.
+    await session.prompt("Thanks")
+    assert dispatches[-1] == (original.id, "high", "test-key-for-anthropic")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("behavior", ["raise", "invalid", "clear_reasoning", "no_handler"])
+async def test_model_invocation_hook_failure_and_passthrough(tmp_path, behavior):
+    from pi_agent import ModelInvocationSelection
+    from pi_ai.types import AssistantMessage, EventDone, EventStart, TextContent, Usage
+    from pi_coding_agent.core.extensions.types import Extension
+
+    model = get_model("anthropic", "claude-3-5-sonnet-20241022").model_copy(update={"reasoning": True})
+    calls, keys = [], []
+
+    def handler(event, ctx):
+        if behavior == "raise":
+            raise RuntimeError("selection failed")
+        if behavior == "invalid":
+            return {"model": model}  # Required reasoning is omitted.
+        return ModelInvocationSelection(model=model, reasoning=None)
+
+    class Loader(_FakeResourceLoader):
+        def get_extensions(self):
+            extension = Extension(path="hook.py", resolved_path="hook.py",
+                                  handlers={"before_model_invocation": [handler]})
+            return {"extensions": [] if behavior == "no_handler" else [extension], "diagnostics": []}
+
+    result = await create_agent_session(CreateAgentSessionOptions(
+        cwd=str(tmp_path), model=model, thinking_level="high", resource_loader=Loader(),
+    ))
+    result.session.agent.get_api_key = lambda provider: keys.append(provider) or "test-key"
+
+    async def provider(selected, context, opts):
+        calls.append(opts.reasoning)
+        message = AssistantMessage(content=[TextContent(text="done")], api=selected.api,
+                                   provider=selected.provider, model=selected.id, usage=Usage(),
+                                   stop_reason="stop", timestamp=0)
+        yield EventStart(partial=message)
+        yield EventDone(reason="stop", message=message)
+
+    result.session.agent.stream_fn = provider
+    if behavior in {"raise", "invalid"}:
+        await result.session.prompt("hello")
+        assert calls == [] and keys == []
+        assert result.session.agent.state.error
+        assert result.session.agent.state.messages[-1].stop_reason == "error"
+        assert ("selection failed" if behavior == "raise" else "reasoning") in result.session.agent.state.error
+    else:
+        await result.session.prompt("hello")
+        assert calls == [None if behavior == "clear_reasoning" else "high"]

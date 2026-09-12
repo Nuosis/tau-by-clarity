@@ -1058,7 +1058,7 @@ async def _run_pi_tui(
         ("goal", "Show, set, or clear the current session goal"),
         ("model", "Select provider and model strength"),
         ("models", "Alias for /model"),
-        ("set", "Set provider tier model mapping"),
+        ("set", "Set provider or router tier model mapping"),
         ("scoped-models", "Enable/disable scoped models"),
         ("export", "Export session as HTML"),
         ("import", "Import and resume a session"),
@@ -1090,7 +1090,9 @@ async def _run_pi_tui(
     built_in_slash_names = {name for name, _description in built_in_slash_specs}
 
     def build_slash_commands(current_extension_runner: Any) -> list[Any]:
-        commands = [SlashCommand(name=name, description=description) for name, description in built_in_slash_specs]
+        commands = [SlashCommand(name=name, description=description,
+                                 get_argument_completions=_set_argument_completions if name == "set" else None)
+                    for name, description in built_in_slash_specs]
         get_registered_commands = getattr(current_extension_runner, "get_registered_commands", None) or getattr(
             current_extension_runner,
             "getRegisteredCommands",
@@ -2491,6 +2493,65 @@ async def _handle_model_command(
     tui.request_render()
 
 
+def _set_argument_completions(prefix: str):
+    from pi_tui.autocomplete import AutocompleteItem
+    from pi_coding_agent.core.router_config import ROUTER_LEVELS
+
+    candidates = ["router", *[f"router {level}" for level in ROUTER_LEVELS]]
+    return [AutocompleteItem(value=value, label=value, description="Configure router tier assignment")
+            for value in candidates if value.startswith(prefix)] or None
+
+
+async def _handle_set_router(parts, session, append_history, tui, show_select, show_input, dim, red, green):
+    from pi_coding_agent.config import get_models_path
+    from pi_coding_agent.core.router_config import (
+        ROUTER_DEFAULTS, ROUTER_LEVELS, RouterAssignment,
+        read_router_assignments, store_router_assignment,
+    )
+
+    try:
+        if len(parts) == 2 and show_select is not None:
+            level = await show_select("Router level", list(ROUTER_LEVELS), None)
+            if level is None:
+                append_history(dim("Set cancelled."))
+                return
+        elif len(parts) in {3, 5}:
+            level = parts[2].lower()
+        else:
+            raise ValueError("Usage: /set router <level> [<provider/model> <reasoning|off>]")
+        if level not in ROUTER_LEVELS:
+            raise ValueError("Router level must be ultra-light, light, default, or max")
+        path = get_models_path()
+        current = read_router_assignments(path).get(level, ROUTER_DEFAULTS[level])
+        if len(parts) == 5:
+            target, reasoning = parts[3:]
+        elif show_input is not None:
+            target = await show_input("Provider/model", f"{current.provider}/{current.model}", None)
+            if target is None:
+                append_history(dim("Set cancelled."))
+                return
+            reasoning = await show_input("Reasoning (off disables)", current.reasoning or "off", None)
+            if reasoning is None:
+                append_history(dim("Set cancelled."))
+                return
+        else:
+            raise ValueError("Usage: /set router <level> <provider/model> <reasoning|off>")
+        provider, separator, model = str(target).strip().partition("/")
+        if not separator or not provider or not model:
+            raise ValueError("Use provider/model for the router assignment")
+        effort = str(reasoning).strip()
+        if not effort:
+            raise ValueError("Reasoning must be a level or off")
+        assignment = RouterAssignment(provider=provider, model=model,
+                                      reasoning=None if effort == "off" else effort)
+        store_router_assignment(path, level, assignment, session.model_registry)
+        append_history(green(f"Set router {level} to {provider}/{model} (thinking {effort})."))
+    except (ValueError, OSError) as exc:
+        append_history(red(f"Could not set router: {exc}"))
+    finally:
+        tui.request_render()
+
+
 async def _handle_set_command(
     stripped: str,
     session: "AgentSession",
@@ -2502,10 +2563,13 @@ async def _handle_set_command(
     cyan, dim, red, green,
     persist_defaults=None,
 ) -> None:
-    """Handle /set and /set <provider> <tier> <model> commands."""
+    """Configure provider tiers or /set router <level> assignments."""
     from pi_coding_agent.core.provider_profiles import STRENGTHS, normalize_provider_id
 
     parts = stripped.split()
+    if len(parts) >= 2 and parts[1].lower() == "router":
+        await _handle_set_router(parts, session, append_history, tui, show_select, show_input, dim, red, green)
+        return
     if len(parts) >= 4:
         provider = normalize_provider_id(parts[1])
         strength = parts[2].strip().lower()
@@ -2539,12 +2603,15 @@ async def _handle_set_command(
         tui.request_render()
         return
 
-    selection = await _select_provider_and_strength(show_select)
+    selection = await _select_provider_and_strength(show_select, include_router=True)
     if selection is None:
         append_history(dim("Set cancelled."))
         tui.request_render()
         return
     provider, strength = selection
+    if provider == "router":
+        await _handle_set_router(["/set", "router"], session, append_history, tui, show_select, show_input, dim, red, green)
+        return
     if provider in {"openai-compatible", "anthropic-compatible"}:
         configured_provider = await _select_configured_compatible_provider(provider, show_select)
         if configured_provider is None:
@@ -2845,20 +2912,24 @@ def _logout_credential_choices(auth: Any, provider: str) -> list[str]:
     return choices
 
 
-async def _select_provider_and_strength(show_select) -> tuple[str, str] | None:
-    provider = await _select_provider(show_select, "Provider")
+async def _select_provider_and_strength(show_select, *, include_router=False) -> tuple[str, str] | None:
+    provider = await _select_provider(show_select, "Provider", include_router=include_router)
     if provider is None:
         return None
+    if provider == "router":
+        return provider, ""
     strength = await show_select("Model strength", ["strong", "standard", "weak"], None)
     if strength is None:
         return None
     return provider, str(strength)
 
 
-async def _select_provider(show_select, title: str) -> str | None:
+async def _select_provider(show_select, title: str, *, include_router=False) -> str | None:
     from pi_coding_agent.core.provider_profiles import provider_profile_choices
 
-    choices = provider_profile_choices()
+    choices = list(provider_profile_choices())
+    if include_router:
+        choices.append(("router", "Router tier mapping"))
     labels = [label for _provider_id, label in choices]
     selected = await show_select(title, labels, None)
     if selected is None:

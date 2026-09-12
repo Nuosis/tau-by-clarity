@@ -1792,3 +1792,39 @@ async def test_before_tool_call_can_rewrite_arguments():
         pass
 
     assert received_args == {"command": "echo real@user.com"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cross_provider", [False, True])
+async def test_invocation_selection_static_key_is_provider_scoped(cross_provider):
+    from pi_agent import ModelInvocationSelection
+    from pi_ai.types import Model
+
+    configured = Model(id="configured", name="Configured", provider="anthropic",
+                       api="anthropic-messages", base_url="http://unused.invalid")
+    selected = configured.model_copy(update={"id": "selected", **(
+        {"provider": "openai", "api": "openai-responses"} if cross_provider else {}
+    )})
+    observed = []
+
+    def choose(invocation):
+        return ModelInvocationSelection(model=selected, reasoning=None)
+
+    async def provider(model, context, opts):
+        observed.append((model.id, opts.api_key))
+        msg = AssistantMessage(content=[TextContent(text="done")], api=model.api,
+                               provider=model.provider, model=model.id, usage=Usage(),
+                               stop_reason="stop", timestamp=0)
+        yield EventStart(partial=msg)
+        yield EventDone(reason="stop", message=msg)
+
+    config = AgentLoopConfig(model=configured, api_key="configured-provider-key",
+                             convert_to_llm=lambda messages: messages,
+                             before_model_invocation=choose)
+    stream = agent_loop([make_user_message()], AgentContext(system_prompt="", messages=[]),
+                        config, stream_fn=provider)
+    async for event in stream:
+        pass
+    await stream.result()
+    assert observed == [("selected", None if cross_provider else "configured-provider-key")]
+    assert config.model.id == "configured"
