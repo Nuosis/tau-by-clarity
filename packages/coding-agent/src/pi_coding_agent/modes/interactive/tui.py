@@ -1012,10 +1012,7 @@ async def _run_pi_tui(
 
     def update_footer() -> None:
         """Refresh footer: model | thinking: off | ctx: 12% | tokens: 8k/64k"""
-        model = session.model
-        model_str = model.id if model else "no model"
-        thinking = getattr(session, "thinking_level", "off") or "off"
-        parts = [model_str, f"thinking: {thinking}"]
+        parts = _footer_model_parts(session)
         ctx = session.get_context_usage()
         if ctx and ctx.get("percent") is not None:
             pct = ctx["percent"]
@@ -1091,7 +1088,8 @@ async def _run_pi_tui(
 
     def build_slash_commands(current_extension_runner: Any) -> list[Any]:
         commands = [SlashCommand(name=name, description=description,
-                                 get_argument_completions=_set_argument_completions if name == "set" else None)
+                                 get_argument_completions=(_set_argument_completions if name == "set" else
+                                                           _model_argument_completions if name in {"model", "models"} else None))
                     for name, description in built_in_slash_specs]
         get_registered_commands = getattr(current_extension_runner, "get_registered_commands", None) or getattr(
             current_extension_runner,
@@ -2434,6 +2432,29 @@ async def _run_pi_tui(
             tui.stop()
 
 
+def _footer_model_parts(session):
+    if getattr(session, "router_enabled", False):
+        return ["router on"]
+    model = session.model
+    return [model.id if model else "no model",
+            f"thinking: {getattr(session, 'thinking_level', 'off') or 'off'}"]
+
+
+async def _activate_router(session, append_history, update_footer, tui, green, red):
+    try:
+        await session.enable_router()
+        append_history(green("Router on."))
+    except (ValueError, RuntimeError) as exc:
+        append_history(red(f"Could not enable router: {exc}"))
+    update_footer()
+    tui.request_render()
+
+
+def _model_argument_completions(prefix):
+    from pi_tui.autocomplete import AutocompleteItem
+    return [AutocompleteItem(value="router", label="router", description="Enable invocation routing")] if "router".startswith(prefix) else None
+
+
 async def _handle_model_command(
     stripped: str,
     session: "AgentSession",
@@ -2447,6 +2468,10 @@ async def _handle_model_command(
     """Handle /model and /model <id> commands."""
     parts = stripped.split(None, 1)
     model_arg = parts[1].strip() if len(parts) > 1 else None
+
+    if model_arg and model_arg.lower() == "router":
+        await _activate_router(session, append_history, update_footer, tui, green, red)
+        return
 
     if model_arg:
         # /model <id> — switch to named model
@@ -2473,12 +2498,15 @@ async def _handle_model_command(
         tui.request_render()
         return
 
-    selection = await _select_provider_and_strength(show_select)
+    selection = await _select_provider_and_strength(show_select, include_router="Router")
     if selection is None:
         append_history(dim("Model selection cancelled."))
         tui.request_render()
         return
     provider, strength = selection
+    if provider == "router":
+        await _activate_router(session, append_history, update_footer, tui, green, red)
+        return
     if provider in {"openai-compatible", "anthropic-compatible"}:
         configured_provider = await _select_configured_compatible_provider(provider, show_select)
         if configured_provider is None:
@@ -2929,7 +2957,7 @@ async def _select_provider(show_select, title: str, *, include_router=False) -> 
 
     choices = list(provider_profile_choices())
     if include_router:
-        choices.append(("router", "Router tier mapping"))
+        choices.append(("router", include_router if isinstance(include_router, str) else "Router tier mapping"))
     labels = [label for _provider_id, label in choices]
     selected = await show_select(title, labels, None)
     if selected is None:

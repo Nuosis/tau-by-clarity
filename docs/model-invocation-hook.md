@@ -12,7 +12,7 @@ exported through the Tau alias package). A standalone agent accepts
 `AgentOptions(before_model_invocation=callback)`; an extension registers
 `pi.on("before_model_invocation", handler)`.
 
-The standalone callback receives a `ModelInvocation`. Extension handlers receive
+When routing is off, the standalone callback receives a `ModelInvocation`. Extension handlers receive
 `event["invocation"]` plus the normal extension context. The invocation contains:
 
 - `model`: configured model, including its provider and API adapter;
@@ -65,7 +65,7 @@ levels. The direct form is also supported:
 
 Use `off` to store null reasoning. The four mappings above are editor suggestions
 from the routing sketch, not activated routing policy. The command configures a
-level's assignment; it does not force the session to that tier or enable routing.
+level's assignment. Use `/model router` to enable routing afterward.
 
 Assignments are stored under `router.levels` in the same `get_models_path()` file
 used by existing `/set` provider mappings: normally `~/.tau/agent/models.json`,
@@ -96,32 +96,53 @@ Only explicitly saved levels are returned; missing levels are not filled silentl
 The owner retains these resolved selections and returns the chosen entry from its
 hook. Configuration changes require the owner to reload at a configuration boundary.
 
-## Verification and remaining work
+## Activate routing
 
-Focused tests exercise the extension through `AgentSession.prompt`, selection
-before credential resolution, consecutive provider changes around Tau's disk
-read tool, unchanged session defaults on later turns, explicit reasoning-off,
-handler failures, static-key scoping, persisted mappings and reloads, and the
-`/set` handler/menu/completion. The provider boundary is a test double; no paid
-model call or terminal UI automation was used. The saved configuration also drives
-a standalone Agent's provider boundary through the hook.
+Run `/model router`, or select **Router** from `/model`. Activation resolves all
+four configured levels and checks provider API support and authentication before
+setting the active state. Missing or incompatible configuration leaves the
+previous mode and footer unchanged. Routing is opt-in for the current session;
+new sessions start in their usual fixed-model mode.
 
-28 selected tests passed across the router configuration, SDK hook, existing
-provider hooks, existing `/set` commands, and static-key boundary tests. During a
-broader loop check, two steering tests failed; both reproduce using the unchanged
-`HEAD` version of `agent_loop.py`:
+While active, the footer replaces its model and thinking fields with exactly
+`router on`. Selecting a concrete model through `/model` (including cycling)
+disables routing and restores the model/thinking display. Mode changes wait until
+the current response is finished. After editing tier configuration, reselect
+`/model router` to load the new assignments.
 
-- `test_agent_loop_injects_steering_after_next_tool_call_completes`
-- `test_agent_loop_injects_steering_mid_parallel_batch`
+The first invocation of each new user prompt uses the configured `default` tier.
+Every routed generation returns a strict `submit_response` envelope containing
+ordinary text, native tool requests, the next-invocation metadata, and the
+unresolved-choice probe. Tau validates the envelope, converts its tool requests
+back to normal tool calls, and runs them through the existing tool execution
+path. Those tool results are visible to the next selected model. The working
+model emits its own subsequent classification; there is no separate classifier
+call. Responses are buffered until the envelope validates, so carrier JSON never
+appears as user-facing response text. A malformed envelope cannot execute tools,
+and its reported usage is retained on the error response.
 
-The initial new tests also exposed test-fixture assumptions: the chosen OpenAI
-catalog ID was absent, a non-reasoning baseline clamped effort to off, and prompt
-failures are recorded in session state rather than raised. Direct catalog output
-and failed assertions established these causes; fixtures now use explicit test
-model descriptors and assert session errors plus zero provider dispatch. Tau's
-ThinkingLevel is an extensible string, so malformed-selection testing omits the
-required reasoning field rather than asserting an unsupported enum restriction.
+`model_router.routing_level` owns the frozen sketch policy:
 
-Typed continuation metadata transport and the deterministic routing matrix still
-need to be connected to this hook. Routing quality, paid-provider switching, and
-savings remain unproven. This source change does not publish or install a release.
+- Planning, competing explanations, or mutually constraining unresolved choices:
+  `max`.
+- Otherwise, method design or inferential interpretation: `default`.
+- Otherwise, adaptation, bounded interpretation, or one-way unresolved choices:
+  `light`.
+- Otherwise: `ultra-light`.
+
+Choice interaction is derived deterministically from the probe, rather than
+trusting the redundant generated category. No `unknown` category or semantic
+fallback is introduced. Null continuation is allowed only when no tools are
+pending. Each invocation still follows the normal loop termination rules.
+While selected, the built-in router owns assignment; extension assignment hooks
+resume when a concrete model is selected.
+
+This carrier currently supports Responses and Codex Responses adapters. Tools
+must have strict-compatible parameter schemas; arbitrary-key object arguments
+are rejected with the tool name at activation or a tool configuration change.
+Model registry/eligibility work occurs at activation, not each invocation.
+Auxiliary calls outside the main agent loop, such as compaction, are unchanged.
+
+See [router activation verification](router-activation-verification.md) for the
+source checks, terminal check and live-provider evidence. Broad routing quality
+and cost savings remain unproven.

@@ -165,6 +165,9 @@ class AgentSession:
         self._extension_bindings: dict[str, Any] = {}
         self._steering_mode_override: str | None = None
         self._follow_up_mode_override: str | None = None
+        self._router = None
+        from pi_ai import stream_simple
+        self._provider_stream = stream_simple
         self._goal_terminated: bool = False
         self._goal: SessionGoal | None = None
         self._initial_active_tool_names: list[str] | None = (
@@ -219,6 +222,7 @@ class AgentSession:
 
         # Create Agent with convert_to_llm and transform_context
         opts = AgentOptions(
+            stream_fn=self._stream_model,
             get_api_key=self._resolve_api_key,
             convert_to_llm=convert_to_llm_fn,
             transform_context=self._transform_context,
@@ -840,11 +844,36 @@ class AgentSession:
             pass
         return key
 
+    @property
+    def router_enabled(self) -> bool:
+        return self._router is not None
+
+    async def enable_router(self) -> None:
+        """Activate only after the complete configuration has been resolved."""
+        from pi_coding_agent.config import get_models_path
+        from .model_router import ModelRouter
+
+        if self._agent.state.is_streaming:
+            raise RuntimeError("Wait for the current response before changing routing mode")
+        router = ModelRouter(get_models_path(), self._model_registry, self._agent.state.tools, _instr_emit)
+        for provider in {selection.model.provider for selection in router.selections.values()}:
+            if not await self._resolve_api_key(provider):
+                raise ValueError(f"No API key found for router provider {provider}")
+        self._router = router
+
+    async def _stream_model(self, model, context, options):
+        router = self._router
+        stream = (router.stream(self._provider_stream, model, context, options)
+                  if router is not None else self._provider_stream(model, context, options))
+        async for event in stream:
+            yield event
+
     async def _before_model_invocation(
         self, invocation: ModelInvocation,
     ) -> ModelInvocationSelection | None:
         invocation = invocation.model_copy(update={"session_id": self.session_id})
-        selection = await self._extension_runner.emit_before_model_invocation(invocation)
+        selection = (self._router.select() if self._router is not None else
+                     await self._extension_runner.emit_before_model_invocation(invocation))
         model = selection.model if selection is not None else invocation.model
         reasoning = selection.reasoning if selection is not None else invocation.reasoning
         try:
@@ -873,6 +902,8 @@ class AgentSession:
             final_payload = inject_pregeneration(final_payload, self.session_id)
         except Exception:  # noqa: BLE001
             pass
+        if self._router is not None:
+            final_payload = self._router.prepare_payload(final_payload)
         # Instrumentation: the exact request handed to the provider — system
         # prompt, message history, and tools — the definitive record of what the
         # brain received on this turn.
@@ -1479,7 +1510,8 @@ class AgentSession:
                 raise RuntimeError("No model selected. Use /login or set an API key environment variable.")
 
             # Validate API key
-            model = self._agent.state.model
+            model = (self._router.selections["default"].model if self._router is not None
+                     else self._agent.state.model)
             api_key = await self._resolve_api_key(model.provider)
             if not api_key:
                 raise RuntimeError(
@@ -1565,6 +1597,8 @@ class AgentSession:
             log_event("session_prompt_agent_start", prompt_count=len(msgs))
         except Exception:
             pass
+        if self._router is not None:
+            self._router.reset()
         await self._agent.prompt(msgs)
         try:
             from .cli_debug_log import log_event
@@ -2326,9 +2360,12 @@ class AgentSession:
         Switch the active model with API key validation.
         Mirrors setModel() in TypeScript.
         """
+        if self._router is not None and self._agent.state.is_streaming:
+            raise RuntimeError("Wait for the current response before changing routing mode")
         api_key = self._model_registry.get_api_key(model.provider)
         if not api_key:
             raise RuntimeError(f"No API key for {model.provider}/{model.id}")
+        self._router = None
         self._agent.set_model(model)
         self._session_manager.append_model_change(model.provider, model.id)
         # Re-clamp thinking level for new model
