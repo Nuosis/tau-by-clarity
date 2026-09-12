@@ -860,6 +860,11 @@ class AgentSession:
             if not await self._resolve_api_key(provider):
                 raise ValueError(f"No API key found for router provider {provider}")
         self._router = router
+        self._settings_manager.set_router_enabled(True)
+
+    async def restore_router(self) -> None:
+        if self._router is None and self._settings_manager.get_router_enabled():
+            await self.enable_router()
 
     def _record_router_event(self, name, *, metadata):
         # Session entries survive restarts and never enter the model context.
@@ -2375,6 +2380,7 @@ class AgentSession:
         if not api_key:
             raise RuntimeError(f"No API key for {model.provider}/{model.id}")
         self._router = None
+        self._settings_manager.set_router_enabled(False)
         self._agent.set_model(model)
         self._session_manager.append_model_change(model.provider, model.id)
         # Re-clamp thinking level for new model

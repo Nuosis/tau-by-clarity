@@ -576,6 +576,7 @@ async def _run_pi_tui(
         SelectListTheme,
         ProcessTerminal,
     )
+    await session.restore_router()
     from pi_tui import CombinedAutocompleteProvider, SlashCommand
     from pi_tui.tui import OverlayOptions
     from pi_ai.types import TextContent, UserMessage

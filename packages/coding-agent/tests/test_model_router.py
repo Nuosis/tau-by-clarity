@@ -310,3 +310,26 @@ def test_free_form_argument_transport(subschema, value):
     decoded = native_arguments(args, parameters)
     Draft202012Validator(parameters).validate(decoded)
     assert decoded == {"data": value}
+
+
+@pytest.mark.asyncio
+async def test_router_preference_survives_new_session_and_fixed_selection(tmp_path, monkeypatch):
+    def settings():
+        return SettingsManager(project_root=str(tmp_path), global_settings_file=str(tmp_path / "settings.json"))
+    first, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    first._settings_manager = settings()
+    await model_command(first, "/model router")
+    assert settings().get_router_enabled()
+    second, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    from pi_coding_agent.core.sdk import CreateAgentSessionOptions, create_agent_session
+    second = (await create_agent_session(CreateAgentSessionOptions(
+        cwd=str(tmp_path), model=second.model, auth_storage=second._auth_storage,
+        model_registry=second._model_registry, settings_manager=settings(),
+        session_manager=second._session_manager, resource_loader=Loader(), tools=["read", "edit"],
+    ))).session
+    assert second.router_enabled and _footer_model_parts(second) == ["router on"]
+    await model_command(second, "/model router-fixture/light")
+    third, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    third._settings_manager = settings()
+    await third.restore_router()
+    assert not third.router_enabled and not settings().get_router_enabled()

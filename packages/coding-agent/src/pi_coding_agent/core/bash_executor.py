@@ -161,6 +161,14 @@ async def execute_bash(
     except Exception:
         cancelled = True
     finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await process.communicate()
         if temp_file:
             temp_file.close()
 

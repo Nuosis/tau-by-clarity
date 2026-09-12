@@ -827,6 +827,13 @@ class SettingsManager:
         self._ensure_loaded()
         return self._merged.get("sessionDir") or self._merged.get("session_dir")
 
+    def get_router_enabled(self) -> bool:
+        self._ensure_loaded()
+        return self._merged.get("routerEnabled", False) is True
+
+    def set_router_enabled(self, enabled: bool) -> None:
+        self._set_global("routerEnabled", enabled)
+
     def set_default_provider(self, provider: str) -> None:
         self._set_global("defaultProvider", provider)
 

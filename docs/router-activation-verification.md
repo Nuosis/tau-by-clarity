@@ -103,3 +103,23 @@ verify four routing selections, reasoning, planning explanations and four
 continuation records, then checks all five routed/fixed responses in the chart.
 Actual TUI command and completion verified with a copy of Marcus's five-response
 session: Luna 60% (3), Sol 40% (2). Capture: `/tmp/tau-stats-ui/terminal-capture.json`.
+
+## Router preference and shutdown repair (0.58.6)
+
+Selecting `/model router` saves `routerEnabled` through SettingsManager; new SDK
+sessions and interactive startup restore it. Selecting a concrete model clears
+it. A persisted-settings test invokes the model command, creates another session
+through the SDK and checks router/footer activation, then verifies fixed-mode
+selection clears the preference for the next session.
+
+Cancelling a running Bash tool reproduced `BaseSubprocessTransport.__del__` /
+`RuntimeError: Event loop is closed` with its child still alive. Bash tool and
+interactive Bash executor now kill their process groups, await reader/watcher
+cleanup, and drain/reap subprocesses in finally blocks before returning.
+The same reproduction now reports CHILD REAPED without the traceback. Tests
+include cancellation of a child ignoring SIGTERM for both execution paths.
+
+31 focused checks passed. A broader SDK run had 164 passes and one unrelated
+failure importing create_assistant_message_event_stream; the missing export also
+reproduces on the unchanged installed0.58.5 baseline. No fix to that export is
+included. Other subprocess owners were not proven responsible for this report.

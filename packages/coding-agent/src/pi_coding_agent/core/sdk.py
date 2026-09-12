@@ -230,6 +230,8 @@ async def create_agent_session(
         session_start_event=options.session_start_event,
     )
     
+    await session.restore_router()
+
     # Apply scoped models if provided
     if options.scoped_models:
         session.set_scoped_models(options.scoped_models)
