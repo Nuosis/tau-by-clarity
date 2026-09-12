@@ -30,6 +30,7 @@ from .types import (
     AgentEvent,
     AgentEventAgentEnd,
     AgentLoopConfig,
+    BeforeModelInvocation,
     AgentMessage,
     AgentState,
     AgentTool,
@@ -77,6 +78,7 @@ class AgentOptions:
         afterToolCall: Callable | None = None,
         before_tool_call: Callable | None = None,
         after_tool_call: Callable | None = None,
+        before_model_invocation: BeforeModelInvocation | None = None,
     ):
         self.initial_state = initial_state
         self.convert_to_llm = convert_to_llm
@@ -88,6 +90,7 @@ class AgentOptions:
         self.get_api_key = get_api_key
         self.on_payload = on_payload
         self.on_response = on_response
+        self.before_model_invocation = before_model_invocation
         self.thinking_budgets = thinking_budgets
         self.temperature = temperature
         self.transport = transport
@@ -145,6 +148,7 @@ class Agent:
         self.get_api_key = opts.get_api_key
         self._on_payload = opts.on_payload
         self._on_response = opts.on_response
+        self._before_model_invocation = opts.before_model_invocation
         self._thinking_budgets: ThinkingBudgets | None = opts.thinking_budgets
         self._temperature: float | None = opts.temperature
         self._transport: Transport = opts.transport
@@ -434,6 +438,7 @@ class Agent:
             get_api_key=self.get_api_key,
             on_payload=self._on_payload,
             on_response=self._on_response,
+            before_model_invocation=self._before_model_invocation,
             get_steering_messages=get_steering,
             get_follow_up_messages=self._async_dequeue_follow_up,
             prepare_next_turn=self.prepareNextTurn,

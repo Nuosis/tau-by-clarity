@@ -44,6 +44,8 @@ from .types import (
     AgentEventTurnStart,
     AgentEventRunState,
     AgentLoopConfig,
+    ModelInvocation,
+    ModelInvocationSelection,
     AgentMessage,
     AgentTool,
     AgentToolExecutionPolicy,
@@ -460,17 +462,34 @@ async def _stream_assistant_response(
 
     fn = stream_fn or _default_stream_simple
 
-    # Resolve API key
-    resolved_api_key = config.api_key
+    # Route before credential resolution and provider dispatch, on every loop call.
+    # A selection never changes config or the user's session default.
+    selected_model = config.model
+    selected_reasoning = config.reasoning
+    if config.before_model_invocation:
+        invocation = ModelInvocation(
+            model=config.model, reasoning=config.reasoning,
+            context=llm_context, session_id=config.session_id,
+        ).model_copy(deep=True)
+        selection = config.before_model_invocation(invocation)
+        if inspect.isawaitable(selection):
+            selection = await selection
+        if selection is not None:
+            selection = ModelInvocationSelection.model_validate(selection)
+            selected_model = selection.model
+            selected_reasoning = selection.reasoning
+
+    # A static key belongs to the configured provider, not a routed provider.
+    resolved_api_key = config.api_key if selected_model.provider == config.model.provider else None
     if config.get_api_key:
-        key_result = config.get_api_key(config.model.provider)
+        key_result = config.get_api_key(selected_model.provider)
         if inspect.isawaitable(key_result):
             key_result = await key_result
         resolved_api_key = key_result or resolved_api_key
 
     from pi_ai import SimpleStreamOptions
     stream_opts = SimpleStreamOptions(
-        reasoning=config.reasoning,
+        reasoning=selected_reasoning,
         thinking_budgets=config.thinking_budgets,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
@@ -489,7 +508,7 @@ async def _stream_assistant_response(
     partial_message: AssistantMessage | None = None
     added_partial = False
 
-    response_stream = fn(config.model, llm_context, stream_opts)
+    response_stream = fn(selected_model, llm_context, stream_opts)
 
     async for event in response_stream:
         if event.type == "start":

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from pi_ai.types import (
     AssistantMessageEvent,
+    Context,
+    ThinkingLevel as ProviderThinkingLevel,
     ImageContent,
     Message,
     Model,
@@ -51,6 +53,38 @@ CustomAgentMessages = Union[tuple]  # Empty union placeholder
 # Custom message types can be added by extending this union in application code
 AgentMessage = Union[Message, CustomAgentMessages]
 
+class ModelInvocation(BaseModel):
+    """Provider-neutral snapshot before credential resolution.
+
+    Context is already transformed and converted to provider-neutral messages.
+    Hook consumers may inspect it; only a returned selection changes the call.
+    """
+    model: Model
+    reasoning: ProviderThinkingLevel | None
+    context: Context
+    session_id: str | None = None
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+
+class ModelInvocationSelection(BaseModel):
+    """Complete, invocation-local assignment from prevalidated configuration.
+
+    Both fields are required. None explicitly disables reasoning for this call.
+    Model eligibility and compatibility belong to configuration loading.
+    """
+    model: Model
+    reasoning: ProviderThinkingLevel | None
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+
+BeforeModelInvocation = Callable[
+    [ModelInvocation],
+    ModelInvocationSelection | None | Awaitable[ModelInvocationSelection | None],
+]
+
+
 # ─── AgentLoopConfig ──────────────────────────────────────────────────────────
 
 
@@ -65,6 +99,8 @@ class AgentLoopConfig(SimpleStreamOptions):
 
     # Optional transform applied to context before convert_to_llm
     transform_context: Callable[[list[AgentMessage], asyncio.Event | None], Awaitable[list[AgentMessage]]] | None = None
+
+    before_model_invocation: BeforeModelInvocation | None = None
 
     # Resolves API key dynamically per call
     get_api_key: Callable[[str], str | None | Awaitable[str | None]] | None = None

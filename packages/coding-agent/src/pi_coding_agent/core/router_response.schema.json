@@ -1,0 +1,608 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "text",
+    "dependency_probe",
+    "response"
+  ],
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "Ordinary user-facing response or tool-request commentary."
+    },
+    "dependency_probe": {
+      "$ref": "#/$defs/dependency_probe"
+    },
+    "response": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool_calls",
+            "next_invocation"
+          ],
+          "properties": {
+            "tool_calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/tool_call"
+              },
+              "description": "Requested actions in execution order. Empty when no tool is needed. Use null for omitted optional arguments."
+            },
+            "next_invocation": {
+              "$ref": "#/$defs/next_invocation"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool_calls",
+            "next_invocation"
+          ],
+          "properties": {
+            "tool_calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/tool_call"
+              },
+              "description": "Requested actions in execution order. Empty when no tool is needed. Use null for omitted optional arguments.",
+              "maxItems": 0
+            },
+            "next_invocation": {
+              "type": "null",
+              "description": "Temporal anchor: THIS response has ended and its requested tools have returned; the NEXT model invocation is about to start. Describe the work that invocation is committed to perform. Do not describe what you did in this response, the act of requesting a tool, or the tool execution itself. This is a perspective for classifying intended work, not permission to assume tool success or invent returned data. All four fields must refer to this same next invocation. Null when no committed continuation remains because work is complete or a needed user answer is required. An optional offer is not a committed continuation. Never conceal pending tools or required unfinished work with null. The host, not this metadata, controls the loop."
+            }
+          }
+        }
+      ],
+      "description": "Ordinary response, requested actions and continuation metadata. A null continuation permits no requested tools."
+    }
+  },
+  "$defs": {
+    "tool_call": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "read"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path to the file to read (relative or absolute)"
+                },
+                "offset": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Line number to start reading from (1-indexed)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limit": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Maximum number of lines to read"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "offset",
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "bash"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "description": "Bash command to execute"
+                },
+                "timeout": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Timeout in seconds (optional)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "command",
+                "timeout"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB. Optionally provide a timeout in seconds."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "edit"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path to the file to edit (relative or absolute)"
+                },
+                "oldText": {
+                  "type": "string",
+                  "description": "Exact text to find and replace (must match exactly)"
+                },
+                "newText": {
+                  "type": "string",
+                  "description": "New text to replace the old text with"
+                }
+              },
+              "required": [
+                "path",
+                "oldText",
+                "newText"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "write"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path to the file to write (relative or absolute)"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Content to write to the file"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "grep"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "pattern": {
+                  "type": "string",
+                  "description": "Search pattern (regex or literal string)"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "description": "Directory or file to search (default: current directory)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "glob": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "description": "Filter files by glob pattern, e.g. '*.ts'"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ignoreCase": {
+                  "anyOf": [
+                    {
+                      "type": "boolean",
+                      "description": "Case-insensitive search (default: false)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "literal": {
+                  "anyOf": [
+                    {
+                      "type": "boolean",
+                      "description": "Treat pattern as literal string (default: false)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "context": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Lines to show before/after each match (default: 0)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limit": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Maximum number of matches (default: 100)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "pattern",
+                "path",
+                "glob",
+                "ignoreCase",
+                "literal",
+                "context",
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB. Long lines are truncated to 500 chars."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "find"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "pattern": {
+                  "type": "string",
+                  "description": "Glob pattern to match files, e.g. '*.ts', '**/*.json'"
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "description": "Directory to search in (default: current directory)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limit": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Maximum number of results (default: 1000)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "pattern",
+                "path",
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "enum": [
+                "ls"
+              ]
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "description": "Directory to list (default: current directory)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limit": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "description": "Maximum number of entries to return (default: 500)"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false,
+          "description": "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB."
+        }
+      ]
+    },
+    "dependency_probe": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "choice_a",
+            "choice_b",
+            "a_unresolved",
+            "b_unresolved",
+            "a_affects_b",
+            "b_affects_a",
+            "explanations"
+          ],
+          "properties": {
+            "choice_a": {
+              "type": "string",
+              "description": "Name one solution value or decision relevant to the committed next deliverable, using the task context. Identify the choice, not a tool call, analysis step, or constraint."
+            },
+            "choice_b": {
+              "type": "string",
+              "description": "Name the other distinct solution value or decision relevant to the committed next deliverable. Include an already-fixed endpoint when the task describes how it governs a remaining choice."
+            },
+            "a_unresolved": {
+              "type": "boolean",
+              "description": "Does the next invocation still have to select or change choice A? False when the task state already fixes A and it must be preserved."
+            },
+            "b_unresolved": {
+              "type": "boolean",
+              "description": "Does the next invocation still have to select or change choice B? False when the task state already fixes B and it must be preserved."
+            },
+            "a_affects_b": {
+              "type": "boolean",
+              "description": "Under the stated selection procedure, does the selected value of A affect what may or will be selected for B? Assess the directional rule even if A is already fixed. Do not infer the reverse direction from this direction."
+            },
+            "b_affects_a": {
+              "type": "boolean",
+              "description": "Under the stated selection procedure, does the selected value of B affect what may or will be selected for A? Assess the directional rule even if B is already fixed. Do not infer the reverse direction from this direction."
+            },
+            "explanations": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "a_unresolved",
+                "b_unresolved",
+                "a_affects_b",
+                "b_affects_a"
+              ],
+              "properties": {
+                "a_unresolved": {
+                  "type": "string",
+                  "description": "One sentence identifying the task evidence for a_unresolved."
+                },
+                "b_unresolved": {
+                  "type": "string",
+                  "description": "One sentence identifying the task evidence for b_unresolved."
+                },
+                "a_affects_b": {
+                  "type": "string",
+                  "description": "One sentence identifying the task evidence for a_affects_b."
+                },
+                "b_affects_a": {
+                  "type": "string",
+                  "description": "One sentence identifying the task evidence for b_affects_a."
+                }
+              }
+            }
+          }
+        }
+      ],
+      "description": "Identify the two solution choices involved in the committed next invocation after current tools return, then assess their unresolved states and each dependency direction. Choose the identities yourself from the task. For this two-choice diagnostic, use null only when the task involves no pair of solution choices, including merely reporting existing facts. A fixed endpoint governing a remaining selection belongs in the pair. Do not invent a pair to fill this field."
+    },
+    "next_invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_kind",
+        "method_certainty",
+        "interpretation_required",
+        "constraint_interaction",
+        "classification_explanations"
+      ],
+      "properties": {
+        "work_kind": {
+          "type": "string",
+          "enum": [
+            "discover",
+            "extract",
+            "transform",
+            "synthesize",
+            "plan",
+            "implement",
+            "diagnose",
+            "verify",
+            "communicate"
+          ],
+          "description": "What must the NEXT model invocation deliver AFTER this response and its tools? Classify that deliverable, not the current response or its prerequisite read/search. If you say read X, then do Y, classify Y when Y is the committed next deliverable. discover: choose/locate further evidence; extract: report explicit values without assessing compliance; transform: change representation by a supplied mapping; synthesize: integrate evidence into conclusions; plan: choose an approach or sequence; implement: apply a chosen change; diagnose: distinguish causes; verify: assess evidence against requirements; communicate: convey an already established result. After reading requirements, designing is plan; after reading a config, reporting a setting is extract; after reading logs, checking success is verify. Do not invent a separate discovery invocation merely because this response requests a read."
+        },
+        "method_certainty": {
+          "type": "string",
+          "enum": [
+            "specified",
+            "adaptation_required",
+            "needs_design"
+          ],
+          "description": "For the SAME NEXT invocation identified by work_kind: is the method for its deliverable established? specified: actionable procedure already supplied; adaptation_required: an established procedure needs contextual adjustment; needs_design: choose or devise the approach. The current tool command can be fully specified while the next design invocation still needs_design. Do not transfer certainty about how to read/search to certainty about how to solve the task after the results return. A selected technology stack is not itself an implementation procedure. Missing results alone do not determine this field."
+        },
+        "interpretation_required": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "bounded",
+            "inferential",
+            "competing_explanations"
+          ],
+          "description": "For the SAME NEXT deliverable, select the first applicable condition: competing_explanations when the work must discriminate between competing explanations supported by available task evidence; otherwise inferential when it must derive relationships not explicitly stated; otherwise bounded when it must interpret contextual meaning under a supplied rule; otherwise direct when it uses explicit facts or mechanical operations whose meanings and selection rules are already determined. A supplied procedure does not lower the interpretation category. Multiple steps, enumeration, or mutually constrained solution values do not by themselves turn mechanical operations into contextual interpretation. Approach alternatives alone are not competing explanations. Use established task demands without inventing tool results."
+        },
+        "constraint_interaction": {
+          "type": "string",
+          "enum": [
+            "independent",
+            "interacting",
+            "tightly_coupled"
+          ],
+          "description": "For the SAME NEXT deliverable, consider unresolved solution choices: values, designs, or actions the assistant must select or change. independent when there are no such choices, only one such choice, or multiple choices can be resolved separately; interacting when one choice restricts a later choice with no reverse restriction; tightly_coupled when choices restrict each other and need joint resolution. Relationships among observed facts, causal links, sequential analysis steps, or evidence supporting rival explanations are not solution-choice dependencies. Several competing explanations for one answer do not create several solution choices. A supplied algorithm can resolve coupled choices mechanically: record coupling here and interpretation demand separately. Use only dependencies established for this continuation."
+        },
+        "classification_explanations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "work_kind",
+            "method_certainty",
+            "interpretation_required",
+            "constraint_interaction"
+          ],
+          "properties": {
+            "work_kind": {
+              "type": "string",
+              "description": "Brief justification for the selected work_kind value: identify the task evidence and the applicable category boundary. One or two sentences, not a step-by-step reasoning transcript. Refer to the same next invocation as the classification; do not invent unread file contents."
+            },
+            "method_certainty": {
+              "type": "string",
+              "description": "Brief justification for the selected method_certainty value: identify the task evidence and the applicable category boundary. One or two sentences, not a step-by-step reasoning transcript. Refer to the same next invocation as the classification; do not invent unread file contents."
+            },
+            "interpretation_required": {
+              "type": "string",
+              "description": "Brief justification for the selected interpretation_required value: identify the task evidence and the applicable category boundary. One or two sentences, not a step-by-step reasoning transcript. Refer to the same next invocation as the classification; do not invent unread file contents."
+            },
+            "constraint_interaction": {
+              "type": "string",
+              "description": "Brief justification for the selected constraint_interaction value: identify the task evidence and the applicable category boundary. One or two sentences, not a step-by-step reasoning transcript. Refer to the same next invocation as the classification; do not invent unread file contents."
+            }
+          },
+          "description": "Concise task-grounded explanation for each classification. These explanations support inspection; the host routes using the enum fields only."
+        }
+      },
+      "description": "Temporal anchor: THIS response has ended and its requested tools have returned; the NEXT model invocation is about to start. Describe the work that invocation is committed to perform. Do not describe what you did in this response, the act of requesting a tool, or the tool execution itself. This is a perspective for classifying intended work, not permission to assume tool success or invent returned data. All four fields must refer to this same next invocation. Null when no committed continuation remains because work is complete or a needed user answer is required. An optional offer is not a committed continuation. Never conceal pending tools or required unfinished work with null. The host, not this metadata, controls the loop."
+    }
+  }
+}

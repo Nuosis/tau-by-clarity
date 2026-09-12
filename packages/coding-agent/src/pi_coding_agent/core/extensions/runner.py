@@ -10,6 +10,8 @@ import dataclasses
 import inspect
 from typing import Any
 
+from pi_agent import ModelInvocation, ModelInvocationSelection
+
 from pi_coding_agent.core.source_info import create_synthetic_source_info, source_info_to_dict
 
 from .types import (
@@ -366,6 +368,29 @@ class ExtensionRunner:
             "images": images,
             "systemPrompt": system_prompt,
         })
+
+    async def emit_before_model_invocation(
+        self, invocation: ModelInvocation,
+    ) -> ModelInvocationSelection | None:
+        """Apply assignment handlers in registration order; failures stop dispatch.
+
+        No eligibility lookup occurs here. Handlers return a complete selection
+        from configuration validated by its owner, or None to leave it unchanged.
+        """
+        current = invocation
+        selected = None
+        for ext in self._extensions:
+            for handler in ext.handlers.get("before_model_invocation", []):
+                result = await self._invoke_handler(
+                    handler, self.create_context(),
+                    {"type": "before_model_invocation", "invocation": current.model_copy(deep=True)},
+                )
+                if result is not None:
+                    selected = ModelInvocationSelection.model_validate(result)
+                    current = current.model_copy(update={
+                        "model": selected.model, "reasoning": selected.reasoning,
+                    })
+        return selected
 
     async def emit_before_provider_request(self, payload: Any) -> Any:
         """Emit before_provider_request and allow handlers to replace the payload."""
