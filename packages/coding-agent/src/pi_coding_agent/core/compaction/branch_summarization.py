@@ -276,7 +276,7 @@ async def generate_branch_summary(
     """Generate a summary of abandoned branch entries."""
     from pi_coding_agent.core.messages import convert_to_llm
 
-    context_window = getattr(model, "context_window", None) or 128000
+    context_window = getattr(model, "context_window", None) or 1_000_000
     token_budget = context_window - reserve_tokens
 
     preparation = prepare_branch_entries(entries, token_budget)

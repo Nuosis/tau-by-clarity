@@ -417,7 +417,7 @@ class ModelRegistry:
                         ),
                         input=model_def.get("input", ["text"]),
                         cost=model_def.get("cost") or default_cost,
-                        context_window=model_def.get("contextWindow", 128000),
+                        context_window=model_def.get("contextWindow", 1_000_000),
                         max_tokens=model_def.get("maxTokens", 16384),
                         base_url=prov_cfg.get("baseUrl"),
                         headers=merged_headers,
@@ -457,7 +457,7 @@ class ModelRegistry:
                     ),
                     input=model_def.get("input", ["text"]),
                     cost=model_def.get("cost") or default_cost,
-                    context_window=model_def.get("contextWindow", 128000),
+                    context_window=model_def.get("contextWindow", 1_000_000),
                     max_tokens=model_def.get("maxTokens", 16384),
                     base_url=prov_config.base_url,
                     headers=merged_headers,
@@ -788,7 +788,7 @@ class ModelRegistry:
             ),
             input=["text", "image"],
             cost={"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            context_window=128000,
+            context_window=1_000_000,
             max_tokens=8192,
         )
 

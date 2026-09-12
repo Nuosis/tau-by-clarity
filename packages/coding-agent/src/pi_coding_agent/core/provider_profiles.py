@@ -128,7 +128,7 @@ def synthetic_model(provider: str, model_id: str) -> Model | None:
         reasoning=profile.api in {"openai-responses", "anthropic-messages", "google-generative-ai"},
         input=["text", "image"],
         cost=ModelCost(),
-        context_window=128000,
+        context_window=1_000_000,
         max_tokens=8192,
     )
 
