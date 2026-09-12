@@ -91,7 +91,12 @@ Historical missing decisions cannot be reconstructed.
 including tool-use responses, across the persisted session (all branches).
 Failed/aborted responses are excluded and reported separately. Fixed-model and
 older sessions work from their saved assistant messages. Shares are not costs
-or tokens; Luna efforts are aggregated into the same model bar.
+or tokens; As of 0.58.5, bars separate provider/model, routing tier and reasoning effort.
+Each saved selection is matched to the following assistant response and consumed
+once, including failed responses. Missing or mismatched selections display
+“tier/effort not recorded”; current configuration is never used to infer history.
+28 focused checks passed for this correction, and the 14-response user session
+renders ultra-light7, light3, default3, max1.
 
 57 focused checks passed. The HTTP read/edit workflow reopens its session to
 verify four routing selections, reasoning, planning explanations and four

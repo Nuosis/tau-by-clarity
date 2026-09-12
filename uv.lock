@@ -1912,7 +1912,7 @@ wheels = [
 
 [[package]]
 name = "tau-by-clarity"
-version = "0.58.4"
+version = "0.58.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
