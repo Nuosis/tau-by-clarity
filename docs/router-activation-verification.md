@@ -78,3 +78,23 @@ native read/edit workflow, plus eight new A2A/JSON compatibility checks.
 No A2A messages were sent and no new paid model calls were made. This verifies
 schema activation and transport, not live A2A delivery or model-generated JSON
 reliability. The earlier live model evidence above remains from 0.58.1.
+
+## Session recording and /stats (0.58.3)
+
+Router selection and emitted continuation metadata are saved as custom session
+entries (`tau.router_selection`, `tau.router_metadata`), outside model context.
+Selection entries contain tier, rule, provider/model, reasoning and the metadata
+and dependency probe used by the policy. Recording does not depend on Langfuse.
+Historical missing decisions cannot be reconstructed.
+
+`/stats` displays provider/model bars by completed assistant invocation count,
+including tool-use responses, across the persisted session (all branches).
+Failed/aborted responses are excluded and reported separately. Fixed-model and
+older sessions work from their saved assistant messages. Shares are not costs
+or tokens; Luna efforts are aggregated into the same model bar.
+
+57 focused checks passed. The HTTP read/edit workflow reopens its session to
+verify four routing selections, reasoning, planning explanations and four
+continuation records, then checks all five routed/fixed responses in the chart.
+Actual TUI command and completion verified with a copy of Marcus's five-response
+session: Luna 60% (3), Sol 40% (2). Capture: `/tmp/tau-stats-ui/terminal-capture.json`.

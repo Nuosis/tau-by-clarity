@@ -511,7 +511,7 @@ def _loaded_resource_lines(session: Any, *, show_listing: bool = True, show_diag
             extension_runner,
             {
                 "settings", "chat", "model", "models", "set", "scoped-models", "export", "import", "share", "feedback", "copy", "name",
-                "session", "changelog", "hotkeys", "fork", "clone", "tree", "trust", "login",
+                "session", "stats", "changelog", "hotkeys", "fork", "clone", "tree", "trust", "login",
                 "logout", "new", "compact", "resume", "reload", "quit", "exit", "clear",
                 "help", "thinking", "tools",
             },
@@ -1064,6 +1064,7 @@ async def _run_pi_tui(
         ("copy", "Copy last assistant message"),
         ("name", "Set session display name"),
         ("session", "Show session statistics"),
+        ("stats", "Model usage bar chart for this session"),
         ("changelog", "Show changelog entries"),
         ("hotkeys", "Show keyboard shortcuts"),
         ("fork", "Create a fork from a previous user message"),
@@ -1593,6 +1594,7 @@ async def _run_pi_tui(
                 f"  {cyan('/kill')}     — Kill running tau sessions and subagents",
                 f"  {cyan('/thinking')} — Cycle thinking level",
                 f"  {cyan('/session')}  — Show session statistics",
+                f"  {cyan('/stats')}  — Model usage bar chart",
                 f"  {cyan('/tools')}    — List active tools",
                 f"  {cyan('Ctrl+P')}    — Cycle to next model",
             ]
@@ -2010,6 +2012,12 @@ async def _run_pi_tui(
                 append_history(bold("Active tools:") + "\n" + "\n".join(f"  - {n}" for n in names))
             else:
                 append_history(dim("No active tools."))
+            tui.request_render()
+            return
+
+        if stripped == "/stats":
+            from ...core.model_stats import render_model_stats
+            append_history(render_model_stats(session.get_model_stats()))
             tui.request_render()
             return
 

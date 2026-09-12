@@ -855,11 +855,20 @@ class AgentSession:
 
         if self._agent.state.is_streaming:
             raise RuntimeError("Wait for the current response before changing routing mode")
-        router = ModelRouter(get_models_path(), self._model_registry, self._agent.state.tools, _instr_emit)
+        router = ModelRouter(get_models_path(), self._model_registry, self._agent.state.tools, self._record_router_event)
         for provider in {selection.model.provider for selection in router.selections.values()}:
             if not await self._resolve_api_key(provider):
                 raise ValueError(f"No API key found for router provider {provider}")
         self._router = router
+
+    def _record_router_event(self, name, *, metadata):
+        # Session entries survive restarts and never enter the model context.
+        self._session_manager.append_custom_entry(name, metadata)
+        _instr_emit(name, metadata={**metadata, "session_id": self.session_id})
+
+    def get_model_stats(self):
+        from .model_stats import model_stats
+        return model_stats(self._session_manager.get_entries())
 
     async def _stream_model(self, model, context, options):
         router = self._router

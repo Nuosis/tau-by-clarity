@@ -140,6 +140,22 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         await session.prompt("Reply using the selected fixed model.")
         assert requests[-1]["model"] == "light"
         assert session.agent.state.error is None
+        reopened = SessionManager.open(session._session_manager.get_session_file())
+        entries = [{**entry.data, "type": entry.type} for entry in reopened.get_entries()]
+        decisions = [entry["data"] for entry in entries
+                     if entry.get("customType") == "tau.router_selection"]
+        assert [row["level"] for row in decisions] == ["default", "ultra-light", "max", "default"]
+        assert [row["reasoning"] for row in decisions] == ["high", "low", "high", "high"]
+        assert decisions[2]["rule"] == "planning"
+        assert decisions[2]["next_invocation"]["classification_explanations"]
+        assert len([e for e in entries if e.get("customType") == "tau.router_metadata"]) == 4
+        from pi_coding_agent.core.model_stats import model_stats, render_model_stats
+        stats = model_stats(entries)
+        assert stats == session.get_model_stats()
+        assert stats["total"] == 5
+        assert {r["model"]: r["percent"] for r in stats["models"]} == {
+            "default": 40, "ultra-light": 20, "max": 20, "light": 20}
+        assert "40.0%  (2)" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
