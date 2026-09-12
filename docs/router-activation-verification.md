@@ -1,4 +1,4 @@
-# Router activation verification — 0.58.1
+# Router activation verification — 0.58.2
 
 ## Claim and test route
 
@@ -56,3 +56,25 @@ and multi-provider compatibility are not claimed beyond the documented adapters.
 
 The next experiment is a small held-out routed-versus-fixed workflow comparison
 using this implementation, measuring completed work and all execution consumption.
+
+
+## A2A arbitrary-key compatibility repair (0.58.2)
+
+Observed: compiling the real `SendParams.model_json_schema()` failed with
+`Router cannot encode tool a2a_send_message: Router tools cannot use arbitrary-key object arguments`.
+The null hypothesis that the existing adapter accepts the native A2A schema was
+falsified by this offline reproduction. Both payload and metadata are open maps.
+
+Free-form subtrees now use JSON-string transport and native schema validation
+before tool calls enter the execution loop. No tool-specific exception or
+routing-policy change was introduced. All seven schemas registered by the real
+A2A extension now activate through `/model router`, with the expected footer.
+Stream-boundary tests preserve nested keys, Unicode, arrays, booleans and nulls;
+malformed JSON, non-object payloads and NaN produce an error with no tool calls.
+Additional checks cover typed dictionaries and unconstrained JSON values.
+
+55 focused checks passed. These include the existing local HTTP provider and
+native read/edit workflow, plus eight new A2A/JSON compatibility checks.
+No A2A messages were sent and no new paid model calls were made. This verifies
+schema activation and transport, not live A2A delivery or model-generated JSON
+reliability. The earlier live model evidence above remains from 0.58.1.
