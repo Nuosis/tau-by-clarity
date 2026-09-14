@@ -708,33 +708,44 @@ async def _execute_tool_calls_parallel(
         pending_tasks[task] = idx
 
     pending_steering: list[Any] = []
-    while pending_tasks:
-        done, _ = await asyncio.wait(
-            list(pending_tasks.keys()),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in done:
-            idx = pending_tasks.pop(task)
-            if task.cancelled():
-                continue
-            # _execute_prepared_tool_call converts exceptions into is_error
-            # tool results, so task.result() does not raise here.
-            finalized_by_index[idx] = task.result()
+    try:
+        while pending_tasks:
+            done, _ = await asyncio.wait(
+                list(pending_tasks.keys()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                idx = pending_tasks.pop(task)
+                if task.cancelled():
+                    continue
+                # _execute_prepared_tool_call converts exceptions into is_error
+                # tool results, so task.result() does not raise here.
+                finalized_by_index[idx] = task.result()
 
-        if pending_steering or get_steering_messages is None:
-            continue
-        try:
-            pending_steering = await get_steering_messages()
-        except Exception:
-            pending_steering = []
-        if pending_steering:
-            # Cancel remaining in-flight tools so steering fires at the end
-            # of the *next* tool call, not after the whole batch.
-            in_flight = list(pending_tasks.keys())
-            for task in in_flight:
-                task.cancel()
+            if pending_steering or get_steering_messages is None:
+                continue
+            try:
+                pending_steering = await get_steering_messages()
+            except Exception:
+                pending_steering = []
+            if pending_steering:
+                # Cancel remaining in-flight tools so steering fires at the end
+                # of the *next* tool call, not after the whole batch.
+                in_flight = list(pending_tasks.keys())
+                for task in in_flight:
+                    task.cancel()
+                await asyncio.gather(*in_flight, return_exceptions=True)
+                pending_tasks.clear()
+    finally:
+        # Cancelling the parent turn must not abandon child tool tasks. Drain
+        # them so nested cleanup, including bash's cancel watcher, completes
+        # before event-loop shutdown.
+        in_flight = list(pending_tasks.keys())
+        for task in in_flight:
+            task.cancel()
+        if in_flight:
             await asyncio.gather(*in_flight, return_exceptions=True)
-            pending_tasks.clear()
+        pending_tasks.clear()
 
     # Materialize in original tool-call order so tool_use ↔ tool_result    # alignment is preserved regardless of completion order.
     finalized_calls: list[dict[str, Any]] = []
