@@ -243,6 +243,7 @@ class AgentSession:
         # Restore that branch before extensions receive their first input event
         # so extension context and provider context observe the same history.
         initial_context = self._session_manager.build_context()
+        self._restore_intention()
         if initial_context.messages:
             self._agent.replace_messages(initial_context.messages)
 
@@ -796,6 +797,9 @@ class AgentSession:
         Will be connected to ExtensionRunner.emit_context when extension support is added.
         Mirrors the transform_context callback in TypeScript SDK.
         """
+        pending = getattr(self, '_intention_requests', [])
+        included = [request for request in pending
+                    if any((m if isinstance(m, dict) else _message_to_dict(m)) == request for m in messages)]
         self._session_manager.refresh_active_compression_refs()
         messages = self._session_manager.apply_persisted_active_compression(messages)
         if self._extension_runner.has_handlers("context"):
@@ -812,7 +816,41 @@ class AgentSession:
                     CustomMessage(custom_type="memory_recall", content=block, display=False)
                 ]
         self._review_context_messages = list(messages)
+        if self._router is not None and included:
+            from .turn_review import review_turn
+            from pi_agent.types import AgentContext
+            context = AgentContext(system_prompt=self._agent.state.system_prompt,
+                                   messages=[], tools=self._agent.state.tools)
+            context.messages = messages
+            intention = await review_turn(
+                self._router.selections['max'], context, stream_fn=self._provider_stream,
+                get_api_key=self._resolve_api_key, record=self._record_router_event,
+                cancel_event=signal, intention=getattr(self, '_intention', None),
+                establish_intention=True,
+            )
+            self._intention = intention
+            self._intention_requests = [r for r in self._intention_requests if r not in included]
+            self._emit({'type': 'intention_changed', 'intention': intention.model_dump()})
         return messages
+
+    def _track_intention_request(self, message) -> None:
+        if not hasattr(self, '_intention_requests'):
+            self._intention_requests = []
+        self._intention_requests.append(message if isinstance(message, dict) else _message_to_dict(message))
+
+    def _restore_intention(self) -> None:
+        from .turn_review import Intention
+        self._intention = None
+        self._intention_requests = []
+        for entry in reversed(self._session_manager.get_branch()):
+            if entry.data.get('customType') == 'tau.intention.completed':
+                self._intention = Intention.model_validate(entry.data['data']['decision'])
+                break
+
+    @property
+    def intention_placeholder(self) -> str:
+        intention = getattr(self, '_intention', None)
+        return intention.outcome if intention is not None else ''
 
     async def _resolve_api_key(self, provider: str) -> str | None:
         async_resolver = getattr(self._auth_storage, "resolve_api_key_async", None)
@@ -1004,16 +1042,18 @@ class AgentSession:
                 self._router.selections['max'], review_context,
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
+                intention=getattr(self, '_intention', None),
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
                 return None
             if verdict.decision == 'continue':
-                await self.follow_up(
+                self._agent.follow_up(self._user_message_from_text(
                     'Completion review requires further work within the existing user authorization:\n'
                     + '\n'.join(f'- {item}' for item in verdict.follow_up_requirements)
-                    + '\nEvidence assessment: ' + verdict.rationale
-                )
+                    + '\nEvidence assessment: ' + verdict.rationale,
+                    None,
+                ))
                 return None
 
         try:
@@ -1524,8 +1564,10 @@ class AgentSession:
                         timestamp=int(time.time() * 1000),
                     )
                     if streaming_behavior == "followUp":
+                        self._track_intention_request(user_msg)
                         self._agent.follow_up(user_msg)
                     else:
+                        self._track_intention_request(user_msg)
                         self._agent.steer(user_msg)
                 if preflight_result is not None:
                     preflight_result(True)
@@ -1636,6 +1678,8 @@ class AgentSession:
             pass
         if self._router is not None:
             self._router.reset()
+            for msg in msgs:
+                self._track_intention_request(msg)
         await self._agent.prompt(msgs)
         try:
             from .cli_debug_log import log_event
@@ -1735,6 +1779,9 @@ class AgentSession:
         self._pending_next_turn_messages = []
 
         self._session_manager = session_manager
+        self._restore_intention()
+        self._emit({'type': 'intention_changed',
+                    'intention': self._intention.model_dump() if self._intention else None})
         self.session_id = session_manager.get_session_id()
 
         # Restore context from session
@@ -2129,6 +2176,9 @@ class AgentSession:
                 pass
 
         self._session_manager.set_leaf_id(target_id)
+        self._restore_intention()
+        self._emit({'type': 'intention_changed',
+                    'intention': self._intention.model_dump() if self._intention else None})
 
         # Rebuild context from new position
         context = self._session_manager.build_context(target_id)
@@ -2200,6 +2250,7 @@ class AgentSession:
         """Queue a steering message."""
         if isinstance(message, str):
             message = self._user_message_from_text(message, images)
+        self._track_intention_request(message)
         self._agent.steer(message)
 
     async def follow_up(
@@ -2210,6 +2261,7 @@ class AgentSession:
         """Queue a follow-up message."""
         if isinstance(message, str):
             message = self._user_message_from_text(message, images)
+        self._track_intention_request(message)
         self._agent.follow_up(message)
 
     async def abort(self) -> None:

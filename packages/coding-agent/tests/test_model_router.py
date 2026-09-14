@@ -30,6 +30,11 @@ def envelope(actions, next_metadata):
             "response": {"tool_calls": actions, "next_invocation": next_metadata}}
 
 
+def intention_fixture():
+    return {'outcome': 'Complete the requested fixture operation.',
+            'completion_evidence': ['Requested result is verified.'], 'scope': 'Requested fixture only.'}
+
+
 class Loader:
     def get_extensions(self): return {"extensions": [], "diagnostics": []}
     def get_skills(self): return {"skills": [], "diagnostics": []}
@@ -77,12 +82,16 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
 
     async def responses(request):
         body = await request.json()
-        if any(tool['name'] == 'submit_review' for tool in body['tools']):
-            reviews.append(body)
+        reviewer_tool = next((tool['name'] for tool in body['tools']
+                              if tool['name'] in {'submit_review', 'submit_intention'}), None)
+        if reviewer_tool:
+            if reviewer_tool == 'submit_review':
+                reviews.append(body)
+            args = intention_fixture() if reviewer_tool == 'submit_intention' else {
+                'decision': 'accept', 'rationale': 'Fixture completed.', 'intention_met': True,
+                'answer_sound': True, 'evidence_refs': ['message:0'], 'follow_up_requirements': []}
             item = {'type': 'function_call', 'id': 'fc_review', 'call_id': 'review',
-                    'name': 'submit_review', 'status': 'completed', 'arguments': json.dumps({
-                        'decision': 'accept', 'rationale': 'Fixture completed.',
-                        'evidence_refs': ['message:0'], 'follow_up_requirements': []})}
+                    'name': reviewer_tool, 'status': 'completed', 'arguments': json.dumps(args)}
             events = [
                 {'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'arguments': ''}},
                 {'type': 'response.function_call_arguments.delta', 'item_id': item['id'], 'output_index': 0, 'delta': item['arguments']},
@@ -227,6 +236,11 @@ async def test_invalid_routed_output_cannot_execute_tools(tmp_path, monkeypatch,
     file.write_text("preserve")
 
     async def provider(model, context, options):
+        if any(t.name == 'submit_intention' for t in context.tools):
+            yield EventDone(reason='stop', message=AssistantMessage(content=[ToolCall(
+                id='intent', name='submit_intention', arguments=intention_fixture())],
+                api=model.api, provider=model.provider, model=model.id, timestamp=0))
+            return
         meta = metadata()
         if bad_kind == "unknown":
             meta["method_certainty"] = "unknown"

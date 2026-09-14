@@ -1039,6 +1039,12 @@ async def _run_pi_tui(
 
     # ── Editor ───────────────────────────────────────────────────────────────
     editor = Editor(tui, editor_theme)
+    editor.placeholder = getattr(session, 'intention_placeholder', '')
+    def on_intention_changed(event):
+        if isinstance(event, dict) and event.get('type') == 'intention_changed':
+            editor.placeholder = session.intention_placeholder
+            tui.request_render()
+    unsubscribe_intention = session.subscribe(on_intention_changed)
     default_editor = editor
     editor_component_factory: Any = None
     extension_runner = getattr(session, "extension_runner", None)
@@ -2129,6 +2135,7 @@ async def _run_pi_tui(
                     etype = getattr(event, "type", None) or ""
                 trace(f"on_event: {etype}")
 
+
                 if etype == "message_start":
                     msg = getattr(event, "message", None)
                     if getattr(msg, "role", None) == "assistant":
@@ -2439,6 +2446,7 @@ async def _run_pi_tui(
         if not tui.stopped:
             trace("tui: stop in finally")
             tui.stop()
+        unsubscribe_intention()
 
 
 def _footer_model_parts(session):

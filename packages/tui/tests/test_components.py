@@ -296,6 +296,28 @@ class TestEditorInput:
         assert submitted == ["last message"]
         assert editor.get_text() == "last message"
 
+    def test_intention_placeholder_is_display_only(self):
+        import re
+        def strip_ansi(text):
+            return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
+        editor = self._editor()
+        editor.placeholder = 'Verify deployment outcome'
+        submitted = []
+        editor.on_submit = submitted.append
+        assert 'Verify deployment outcome' in strip_ansi('\n'.join(editor.render(80)))
+        assert editor.get_text() == ''
+        editor.handle_input('\r')
+        assert submitted == ['']  # The UI ignores empty input; no placeholder payload.
+        submitted.clear()
+        editor.handle_input('x')
+        assert 'Verify deployment outcome' not in '\n'.join(editor.render(80))
+        assert editor.get_text() == 'x'
+        editor.handle_input('\r')
+        assert submitted == ['x']
+        assert 'Verify deployment outcome' in strip_ansi('\n'.join(editor.render(80)))
+        editor.handle_input('\x1b[A')
+        assert editor.get_text() == 'x'
+
     def test_shift_enter_adds_new_line(self):
         editor = self._editor()
 

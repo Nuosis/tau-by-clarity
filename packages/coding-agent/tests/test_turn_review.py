@@ -11,7 +11,7 @@ import pytest
 from pi_agent.types import AgentContext
 from pi_ai.types import AssistantMessage, EventDone, TextContent, ToolCall
 from pi_coding_agent.core.turn_review import review_turn
-from .test_model_router import make_session, model_command, envelope, metadata
+from .test_model_router import make_session, model_command, envelope, metadata, intention_fixture
 
 
 def done(model, content):
@@ -25,16 +25,21 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
     target = tmp_path / 'result.txt'
     target.write_text('before')
     worker_calls, review_calls = [], []
+    intention_calls = []
 
     async def provider(model, context, options):
         names = {tool.name for tool in context.tools}
-        if 'submit_review' in names:
+        if 'submit_intention' in names:
+            intention_calls.append(model.id)
+            yield done(model, [ToolCall(id='intention', name='submit_intention', arguments=intention_fixture())])
+        elif 'submit_review' in names:
             review_calls.append(model.id)
             assert model.id == 'max'
             assert options.reasoning == 'high'
             assert names == {'ccr_retrieve', 'submit_review'}
             complete = target.read_text() == 'after'
             args = dict(decision='accept' if complete else 'continue',
+                        intention_met=complete, answer_sound=complete,
                         rationale='File content is ' + target.read_text(),
                         evidence_refs=['message:0'],
                         follow_up_requirements=[] if complete else ['Edit result.txt from before to after.'])
@@ -56,7 +61,55 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
     assert target.read_text() == 'after'
     assert len(worker_calls) == 3
     assert review_calls == ['max', 'max']
+    assert intention_calls == ['max']
+    assert session.intention_placeholder == intention_fixture()['outcome']
     assert 'edit' in {tool.name for tool in session.agent.state.tools}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('queue', ['steer', 'follow_up'])
+async def test_user_correction_revises_intention_without_injecting_it(tmp_path, monkeypatch, queue):
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    intentions, reviews, workers = [], [], []
+    async def provider(model, context, options):
+        names = {t.name for t in context.tools}
+        if 'submit_intention' in names:
+            value = {**intention_fixture(), 'outcome': f'INTENT_ONLY_{len(intentions)}'}
+            intentions.append(value)
+            yield done(model, [ToolCall(id='intent', name='submit_intention', arguments=value)])
+        elif 'submit_review' in names:
+            content = context.messages[0].content
+            packet = json.loads(content if isinstance(content, str) else content[0].text)
+            reviews.append(packet['intention'])
+            yield done(model, [ToolCall(id='review', name='submit_review', arguments={
+                'decision': 'accept', 'rationale': 'Answered the current request.',
+                'intention_met': True, 'answer_sound': True,
+                'evidence_refs': ['message:0'], 'follow_up_requirements': []})])
+        else:
+            assert 'INTENT_ONLY_' not in str(context.messages)
+            workers.append(context)
+            if len(workers) == 1:
+                await getattr(session, queue)('Correction: report only; do not edit anything.')
+            yield done(model, [ToolCall(id='worker', name='submit_response', arguments=envelope([], None))])
+    session._provider_stream = provider
+    await model_command(session, '/model router')
+    await session.prompt('Inspect the fixture.')
+    assert session.agent.state.error is None
+    assert len(intentions) == 2 and len(workers) == 2
+    assert reviews == [intentions[-1]]
+    assert session.intention_placeholder == 'INTENT_ONLY_1'
+    await session.switch_session(session._session_manager.get_session_file())
+    assert session.intention_placeholder == 'INTENT_ONLY_1'
+    assert all('INTENT_ONLY_' not in str(m) for m in session.agent.state.messages)
+
+
+@pytest.mark.parametrize('met,sound', [(False, True), (True, False), (False, False)])
+def test_cannot_accept_unmet_intention_or_unsound_answer(met, sound):
+    from pydantic import ValidationError
+    from pi_coding_agent.core.turn_review import IntentionReviewDecision
+    with pytest.raises(ValidationError):
+        IntentionReviewDecision(decision='accept', rationale='Done', evidence_refs=['message:0'],
+            follow_up_requirements=[], intention_met=met, answer_sound=sound)
 
 
 @pytest.mark.asyncio
@@ -104,7 +157,8 @@ async def test_no_verdict_is_not_silent_approval(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancel_stops_review_without_approval(tmp_path, monkeypatch):
+@pytest.mark.parametrize('establish', [False, True])
+async def test_cancel_stops_review_without_approval(tmp_path, monkeypatch, establish):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
     await model_command(session, '/model router')
     started, cancelled, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -118,7 +172,7 @@ async def test_cancel_stops_review_without_approval(tmp_path, monkeypatch):
     task = asyncio.create_task(review_turn(session._router.selections['max'],
         AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
         get_api_key=session._resolve_api_key, record=lambda *a, **k: None,
-        cancel_event=cancelled))
+        cancel_event=cancelled, establish_intention=establish))
     await started.wait()
     cancelled.set()
     with pytest.raises(asyncio.CancelledError):
