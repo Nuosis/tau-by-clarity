@@ -67,7 +67,14 @@ def test_response_failed_uses_nested_response_error_payload():
 
 
 @pytest.mark.asyncio
-async def test_responses_final_tool_call_marks_repaired_arguments_malformed():
+@pytest.mark.parametrize(
+    "raw, repaired",
+    [
+        ('{"path": "/tmp/readme.md", "content": "truncated', True),
+        ('{"path": "/tmp/readme.md", "content": "truncated"}', False),
+    ],
+)
+async def test_responses_final_tool_call_without_arguments_done(raw, repaired):
     async def events():
         for event in [
             {
@@ -86,7 +93,7 @@ async def test_responses_final_tool_call_marks_repaired_arguments_malformed():
                     "id": "fc_123",
                     "call_id": "call_123",
                     "name": "write",
-                    "arguments": '{"path": "/tmp/readme.md", "content": "truncated',
+                    "arguments": raw,
                 },
             },
             {"type": "response.completed", "response": {"status": "completed"}},
@@ -119,5 +126,5 @@ async def test_responses_final_tool_call_marks_repaired_arguments_malformed():
     assert output.stop_reason == "toolUse"
     tool_call = output.content[0]
     assert tool_call.arguments == {"path": "/tmp/readme.md", "content": "truncated"}
-    assert tool_call.arguments_repair_applied is True
-    assert tool_call.arguments_parse_error
+    assert tool_call.arguments_repair_applied is repaired
+    assert bool(tool_call.arguments_parse_error) is repaired

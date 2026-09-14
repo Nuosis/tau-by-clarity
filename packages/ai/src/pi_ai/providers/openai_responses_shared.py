@@ -421,7 +421,8 @@ async def process_responses_stream(
 
             elif item_type == "function_call":
                 args_raw = current_partial_json or item_dict.get("arguments", "{}")
-                args = parse_streaming_json(args_raw)
+                parse_result = parse_streaming_json_result(args_raw)
+                args = parse_result.value or {}
                 tool_name = (tool_name_map or {}).get(
                     item_dict.get("name", ""),
                     item_dict.get("name", ""),
