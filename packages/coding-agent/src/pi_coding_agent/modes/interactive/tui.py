@@ -2740,7 +2740,11 @@ async def _handle_login_command(
 
     try:
         if method == "subscription":
-            await _subscription_login(profile.id, session, append_history, show_input)
+            def append_login_progress(message: str) -> None:
+                append_history(message)
+                tui.request_render()
+
+            await _subscription_login(profile.id, session, append_login_progress, show_input)
             append_history(green(f"Subscription login stored for {profile.label}."))
         elif profile.id in {"openai-compatible", "anthropic-compatible"}:
             provider_id, provider_label = await _compatible_provider_login(
