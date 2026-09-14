@@ -221,7 +221,7 @@ async def test_turn_end_hook_finalizes_only_the_finished_answer(agent_session, t
     profile. The behavioral claim is covered by a live-model replay.
     """
     hook_dir = Path(agent_session.cwd) / ".tau"
-    hook_dir.mkdir()
+    hook_dir.mkdir(exist_ok=True)
     turn_end_input = tmp_path / "turn-end-input.json"
     stop_input = tmp_path / "stop-input.json"
     finalizer = tmp_path / "finalizer.py"

@@ -811,6 +811,7 @@ class AgentSession:
                 messages = list(messages) + [
                     CustomMessage(custom_type="memory_recall", content=block, display=False)
                 ]
+        self._review_context_messages = list(messages)
         return messages
 
     async def _resolve_api_key(self, provider: str) -> str | None:
@@ -992,6 +993,28 @@ class AgentSession:
             return None
         if self._agent.has_queued_messages():
             return None
+
+        if self._router is not None:
+            from .turn_review import review_turn
+            review_context = turn_context['context'].model_copy(update={
+                'messages': [*self._review_context_messages, message],
+            })
+
+            verdict = await review_turn(
+                self._router.selections['max'], review_context,
+                stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
+                record=self._record_router_event, cancel_event=self._agent._cancel_event,
+            )
+            # User steering arriving during review takes precedence over its verdict.
+            if self._agent.has_queued_messages():
+                return None
+            if verdict.decision == 'continue':
+                await self.follow_up(
+                    'Completion review requires further work within the existing user authorization:\n'
+                    + '\n'.join(f'- {item}' for item in verdict.follow_up_requirements)
+                    + '\nEvidence assessment: ' + verdict.rationale
+                )
+                return None
 
         try:
             from pi_agent.hooks import gather_turn_end, report_stop

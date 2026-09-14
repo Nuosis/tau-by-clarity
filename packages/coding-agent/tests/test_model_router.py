@@ -69,6 +69,7 @@ def make_session(tmp_path, monkeypatch, base_url):
 @pytest.mark.asyncio
 async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, monkeypatch):
     requests, traces = [], []
+    reviews = []
     monkeypatch.setattr("pi_coding_agent.core.agent_session._instr_emit",
                         lambda name, **kwargs: traces.append((name, kwargs)))
     file = tmp_path / "fixture.txt"
@@ -76,6 +77,22 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
 
     async def responses(request):
         body = await request.json()
+        if any(tool['name'] == 'submit_review' for tool in body['tools']):
+            reviews.append(body)
+            item = {'type': 'function_call', 'id': 'fc_review', 'call_id': 'review',
+                    'name': 'submit_review', 'status': 'completed', 'arguments': json.dumps({
+                        'decision': 'accept', 'rationale': 'Fixture completed.',
+                        'evidence_refs': ['message:0'], 'follow_up_requirements': []})}
+            events = [
+                {'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'arguments': ''}},
+                {'type': 'response.function_call_arguments.delta', 'item_id': item['id'], 'output_index': 0, 'delta': item['arguments']},
+                {'type': 'response.function_call_arguments.done', 'item_id': item['id'], 'output_index': 0, 'arguments': item['arguments']},
+                {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+                {'type': 'response.completed', 'response': {'id': 'resp_review',
+                    'status': 'completed', 'output': [item],
+                    'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120}}}]
+            return web.Response(text=''.join('data: ' + json.dumps(event) + '\n\n' for event in events),
+                                content_type='text/event-stream')
         requests.append(body)
         step = len(requests)
         if step <= 4:
@@ -125,6 +142,9 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert history == ["Router on."] and footer == ["router on"]
         await session.prompt("Read fixture.txt and replace before with after, preserving the other line.")
         assert session.agent.state.error is None
+        assert len(reviews) == 1
+        assert reviews[0]['model'] == 'max'
+        assert reviews[0]['reasoning']['effort'] == 'high'
         assert [body["model"] for body in requests] == ["default", "ultra-light", "max"]
         assert [body["reasoning"]["effort"] for body in requests] == ["high", "low", "high"]
         assert file.read_text() == "after\npreserve\n"
@@ -139,6 +159,7 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert not session.router_enabled and footer[-1].startswith("light | thinking:")
         await session.prompt("Reply using the selected fixed model.")
         assert requests[-1]["model"] == "light"
+        assert len(reviews) == 2  # Fixed-model replies do not invoke a reviewer.
         assert session.agent.state.error is None
         reopened = SessionManager.open(session._session_manager.get_session_file())
         entries = [{**entry.data, "type": entry.type} for entry in reopened.get_entries()]
