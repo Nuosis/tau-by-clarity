@@ -61,7 +61,15 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
     assert target.read_text() == 'after'
     assert len(worker_calls) == 3
     assert review_calls == ['max', 'max']
-    assert intention_calls == ['max']
+    assert intention_calls == ['ultra-light']
+    await session.prompt('Report the current result without modifying it.')
+    assert intention_calls == ['ultra-light', 'max']
+    from pathlib import Path
+    entries = [json.loads(line) for line in Path(session._session_manager.get_session_file()).read_text().splitlines()]
+    assert [e['data']['level'] for e in entries
+            if e.get('customType') == 'tau.intention.invocation'] == ['ultra-light', 'max']
+    assert review_calls == ['max', 'max', 'max']
+    assert target.read_text() == 'after'
     assert session.intention_placeholder == intention_fixture()['outcome']
     assert 'edit' in {tool.name for tool in session.agent.state.tools}
 
@@ -214,7 +222,9 @@ async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_p
         assert 'details' not in evidence
         assert evidence['tool_call_id'] == raw['tool_call_id']
         assert evidence['is_error'] is True
-        assert evidence['content'] == compressed['content']
+        assert [(b['type'], b.get('text')) for b in evidence['content']] == [
+            (b['type'], b.get('text')) for b in compressed['content']
+        ]
         assert raw['details']['truncation']['content'] == _large_log()
         assert 'Prefer verification over assumptions.' in rendered
         assert 'edit' in {tool['name'] for tool in packet['worker_capabilities']}

@@ -1,4 +1,4 @@
-"""Terminal-candidate review using the router owner's configured Max selection."""
+"""Initial intention establishment and terminal-candidate review."""
 from __future__ import annotations
 
 import asyncio
@@ -57,8 +57,13 @@ and accuracy, not writing style. You review rather than execute the user's task.
 
 
 async def review_turn(selection, context, *, stream_fn, get_api_key, record, cancel_event=None,
-                      intention=None, establish_intention=False):
+                      intention=None, establish_intention=False, selection_level='max'):
     from ..active_compression.extension import _retrieve_tool_response
+
+    record_event = record
+
+    def record(name, *, metadata):
+        record_event(name, metadata={**metadata, 'level': selection_level})
 
     decision = None
     calls = []
@@ -117,7 +122,9 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         description='Read specific evidence omitted from a compressed payload using its CCR handle and a focused query. Retrieve missing details before drawing conclusions from abbreviated output.',
         parameters={'type': 'object', 'properties': {'handle': {'type': 'string', 'pattern': '^[0-9a-fA-F]{12}$', 'description': 'The 12 hex characters inside [CCR:handle], without CCR: or brackets.'}, 'query': {'type': 'string', 'minLength': 1}}, 'required': ['handle', 'query'], 'additionalProperties': False}, execute=retrieve),
         AgentTool(name='submit_intention' if establish_intention else 'submit_review', label='Submit reviewer decision',
-        description='Finish the review with accept or actionable continuation requirements. Cite message indexes or retrieved evidence identifiers supporting the decision.',
+        description=('Record the requested outcome, observable checks that will prove completion after the work, and authorized scope. completion_evidence must state future completion checks, not quotations or citations establishing what the user requested. Do not execute the task.'
+                     if establish_intention else
+                     'Finish the review with accept or actionable continuation requirements. Cite message indexes or retrieved evidence identifiers supporting the decision.'),
         parameters=contract.model_json_schema(), execute=submit)]
 
     reviewer = Agent(AgentOptions(stream_fn=review_stream, get_api_key=get_api_key,
@@ -141,6 +148,9 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
                        'Never expand authorization or invent access to overcome a blocker.')
         else:
             prompt += ' A genuine blocker requiring user involvement may justify a clearly explained ending.'
+    if not establish_intention:
+        prompt += (' Keep the rationale to at most 30 words. Cite evidence references without repeating evidence text. '
+                   'Use concise actionable follow-up requirements only when needed.')
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
     from .review_context import build_review_payload

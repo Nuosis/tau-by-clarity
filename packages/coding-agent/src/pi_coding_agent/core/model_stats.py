@@ -74,7 +74,7 @@ def model_stats(entries):
                    'reviewer' if custom.startswith('tau.turn_review.') else None)
         if purpose and custom.endswith('.invocation'):
             data = entry.get('data', {})
-            add(data.get('message') or {}, {**data, 'level': 'max'}, purpose)
+            add(data.get('message') or {}, {**data, 'level': data.get('level') or 'max'}, purpose)
             continue
         if purpose and custom.endswith(('.completed', '.failed')):
             data = entry.get('data', {})
@@ -82,7 +82,7 @@ def model_stats(entries):
                 continue
             legacy = [m for m in data.get('messages', []) if m.get('role') == 'assistant']
             for message in legacy:
-                add(message, {**data, 'level': 'max'}, purpose)
+                add(message, {**data, 'level': data.get('level') or 'max'}, purpose)
             if custom.endswith('.failed') and not legacy:
                 unrecorded_auxiliary_failures += 1
             continue

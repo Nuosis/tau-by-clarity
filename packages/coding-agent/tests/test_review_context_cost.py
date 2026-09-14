@@ -134,3 +134,43 @@ def test_already_compressed_evidence_is_not_expanded_for_review(tmp_path, monkey
     packet = json.loads(payload)
     assert packet['messages'][1]['message']['content'][0]['text'] == text
     assert packet['focused_evidence'] == []
+
+
+def test_review_omits_empty_transport_fields_without_dropping_business_nulls():
+    import copy
+    import json
+    from types import SimpleNamespace
+    from pi_coding_agent.core.review_context import build_review_payload
+    message = {'role': 'assistant', 'error_message': None, 'content': [
+        {'type': 'text', 'text': 'Keep this evidence.', 'text_signature': None},
+        {'type': 'toolCall', 'id': 'call1', 'name': 'write',
+         'arguments': {'optional': None, 'enabled': False}, 'arguments_raw': None,
+         'arguments_repair_applied': False, 'arguments_parse_error': None},
+        {'type': 'toolCall', 'id': 'call2', 'name': 'write', 'arguments': {},
+         'arguments_raw': '{broken', 'arguments_repair_applied': True,
+         'arguments_parse_error': 'invalid JSON'}]}
+    before = copy.deepcopy(message)
+    payload, _ = build_review_payload(SimpleNamespace(
+        system_prompt='', tools=[], messages=[message]))
+    actual = json.loads(payload)['messages'][0]['message']
+    assert 'error_message' not in actual
+    assert 'text_signature' not in actual['content'][0]
+    assert actual['content'][0]['text'] == 'Keep this evidence.'
+    assert actual['content'][1]['arguments'] == {'optional': None, 'enabled': False}
+    assert 'arguments_raw' not in actual['content'][1]
+    assert 'arguments_repair_applied' not in actual['content'][1]
+    assert actual['content'][2] == before['content'][2]
+    assert message == before
+
+
+def test_auxiliary_stats_use_recorded_level_with_legacy_max_fallback():
+    from pi_coding_agent.core.model_stats import model_stats
+    base = {'provider': 'p', 'model': 'm', 'reasoning': 'low',
+            'message': {'role': 'assistant', 'provider': 'p', 'model': 'm',
+                        'usage': {'input': 10, 'output': 2, 'total_tokens': 12}}}
+    records = [{'type': 'custom', 'customType': 'tau.intention.invocation',
+                'data': {**base, 'level': 'ultra-light'}},
+               {'type': 'custom', 'customType': 'tau.intention.invocation', 'data': base}]
+    stats = model_stats(records)
+    assert stats['total_tokens'] == 24
+    assert {row['tier'] for row in stats['models']} == {'ultra-light', 'max'}

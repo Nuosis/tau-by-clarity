@@ -822,11 +822,15 @@ class AgentSession:
             context = AgentContext(system_prompt=self._agent.state.system_prompt,
                                    messages=[], tools=self._agent.state.tools)
             context.messages = messages
+            # Initial intention is a bounded planning pass. Keep later intention
+            # revisions and completion review on their existing Max selection.
+            intention_level = 'ultra-light' if getattr(self, '_intention', None) is None else 'max'
+            intention_selection = self._router.selections[intention_level]
             intention = await review_turn(
-                self._router.selections['max'], context, stream_fn=self._provider_stream,
+                intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
                 cancel_event=signal, intention=getattr(self, '_intention', None),
-                establish_intention=True,
+                establish_intention=True, selection_level=intention_level,
             )
             self._intention = intention
             self._intention_requests = [r for r in self._intention_requests if r not in included]

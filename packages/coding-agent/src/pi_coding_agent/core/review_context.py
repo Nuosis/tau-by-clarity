@@ -33,6 +33,26 @@ def build_review_payload(context, intention=None):
     for index, original in enumerate(originals):
         value = {k: v for k, v in original.items()
                  if k not in {'usage', 'api', 'provider', 'model', 'timestamp'}}
+        # These are transport annotations, not task evidence. Do not recurse
+        # into tool arguments: business null/false values must remain intact.
+        if value.get('error_message') is None:
+            value.pop('error_message', None)
+        if isinstance(value.get('content'), list):
+            clean_blocks = []
+            for block in value['content']:
+                if not isinstance(block, dict):
+                    clean_blocks.append(block)
+                    continue
+                block = dict(block)
+                for key in ('text_signature', 'cache_control', 'cache_zone', 'mutable',
+                            'arguments_raw', 'arguments_repaired_raw',
+                            'arguments_parse_error', 'thought_signature'):
+                    if block.get(key) is None:
+                        block.pop(key, None)
+                if block.get('arguments_repair_applied') is False:
+                    block.pop('arguments_repair_applied')
+                clean_blocks.append(block)
+            value['content'] = clean_blocks
         if value.get('role') == 'toolResult':
             value.pop('details', None)
             blocks = []
