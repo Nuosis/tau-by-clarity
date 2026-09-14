@@ -120,6 +120,11 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
     messages = []
     for index, message in enumerate(context.messages):
         value = message.model_dump(mode='json') if hasattr(message, 'model_dump') else message
+        # details is tool runtime/UI metadata, not model-facing evidence. It can
+        # retain the original output after content has been replaced by CCR.
+        # Copy rather than mutate the worker's messages or persisted history.
+        if isinstance(value, dict) and value.get('role') == 'toolResult':
+            value = {key: item for key, item in value.items() if key != 'details'}
         messages.append({'ref': f'message:{index}', 'message': value})
     payload = json.dumps({'working_instructions': context.system_prompt,
                           'intention': intention.model_dump() if intention else None,

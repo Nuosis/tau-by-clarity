@@ -181,7 +181,8 @@ async def test_cancel_stops_review_without_approval(tmp_path, monkeypatch, estab
 
 
 @pytest.mark.asyncio
-async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_path, monkeypatch):
+@pytest.mark.parametrize("typed", [False, True])
+async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_path, monkeypatch, typed):
     from .test_persisted_ccr_context import _large_log, _large_tool_message
     from pi_coding_agent.active_compression.persisted_context import compress_message_for_persistence
     from pi_coding_agent.active_compression.ccr import CCRStore
@@ -190,21 +191,42 @@ async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_p
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
     monkeypatch.setattr(active_compression, '_store', CCRStore(str(tmp_path / 'ccr.db')))
     raw = _large_tool_message(_large_log())
+    raw["details"] = {"truncation": {"content": _large_log()}, "exitCode": 1}
+    raw["is_error"] = True
     compressed, metadata = compress_message_for_persistence(raw)
     assert metadata
     session._session_manager.append_message(compressed, active_compression=metadata)
     memory = CustomMessage(custom_type='memory_recall', content='Prefer verification over assumptions.', display=False)
-    await session._transform_context([raw, memory])
+    from pi_ai.types import ToolResultMessage
+    await session._transform_context([ToolResultMessage.model_validate(raw) if typed else raw, memory])
     await model_command(session, '/model router')
+    import copy
+    worker_before = copy.deepcopy(session._review_context_messages)
+    calls = []
     async def provider(model, context, options):
+        calls.append(context)
         content = context.messages[0].content
         packet = json.loads(content if isinstance(content, str) else content[0].text)
         rendered = json.dumps(packet)
-        assert _large_log() not in rendered
+        assert json.dumps(_large_log())[1:-1] not in rendered
         assert metadata['refs'][0]['handle'] in rendered
+        evidence = packet['messages'][0]['message']
+        assert 'details' not in evidence
+        assert evidence['tool_call_id'] == raw['tool_call_id']
+        assert evidence['is_error'] is True
+        assert evidence['content'] == compressed['content']
+        assert raw['details']['truncation']['content'] == _large_log()
         assert 'Prefer verification over assumptions.' in rendered
         assert 'edit' in {tool['name'] for tool in packet['worker_capabilities']}
         assert packet['candidate'] == 'message:2'
+        if len(calls) == 1:
+            yield done(model, [ToolCall(id='retrieve', name='ccr_retrieve', arguments={
+                'handle': metadata['refs'][0]['handle'], 'query': 'auth_middleware_unique_token'})])
+            return
+        retrieved = context.messages[2]
+        assert retrieved.role == 'toolResult' and not retrieved.is_error
+        assert retrieved.details['kept_items'] > 0
+        assert 'worker-42 persisted context auth_middleware_unique_token processing queue' in retrieved.content[0].text
         yield done(model, [ToolCall(id='review', name='submit_review', arguments={
             'decision': 'accept', 'rationale': 'Verified.', 'evidence_refs': ['message:2'],
             'follow_up_requirements': []})])
@@ -212,3 +234,6 @@ async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_p
     candidate = done(session.agent.state.model, [TextContent(text='Complete.')]).message
     context = AgentContext(system_prompt='Task instructions', messages=[], tools=session.agent.state.tools)
     await session._prepare_next_turn({'context': context, 'message': candidate, 'tool_results': []})
+
+    assert len(calls) == 2
+    assert session._review_context_messages == worker_before
