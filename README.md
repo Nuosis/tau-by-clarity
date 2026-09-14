@@ -225,8 +225,12 @@ completion-review loop.
 
 ### Inspect routing and review
 
-Use `/stats` to inspect working-response shares by provider/model, router tier,
-and recorded reasoning effort. This chart excludes auxiliary reviewer calls.
+Use `/stats` to inspect token shares by provider/model, router tier,
+recorded reasoning effort, and purpose (worker, intention, reviewer). Percentages
+include uncached input, cached input, cache writes and output; call counts are
+secondary, and missing usage is disclosed. Recorded failed-call usage is included.
+These are token shares, not cost shares. Auxiliary calls without persisted usage
+cannot be included.
 Session records separately retain routing decisions, intention revisions, review
 verdicts, retrievals, and reviewer response usage through `tau.router_*`,
 `tau.intention.*`, and `tau.turn_review.*` entries.
@@ -280,7 +284,7 @@ Type `/` in the interactive TUI to see available commands:
 | `/models [provider/model]` | Alias for `/model` |
 | `/set <provider> <tier> <model>` | Set a provider tier mapping (`strong`, `standard`, `weak`) |
 | `/set router <level>` | Configure a router tier's provider/model and reasoning effort |
-| `/stats` | Show working-response usage shares by model, router tier, and effort |
+| `/stats` | Show token shares by model, router tier, effort, and worker/reviewer/intention purpose |
 | `/thinking <level>` | Set thinking detail: `minimal` · `low` · `medium` · `high` · `xhigh` |
 | `/compact` | Compress conversation context to save tokens |
 | `/recover [n|entry_id]` | Branch before a failed tail and inject a recovery checkpoint |

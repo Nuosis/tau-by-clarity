@@ -182,10 +182,13 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         from pi_coding_agent.core.model_stats import model_stats, render_model_stats
         stats = model_stats(entries)
         assert stats == session.get_model_stats()
-        assert stats["total"] == 5
-        assert {r["model"]: r["percent"] for r in stats["models"]} == {
-            "default": 40, "ultra-light": 20, "max": 20, "light": 20}
-        assert "40.0%  (2)" in render_model_stats(stats)
+        assert stats["total"] == 9  # Five worker + two intention + two review calls.
+        assert stats['total_tokens'] == 1080
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'worker') == 600
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'reviewer') == 240
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 240
+        assert sum(r['percent'] for r in stats['models']) == pytest.approx(100)
+        assert "22.2%  240 tokens · 2 calls" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
