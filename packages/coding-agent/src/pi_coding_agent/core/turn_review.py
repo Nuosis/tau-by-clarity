@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import Literal
 
@@ -72,8 +71,35 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         # Agent's event producer is a separate task from prompt(). Own and drain
         # it too, so aborting the review cannot leave a provider request running.
         producer_tasks.add(asyncio.current_task())
-        async for event in stream_fn(model, context, options):
-            yield event
+        recorded = False
+
+        def record_call(message=None, complete=False):
+            nonlocal recorded
+            if recorded:
+                return
+            recorded = True
+            value = message.model_dump(mode='json') if hasattr(message, 'model_dump') else message
+            record(event_prefix + '.invocation', metadata={
+                'provider': model.provider, 'model': model.id, 'reasoning': selection.reasoning,
+                'pricing': model.cost.model_dump(exclude_unset=True), 'usage_complete': complete,
+                'message': value or {'role': 'assistant', 'provider': model.provider,
+                                     'model': model.id, 'stop_reason': 'error'},
+            })
+
+        try:
+            async for event in stream_fn(model, context, options):
+                kind = event.get('type') if isinstance(event, dict) else event.type
+                if kind in ('done', 'error'):
+                    key = 'message' if kind == 'done' else 'error'
+                    message = event.get(key) if isinstance(event, dict) else getattr(event, key)
+                    usage = message.get('usage', {}) if isinstance(message, dict) else message.usage.model_dump()
+                    # Persist before yielding: the consumer may stop iterating at
+                    # the terminal event without closing this async generator.
+                    record_call(message, any(usage.get(k, 0) for k in
+                                ('input', 'output', 'cache_read', 'cache_write', 'total_tokens')))
+                yield event
+        finally:
+            record_call()
 
     async def retrieve(call_id, args, signal=None, on_update=None):
         result = await asyncio.to_thread(_retrieve_tool_response, args['handle'], args['query'], tool_name='ccr_retrieve')
@@ -117,20 +143,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             prompt += ' A genuine blocker requiring user involvement may justify a clearly explained ending.'
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
-    messages = []
-    for index, message in enumerate(context.messages):
-        value = message.model_dump(mode='json') if hasattr(message, 'model_dump') else message
-        # details is tool runtime/UI metadata, not model-facing evidence. It can
-        # retain the original output after content has been replaced by CCR.
-        # Copy rather than mutate the worker's messages or persisted history.
-        if isinstance(value, dict) and value.get('role') == 'toolResult':
-            value = {key: item for key, item in value.items() if key != 'details'}
-        messages.append({'ref': f'message:{index}', 'message': value})
-    payload = json.dumps({'working_instructions': context.system_prompt,
-                          'intention': intention.model_dump() if intention else None,
-                          'worker_capabilities': [{'name': tool.name, 'description': tool.description}
-                                                  for tool in context.tools], 'messages': messages,
-                          'candidate': f'message:{len(messages)-1}'}, default=str)
+    from .review_context import build_review_payload
+    payload, projection = build_review_payload(context, intention)
 
     async def watch_cancel():
         await cancel_event.wait()
@@ -141,7 +155,7 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
     watcher = asyncio.create_task(watch_cancel()) if cancel_event is not None else None
     try:
         record(event_prefix + '.started', metadata={'provider': selection.model.provider,
-               'model': selection.model.id, 'reasoning': selection.reasoning, 'context_characters': len(payload)})
+               'model': selection.model.id, 'reasoning': selection.reasoning, 'context_characters': len(payload), **projection})
         await reviewer.prompt(payload)
         if cancel_event is not None and cancel_event.is_set():
             raise asyncio.CancelledError()
@@ -150,13 +164,13 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
                                + (f': {reviewer.state.error}' if reviewer.state.error else ''))
         record(event_prefix + '.completed', metadata={
             'provider': selection.model.provider, 'model': selection.model.id, 'reasoning': selection.reasoning,
-            'decision': decision.model_dump(), 'retrievals': calls,
+            'decision': decision.model_dump(), 'retrievals': calls, 'usage_recording': 'per_invocation',
             'elapsed_seconds': time.monotonic()-started,
             'messages': [m.model_dump(mode='json') if hasattr(m, 'model_dump') else m for m in reviewer.state.messages[1:]],
         })
         return decision
     except BaseException as exc:
-        record(event_prefix + '.failed', metadata={'model': selection.model.id, 'error': type(exc).__name__, 'message': str(exc)})
+        record(event_prefix + '.failed', metadata={'provider': selection.model.provider, 'model': selection.model.id, 'usage_recording': 'per_invocation', 'error': type(exc).__name__, 'message': str(exc)})
         raise
     finally:
         reviewer.abort()

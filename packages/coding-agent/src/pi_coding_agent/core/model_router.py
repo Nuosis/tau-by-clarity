@@ -187,6 +187,7 @@ class ModelRouter:
             "level": level, "rule": rule, "model": selection.model.id,
             "provider": selection.model.provider, "reasoning": selection.reasoning,
             "next_invocation": self.next_metadata, "dependency_probe": self.next_probe,
+            "pricing": selection.model.cost.model_dump(exclude_unset=True),
         })
         return selection
 
