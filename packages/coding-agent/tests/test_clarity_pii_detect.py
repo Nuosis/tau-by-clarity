@@ -135,3 +135,34 @@ def test_sha256_inside_email_is_still_protected():
     assert digest + '@example.test' not in protected
     assert '[PII:EMAIL:' in protected
     assert vault.detokenize(protected) == text
+
+
+def test_log_values_adjacent_to_timestamps_survive_with_real_pii_protected():
+    from pi_coding_agent.clarity_pii.vault import Vault
+
+    for separator in ('\n', '\r\n', ' '):
+        for status in ('503', '429', '200'):
+            evidence = f'deployment_http_status={status}{separator}2026-09-14T12:02:23 INFO worker-143'
+            text = evidence + '\nContact +1 (604) 555-0199 or ops@example.test'
+            vault = Vault()
+            protected = vault.tokenize(text)
+            assert evidence in protected
+            assert '+1 (604) 555-0199' not in protected
+            assert 'ops@example.test' not in protected
+            assert vault.detokenize(protected) == text
+
+
+def test_real_phone_before_timestamp_and_wrapped_phone_remain_protected():
+    from pi_coding_agent.clarity_pii.vault import Vault
+
+    for phone in ('+1 604-555-0199', '+1 604\n555-0199'):
+        text = phone + '\n2026-09-14T12:02:23 INFO event'
+        vault = Vault()
+        protected = vault.tokenize(text)
+        assert phone not in protected
+        assert '2026-09-14T12:02:23' in protected
+        assert vault.detokenize(protected) == text
+
+
+def test_all_dash_timestamp_with_adjacent_status_is_not_phone():
+    assert detect("2026-09-14-12-02-23 503") == []

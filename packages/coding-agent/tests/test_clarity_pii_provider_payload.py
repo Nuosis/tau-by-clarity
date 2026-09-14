@@ -63,3 +63,30 @@ async def test_provider_pii_filter_preserves_opaque_protocol_ids(tmp_path, monke
     assert result["input"][1]["call_id"] == provider_call_id
     assert "[PII:CC:1]" in result["input"][0]["arguments"]
     assert "[PII:PHONE:1]" in result["input"][1]["output"]
+
+
+def test_ccr_evidence_survives_outbound_pii_filter(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+    from pi_coding_agent.active_compression.extension import _retrieve_tool_response
+    from pi_coding_agent.clarity_pii.vault import Vault
+    from pi_ai import pii
+    from pi_ai.types import Context, ToolResultMessage
+
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    original = ('2026-09-14T12:02:22 INFO audit_marker deployment_http_status=503\n'
+                '2026-09-14T12:02:23 INFO contact +1 (604) 555-0199\n')
+    handle = store.put(original)
+    retrieved = _retrieve_tool_response(handle, 'audit_marker', tool_name='ccr_retrieve')
+    assert retrieved['details']['kept_items'] > 0
+    vault = Vault()
+    monkeypatch.setattr(pii, '_factory', lambda: (vault.tokenize, vault.detokenize))
+    context = Context(messages=[ToolResultMessage(tool_call_id='retrieve', tool_name='ccr_retrieve',
+        content=retrieved['content'], details=retrieved['details'], timestamp=0)])
+    protected, _ = pii.protect_context(context)
+    text = protected.messages[0].content[0].text
+    assert 'audit_marker deployment_http_status=503\n2026-09-14T12:02:23' in text
+    assert '+1 (604) 555-0199' not in text
+    assert '[PII:PHONE:' in text
+    assert vault.detokenize(text) == retrieved['content'][0]['text']
