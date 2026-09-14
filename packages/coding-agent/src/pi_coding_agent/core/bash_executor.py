@@ -77,6 +77,9 @@ async def execute_bash(
         shell,
         *shell_args,
         command,
+        # Bash execution is non-interactive; EOF prevents child commands from
+        # stealing the TUI's controlling terminal while waiting for input.
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,

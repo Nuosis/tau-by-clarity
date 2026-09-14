@@ -397,3 +397,10 @@ The session is blocked in `deploy.sh`'s interactive commit-message `read`, while
 ### Safe recovery
 
 If this deployment is intended, provide the intended commit message to the waiting prompt, then verify the commit, remote deployment, and health check. If it is not intended, cancel the current Tau operation using its normal session control and verify PID 23901 exits; do not send a commit message or interrupt blindly while deployment intent is unknown.
+
+### Repair
+
+Both Python bash execution paths now pass `stdin=asyncio.subprocess.DEVNULL`.
+The focused regression gate passes 26 tests, including a `read` command through
+each path that returns `stdin-eof` instead of waiting for Terminal input. Shell
+heredocs remain usable because they provide explicit input redirection.

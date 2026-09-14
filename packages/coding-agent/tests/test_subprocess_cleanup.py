@@ -29,3 +29,19 @@ async def test_cancel_reaps_child_and_drains_pipes(tmp_path, kind):
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_bash_executor_does_not_wait_for_terminal_input(tmp_path):
+    from pi_coding_agent.core.bash_executor import execute_bash
+
+    result = await execute_bash(
+        "read -r value; "
+        "if [ -z \"$value\" ]; then echo stdin-eof; "
+        "else echo \"stdin=$value\"; fi",
+        cwd=str(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    assert result.cancelled is False
+    assert "stdin-eof" in result.output
