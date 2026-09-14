@@ -45,18 +45,30 @@ def routing_level(metadata, probe):
     return "ultra-light", "specified_direct_independent"
 
 
+def _json_transport(schema):
+    # Declared record properties retain the existing optional-field transport.
+    # Explicit maps and unconstrained JSON values need a lossless JSON subtree.
+    return (schema.get("type") == "object" and (
+        schema.get("additionalProperties") not in (None, False)
+        or ("properties" not in schema and schema.get("additionalProperties") is not False)
+    )) or not any(key in schema for key in ("type", "$ref", "anyOf", "oneOf", "allOf", "enum", "const"))
+
+
 def _strict_parameters(schema):
     """Represent omitted optional arguments as null in the strict carrier.
 
     Keep the native tool schema as the execution validator; this only adapts its
-    transport representation. Arbitrary-key dictionaries cannot be represented
-    by this carrier and are rejected at activation/tool configuration changes.
+    transport representation. Free-form JSON subtrees travel as JSON strings and
+    are decoded before validation against the unchanged native tool schema.
     """
+    if _json_transport(schema):
+        return {"type": "string", "description": (
+            "Encode this entire value as a JSON string, preserving all keys and nested values. "
+            "Decoded value must satisfy this native JSON schema: " + json.dumps(schema, ensure_ascii=False)
+        )}
     schema = copy.deepcopy(schema)
     schema.pop("default", None)
     if schema.get("type") == "object":
-        if schema.get("additionalProperties") not in (None, False):
-            raise ValueError("Router tools cannot use arbitrary-key object arguments")
         required = set(schema.get("required", []))
         properties = schema.get("properties", {})
         schema["properties"] = {
@@ -120,9 +132,18 @@ def native_arguments(value, schema, root=None):
         for part in schema["$ref"][2:].split("/"):
             target = target[part.replace("~1", "/").replace("~0", "~")]
         return native_arguments(value, target, root)
+    if _json_transport(schema):
+        if not isinstance(value, str):
+            raise ValueError("Router JSON argument must be an encoded JSON string")
+        def reject_constant(token):
+            raise ValueError(f"Invalid JSON constant: {token}")
+        return json.loads(value, parse_constant=reject_constant)
     if "anyOf" in schema:
         for branch in schema["anyOf"]:
-            candidate = native_arguments(value, branch, root)
+            try:
+                candidate = native_arguments(value, branch, root)
+            except (ValueError, TypeError):
+                continue
             if Draft202012Validator({"$defs": root.get("$defs", {}), **branch}).is_valid(candidate):
                 return candidate
     if isinstance(value, dict) and schema.get("type") == "object":

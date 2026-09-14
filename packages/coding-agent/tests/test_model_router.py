@@ -140,6 +140,22 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         await session.prompt("Reply using the selected fixed model.")
         assert requests[-1]["model"] == "light"
         assert session.agent.state.error is None
+        reopened = SessionManager.open(session._session_manager.get_session_file())
+        entries = [{**entry.data, "type": entry.type} for entry in reopened.get_entries()]
+        decisions = [entry["data"] for entry in entries
+                     if entry.get("customType") == "tau.router_selection"]
+        assert [row["level"] for row in decisions] == ["default", "ultra-light", "max", "default"]
+        assert [row["reasoning"] for row in decisions] == ["high", "low", "high", "high"]
+        assert decisions[2]["rule"] == "planning"
+        assert decisions[2]["next_invocation"]["classification_explanations"]
+        assert len([e for e in entries if e.get("customType") == "tau.router_metadata"]) == 4
+        from pi_coding_agent.core.model_stats import model_stats, render_model_stats
+        stats = model_stats(entries)
+        assert stats == session.get_model_stats()
+        assert stats["total"] == 5
+        assert {r["model"]: r["percent"] for r in stats["models"]} == {
+            "default": 40, "ultra-light": 20, "max": 20, "light": 20}
+        assert "40.0%  (2)" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
@@ -224,3 +240,96 @@ def test_nested_optional_tool_arguments_survive_strict_transport():
     arguments = native_arguments(wire["response"]["tool_calls"][0]["arguments"], parameters)
     Draft202012Validator(parameters).validate(arguments)
     assert arguments == {"items": [{"name": "keep"}]}
+
+
+@pytest.mark.asyncio
+async def test_router_activates_with_real_a2a_catalog(tmp_path, monkeypatch):
+    from pi_ai.types import Tool
+    from pi_coding_agent.a2a.extension import extension_factory
+
+    catalog = []
+    def register(name, *, description, parameters, execute):
+        catalog.append(Tool(name=name, description=description, parameters=parameters))
+    extension_factory(SimpleNamespace(register_tool=register))
+    assert len(catalog) == 7
+    session, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    session.agent.state.tools.extend(catalog)
+    history, footer = await model_command(session, "/model router")
+    assert history == ["Router on."] and footer == ["router on"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,valid", [
+    ('{"nested":{"arbitrary key":[1,true,null,{"x":"é"}]},"empty":{}}', True),
+    ('{"broken":', False), ('[1,2]', False), ('{"x":NaN}', False),
+])
+async def test_a2a_router_stream_decodes_and_validates_without_sending(tmp_path, monkeypatch, payload, valid):
+    from pi_ai.types import AssistantMessage, Context, EventDone, Tool, ToolCall, Usage
+    from pi_coding_agent.a2a.extension import SendParams
+
+    session, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    tool = Tool(name="a2a_send_message", description="Send", parameters=SendParams.model_json_schema())
+    session.agent.state.tools.append(tool)
+    await model_command(session, "/model router")
+    args = {key: None for key in tool.parameters["properties"]}
+    args.update(to_agent="fixture", message="fixture", payload=payload, metadata='{"preserve":null}')
+    wire = envelope([{"name": tool.name, "arguments": args}], metadata())
+    async def provider(model, context, options):
+        Draft202012Validator(context.tools[0].parameters).validate(wire)
+        yield EventDone(reason="toolUse", message=AssistantMessage(
+            content=[ToolCall(id="carrier", name="submit_response", arguments=wire)],
+            api=model.api, provider=model.provider, model=model.id,
+            usage=Usage(input=100, output=20, total_tokens=120), timestamp=0))
+    events = [event async for event in session._router.stream(
+        provider, session.model, Context(messages=[], tools=[tool]), {})]
+    if valid:
+        call = events[-1].message.content[-1]
+        assert call.name == tool.name
+        parsed = SendParams.model_validate(call.arguments)
+        assert parsed.payload == json.loads(payload)
+        assert parsed.metadata == {"preserve": None}
+        assert "thread_id" not in call.arguments
+    else:
+        assert events[-1].type == "error"
+        assert events[-1].error.content == []
+        assert session._router.next_metadata is None
+
+
+@pytest.mark.parametrize("subschema,value", [
+    ({"type": "object", "additionalProperties": {"type": "integer"}}, {"a": 3}),
+    ({"type": "object"}, {"a": {"nested": None}}),
+    ({}, [1, None, {"arbitrary": True}]),
+])
+def test_free_form_argument_transport(subschema, value):
+    from pi_ai.types import Tool
+    from pi_coding_agent.core.model_router import native_arguments, response_schema
+    parameters = {"type": "object", "properties": {"data": subschema}, "required": ["data"]}
+    schema = response_schema([Tool(name="free_form", description="JSON", parameters=parameters)])
+    args = {"data": json.dumps(value)}
+    Draft202012Validator(schema).validate(envelope([{"name": "free_form", "arguments": args}], metadata()))
+    decoded = native_arguments(args, parameters)
+    Draft202012Validator(parameters).validate(decoded)
+    assert decoded == {"data": value}
+
+
+@pytest.mark.asyncio
+async def test_router_preference_survives_new_session_and_fixed_selection(tmp_path, monkeypatch):
+    def settings():
+        return SettingsManager(project_root=str(tmp_path), global_settings_file=str(tmp_path / "settings.json"))
+    first, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    first._settings_manager = settings()
+    await model_command(first, "/model router")
+    assert settings().get_router_enabled()
+    second, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    from pi_coding_agent.core.sdk import CreateAgentSessionOptions, create_agent_session
+    second = (await create_agent_session(CreateAgentSessionOptions(
+        cwd=str(tmp_path), model=second.model, auth_storage=second._auth_storage,
+        model_registry=second._model_registry, settings_manager=settings(),
+        session_manager=second._session_manager, resource_loader=Loader(), tools=["read", "edit"],
+    ))).session
+    assert second.router_enabled and _footer_model_parts(second) == ["router on"]
+    await model_command(second, "/model router-fixture/light")
+    third, _ = make_session(tmp_path, monkeypatch, "http://unused.invalid")
+    third._settings_manager = settings()
+    await third.restore_router()
+    assert not third.router_enabled and not settings().get_router_enabled()

@@ -138,8 +138,11 @@ While selected, the built-in router owns assignment; extension assignment hooks
 resume when a concrete model is selected.
 
 This carrier currently supports Responses and Codex Responses adapters. Tools
-must have strict-compatible parameter schemas; arbitrary-key object arguments
-are rejected with the tool name at activation or a tool configuration change.
+use strict-compatible transport schemas. Explicit arbitrary-key maps and
+unconstrained JSON fields travel as JSON strings; Tau decodes these subtrees
+and validates against the original tool schema before exposing native calls.
+Declared record properties retain the optional-null transport. Unsupported
+composition forms still fail at activation or tool configuration changes.
 Model registry/eligibility work occurs at activation, not each invocation.
 Auxiliary calls outside the main agent loop, such as compaction, are unchanged.
 

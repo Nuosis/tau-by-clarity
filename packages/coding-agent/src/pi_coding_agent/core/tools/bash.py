@@ -365,17 +365,27 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
                     _kill_proc()
                 timeout_task = asyncio.create_task(do_timeout())
 
-            await read_task
-            exit_code = await process.wait()
-
-            if cancel_task:
-                cancel_task.cancel()
-            if timeout_task:
-                timeout_task.cancel()
-
-            if temp_file is not None:
-                temp_file.close()
-                temp_file = None
+            try:
+                await read_task
+                exit_code = await process.wait()
+            finally:
+                # Task cancellation must reap children before the loop closes.
+                if sys.platform != "win32":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    _kill_proc()
+                for task in (read_task, cancel_task, timeout_task):
+                    if task is not None:
+                        task.cancel()
+                await asyncio.gather(*(task for task in (read_task, cancel_task, timeout_task)
+                                       if task is not None), return_exceptions=True)
+                await process.communicate()
+                if temp_file is not None:
+                    temp_file.close()
+                    temp_file = None
 
             if cancel_event and cancel_event.is_set():
                 raise RuntimeError("Command aborted")

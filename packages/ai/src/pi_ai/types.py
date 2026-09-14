@@ -301,7 +301,7 @@ class Model(BaseModel):
     reasoning: bool = False
     input: list[Literal["text", "image"]] = Field(default_factory=lambda: ["text"])
     cost: ModelCost = Field(default_factory=ModelCost)
-    context_window: int = 128000
+    context_window: int = 1_000_000
     max_tokens: int = 8192
     headers: dict[str, str] | None = None
     compat: (

@@ -1,4 +1,4 @@
-# Router activation verification — 0.58.1
+# Router activation verification — 0.58.2
 
 ## Claim and test route
 
@@ -56,3 +56,70 @@ and multi-provider compatibility are not claimed beyond the documented adapters.
 
 The next experiment is a small held-out routed-versus-fixed workflow comparison
 using this implementation, measuring completed work and all execution consumption.
+
+
+## A2A arbitrary-key compatibility repair (0.58.2)
+
+Observed: compiling the real `SendParams.model_json_schema()` failed with
+`Router cannot encode tool a2a_send_message: Router tools cannot use arbitrary-key object arguments`.
+The null hypothesis that the existing adapter accepts the native A2A schema was
+falsified by this offline reproduction. Both payload and metadata are open maps.
+
+Free-form subtrees now use JSON-string transport and native schema validation
+before tool calls enter the execution loop. No tool-specific exception or
+routing-policy change was introduced. All seven schemas registered by the real
+A2A extension now activate through `/model router`, with the expected footer.
+Stream-boundary tests preserve nested keys, Unicode, arrays, booleans and nulls;
+malformed JSON, non-object payloads and NaN produce an error with no tool calls.
+Additional checks cover typed dictionaries and unconstrained JSON values.
+
+55 focused checks passed. These include the existing local HTTP provider and
+native read/edit workflow, plus eight new A2A/JSON compatibility checks.
+No A2A messages were sent and no new paid model calls were made. This verifies
+schema activation and transport, not live A2A delivery or model-generated JSON
+reliability. The earlier live model evidence above remains from 0.58.1.
+
+## Session recording and /stats (0.58.3)
+
+Router selection and emitted continuation metadata are saved as custom session
+entries (`tau.router_selection`, `tau.router_metadata`), outside model context.
+Selection entries contain tier, rule, provider/model, reasoning and the metadata
+and dependency probe used by the policy. Recording does not depend on Langfuse.
+Historical missing decisions cannot be reconstructed.
+
+`/stats` displays provider/model bars by completed assistant invocation count,
+including tool-use responses, across the persisted session (all branches).
+Failed/aborted responses are excluded and reported separately. Fixed-model and
+older sessions work from their saved assistant messages. Shares are not costs
+or tokens; As of 0.58.5, bars separate provider/model, routing tier and reasoning effort.
+Each saved selection is matched to the following assistant response and consumed
+once, including failed responses. Missing or mismatched selections display
+“tier/effort not recorded”; current configuration is never used to infer history.
+28 focused checks passed for this correction, and the 14-response user session
+renders ultra-light7, light3, default3, max1.
+
+57 focused checks passed. The HTTP read/edit workflow reopens its session to
+verify four routing selections, reasoning, planning explanations and four
+continuation records, then checks all five routed/fixed responses in the chart.
+Actual TUI command and completion verified with a copy of Marcus's five-response
+session: Luna 60% (3), Sol 40% (2). Capture: `/tmp/tau-stats-ui/terminal-capture.json`.
+
+## Router preference and shutdown repair (0.58.6)
+
+Selecting `/model router` saves `routerEnabled` through SettingsManager; new SDK
+sessions and interactive startup restore it. Selecting a concrete model clears
+it. A persisted-settings test invokes the model command, creates another session
+through the SDK and checks router/footer activation, then verifies fixed-mode
+selection clears the preference for the next session.
+
+Cancelling a running Bash tool reproduced `BaseSubprocessTransport.__del__` /
+`RuntimeError: Event loop is closed` with its child still alive. Bash tool and
+interactive Bash executor now kill their process groups, await reader/watcher
+cleanup, and drain/reap subprocesses in finally blocks before returning.
+The same reproduction now reports CHILD REAPED without the traceback. Tests
+include cancellation of a child ignoring SIGTERM for both execution paths.
+
+31 focused checks passed. A broader SDK run had 164 passes and one unrelated
+failure importing create_assistant_message_event_stream; the missing export also
+reproduces on the unchanged installed0.58.5 baseline. No fix to that export is
+included. Other subprocess owners were not proven responsible for this report.
