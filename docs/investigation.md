@@ -1,3 +1,25 @@
+## Intention placeholder wrapping — 2026-09-14
+
+Observed: rendering a long intention at 20 columns returned only one clipped
+content row. Typing the same sentence character-by-character returned six
+wrapped rows. Thus ordinary typed-text wrapping is not generally broken in the
+component reproduction; the user's terminal-specific symptom remains unverified.
+
+Hypotheses and evidence:
+- Placeholder clipping: confirmed by the failing full-content/reflow regression.
+  The placeholder now uses the editor's word wrapper, without changing input state.
+- Typed text overflow: mixed-width sampling found ` bb界` at width 3 produced
+  a four-column chunk. A failing regression confirmed this independently.
+  Rechecking the remaining width after a word-boundary split fixes that overflow.
+- Ordinary long input: character-by-character rendering and resize checks pass,
+  and submission retains the exact original message.
+
+Validation: both new failure cases failed before the repair, then all 47 selected
+component and intention-UI transport tests passed. These exercise production
+render/input code, not live visual verification in Marcus's terminal. Placeholder
+text remains display-only and disappears on typing; the existing editor viewport
+still limits visible rows for very long content.
+
 ## Problem
 
 OpenAI Responses streaming with `gpt-5.5` failed on a simple prompt with an un-awaited `AsyncResponses.create` coroutine warning and then `'dict' object has no attribute 'content'`.

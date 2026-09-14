@@ -134,7 +134,9 @@ def word_wrap_line(line: str, max_width: int) -> list[TextChunk]:
                 chunks.append(TextChunk(line[chunk_start:wrap_opp_idx], chunk_start, wrap_opp_idx))
                 chunk_start = wrap_opp_idx
                 current_width -= wrap_opp_width
-            elif chunk_start < char_index:
+            # A word-boundary wrap can still leave too little room for a
+            # double-width grapheme. Hard-wrap the remaining word as well.
+            if current_width + g_width > max_width and chunk_start < char_index:
                 chunks.append(TextChunk(line[chunk_start:char_index], chunk_start, char_index))
                 chunk_start = char_index
                 current_width = 0
@@ -296,12 +298,10 @@ class Editor:
         if not self.get_text() and self.placeholder:
             # Display only: never change editor state, history, paste or submission.
             hint = ''.join(c for c in self.placeholder if c.isprintable())
-            clipped = ''
-            for char in hint:
-                if visible_width(clipped + char) > layout_width:
-                    break
-                clipped += char
-            layout_lines = [_LayoutLine(clipped, True, 0)]
+            layout_lines = [
+                _LayoutLine(chunk.text, i == 0, 0 if i == 0 else None)
+                for i, chunk in enumerate(word_wrap_line(hint, layout_width))
+            ]
 
         terminal_rows = self._tui.terminal.rows if self._tui.terminal else 24
         max_visible_lines = max(5, int(terminal_rows * 0.3))

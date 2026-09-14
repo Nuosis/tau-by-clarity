@@ -318,6 +318,49 @@ class TestEditorInput:
         editor.handle_input('\x1b[A')
         assert editor.get_text() == 'x'
 
+    def test_placeholder_wraps_and_reflows_without_becoming_input(self):
+        from pi_tui.utils import visible_width
+        editor = self._editor()
+        editor.placeholder = 'Verify the intention placeholder and long messages wrap correctly'
+        for width in (24, 40, 80, 24):
+            rows = editor.render(width)
+            assert all(visible_width(row) <= width for row in rows)
+            import re
+            body = ''.join(re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', row).rstrip()
+                           for row in rows[1:-1])
+            assert body.replace(' ', '') == editor.placeholder.replace(' ', '')
+            assert editor.get_text() == ''
+        submitted = []
+        editor.on_submit = submitted.append
+        editor.handle_input('x')
+        assert 'Verify' not in '\n'.join(editor.render(24))
+        editor.handle_input('\r')
+        assert submitted == ['x']
+
+    def test_long_typed_message_wraps_and_submits_unchanged(self):
+        from pi_tui.utils import visible_width
+        editor = self._editor()
+        message = 'Verify long typed messages wrap correctly ' + 'x' * 45
+        for char in message:
+            editor.handle_input(char)
+            assert all(visible_width(row) <= 24 for row in editor.render(24))
+        for width in (40, 24, 80):
+            assert len(editor.render(width)) > 3
+            assert all(visible_width(row) <= width for row in editor.render(width))
+        submitted = []
+        editor.on_submit = submitted.append
+        editor.handle_input('\r')
+        assert submitted == [message]
+
+    def test_wrap_rechecks_wide_character_after_word_boundary(self):
+        from pi_tui.components.editor import word_wrap_line
+        from pi_tui.utils import visible_width
+        text = ' bb界'
+        chunks = word_wrap_line(text, 3)
+        assert ''.join(chunk.text for chunk in chunks) == text
+        assert all(visible_width(chunk.text) <= 3 for chunk in chunks)
+        assert all(text[c.start_index:c.end_index] == c.text for c in chunks)
+
     def test_shift_enter_adds_new_line(self):
         editor = self._editor()
 
