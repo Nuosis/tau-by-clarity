@@ -1234,12 +1234,30 @@ class AgentSession:
 
         # ── agent_end: check retry and compaction ─────────────────────────────
         if event.type == "agent_end":
+            # Exceptions raised after a candidate message_end (notably completion
+            # review failures) only arrive on agent_end. Persist that distinct
+            # terminal error so a reopened session cannot make the candidate
+            # appear approved. Provider errors already seen on message_end are
+            # the same object as _last_assistant_msg and must not be duplicated.
+            distinct_terminal_error = False
+            for terminal_msg in getattr(event, "messages", None) or []:
+                if terminal_msg is self._last_assistant_msg:
+                    continue
+                if (getattr(terminal_msg, "role", "") == "assistant"
+                        and getattr(terminal_msg, "error_message", None)):
+                    self._session_manager.append_message(_message_to_dict(terminal_msg))
+                    distinct_terminal_error = True
+                    break
             # Provider failures exit the loop before prepare_next_turn runs.
             # Do not let a failed finalization leave tools disabled or its
             # one-shot voice context attached to the next user turn.
             if self._turn_end_finalizing:
                 self._restore_after_turn_end_finalization()
-            if self._last_assistant_msg is not None:
+            if distinct_terminal_error:
+                # The candidate did not pass review. Do not run successful-turn
+                # curation, compaction, or retry work after reporting the error.
+                self._last_assistant_msg = None
+            elif self._last_assistant_msg is not None:
                 msg = self._last_assistant_msg
                 self._last_assistant_msg = None
                 # Schedule retry / compaction check asynchronously

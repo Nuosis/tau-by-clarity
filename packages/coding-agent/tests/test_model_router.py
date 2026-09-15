@@ -86,6 +86,8 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
                               if tool['name'] in {'submit_review', 'submit_intention'}), None)
         if reviewer_tool:
             if reviewer_tool == 'submit_review':
+                assert body['tool_choice'] == 'required'
+                assert body['parallel_tool_calls'] is False
                 reviews.append(body)
             args = intention_fixture() if reviewer_tool == 'submit_intention' else {
                 'decision': 'accept', 'rationale': 'Fixture completed.', 'intention_met': True,

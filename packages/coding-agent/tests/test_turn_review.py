@@ -153,6 +153,244 @@ async def test_reviewer_can_retrieve_real_ccr_evidence(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reviewer_tool_error_ends_without_another_model_call(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+    monkeypatch.setattr(active_compression, '_store', CCRStore(str(tmp_path / 'ccr.db')))
+    provider_calls = 0
+
+    async def provider(model, context, options):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            yield done(model, [ToolCall(id='lookup', name='ccr_retrieve', arguments={
+                'handle': 'deadbeefdead', 'query': 'missing evidence'})])
+        else:
+            yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
+                'decision': 'accept', 'rationale': 'Should never be reached.',
+                'evidence_refs': ['message:0'], 'follow_up_requirements': []})])
+
+    with pytest.raises(RuntimeError, match='ccr_retrieve failed'):
+        await review_turn(session._router.selections['max'],
+            AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+            get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
+
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reviewer_schema_error_ends_without_another_model_call(tmp_path, monkeypatch):
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+    provider_calls = 0
+
+    async def provider(model, context, options):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls == 1:
+            yield done(model, [ToolCall(id='invalid', name='submit_review', arguments={
+                'decision': 'accept', 'rationale': '', 'evidence_refs': [],
+                'follow_up_requirements': []})])
+        else:
+            yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
+                'decision': 'accept', 'rationale': 'Should never be reached.',
+                'evidence_refs': ['message:0'], 'follow_up_requirements': []})])
+
+    with pytest.raises(RuntimeError, match='submit_review failed'):
+        await review_turn(session._router.selections['max'],
+            AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+            get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
+
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reviewer_executes_at_most_one_retrieval(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    handle = store.put('Observed deployment status: HTTP 503.')
+    provider_calls = 0
+
+    async def provider(model, context, options):
+        nonlocal provider_calls
+        provider_calls += 1
+        yield done(model, [
+            ToolCall(id='lookup-1', name='ccr_retrieve', arguments={
+                'handle': handle, 'query': 'deployment status'}),
+            ToolCall(id='lookup-2', name='ccr_retrieve', arguments={
+                'handle': handle, 'query': 'HTTP status'}),
+        ])
+
+    with pytest.raises(RuntimeError, match='permits only one CCR retrieval'):
+        await review_turn(session._router.selections['max'],
+            AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+            get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
+
+    assert provider_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_review_error_overrides_verdict_in_same_response(tmp_path, monkeypatch):
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+
+    async def provider(model, context, options):
+        yield done(model, [
+            ToolCall(id='verdict', name='submit_review', arguments={
+                'decision': 'accept', 'rationale': 'Candidate is correct.',
+                'evidence_refs': ['message:0'], 'follow_up_requirements': []}),
+            ToolCall(id='invalid', name='missing_review_tool', arguments={}),
+        ])
+
+    with pytest.raises(RuntimeError, match='missing_review_tool failed'):
+        await review_turn(session._router.selections['max'],
+            AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+            get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
+
+
+@pytest.mark.asyncio
+async def test_intention_establishment_keeps_existing_retrieval_lifecycle(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    handle = store.put('Relevant user constraints and completion evidence.')
+    provider_calls = 0
+
+    async def provider(model, context, options):
+        nonlocal provider_calls
+        provider_calls += 1
+        if provider_calls <= 2:
+            yield done(model, [ToolCall(id=f'lookup-{provider_calls}', name='ccr_retrieve', arguments={
+                'handle': handle, 'query': f'evidence {provider_calls}'})])
+        else:
+            yield done(model, [ToolCall(id='intention', name='submit_intention', arguments={
+                'outcome': 'Complete the requested work.',
+                'completion_evidence': ['Requested result is verified.'],
+                'scope': 'Requested work only.'})])
+
+    result = await review_turn(session._router.selections['max'],
+        AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+        get_api_key=session._resolve_api_key, record=lambda *a, **k: None,
+        establish_intention=True)
+
+    assert result.outcome == 'Complete the requested work.'
+    assert provider_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_completion_review_requires_action_then_verdict_after_one_retrieval(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    await model_command(session, '/model router')
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    handle = store.put('Observed deployment status: HTTP 503.')
+    requests = []
+
+    async def provider(model, context, options):
+        body = {
+            'tools': [{'name': 'ccr_retrieve'}, {'name': 'submit_review'}],
+            'tool_choice': 'auto', 'parallel_tool_calls': True,
+        }
+        body = await options.on_payload(body, model)
+        requests.append(body)
+        if len(requests) == 1:
+            yield done(model, [ToolCall(id='lookup', name='ccr_retrieve', arguments={
+                'handle': handle, 'query': 'deployment status'})])
+        else:
+            yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
+                'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
+                'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']})])
+
+    result = await review_turn(session._router.selections['max'],
+        AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
+        get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
+
+    assert result.decision == 'continue'
+    assert requests[0]['tool_choice'] == 'required'
+    assert requests[0]['parallel_tool_calls'] is False
+    assert requests[1]['tool_choice'] == {'type': 'function', 'name': 'submit_review'}
+    assert requests[1]['parallel_tool_calls'] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_http_contract_forces_verdict_after_retrieval(tmp_path, monkeypatch):
+    from aiohttp import web
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    handle = store.put('Observed deployment status: HTTP 503.')
+    requests = []
+
+    async def responses(request):
+        body = await request.json()
+        requests.append(body)
+        if len(requests) == 1:
+            assert body['tool_choice'] == 'required'
+            name = 'ccr_retrieve'
+            args = {'handle': handle, 'query': 'deployment status'}
+        else:
+            assert body['tool_choice'] == {'type': 'function', 'name': 'submit_review'}
+            name = 'submit_review'
+            args = {'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
+                    'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']}
+        assert body['parallel_tool_calls'] is False
+        item = {'type': 'function_call', 'id': f'fc_{len(requests)}',
+                'call_id': f'call_{len(requests)}', 'name': name,
+                'status': 'completed', 'arguments': json.dumps(args)}
+        events = [
+            {'type': 'response.output_item.added', 'output_index': 0,
+             'item': {**item, 'arguments': ''}},
+            {'type': 'response.function_call_arguments.delta', 'item_id': item['id'],
+             'output_index': 0, 'delta': item['arguments']},
+            {'type': 'response.function_call_arguments.done', 'item_id': item['id'],
+             'output_index': 0, 'arguments': item['arguments']},
+            {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+            {'type': 'response.completed', 'response': {'id': f'resp_{len(requests)}',
+             'status': 'completed', 'output': [item],
+             'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120}}},
+        ]
+        return web.Response(text=''.join('data: ' + json.dumps(event) + '\n\n' for event in events),
+                            content_type='text/event-stream')
+
+    app = web.Application()
+    app.router.add_post('/responses', responses)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '127.0.0.1', 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        session, _ = make_session(tmp_path, monkeypatch, f'http://127.0.0.1:{port}')
+        await model_command(session, '/model router')
+        result = await review_turn(session._router.selections['max'],
+            AgentContext(system_prompt='', messages=[], tools=[]),
+            stream_fn=session._provider_stream, get_api_key=session._resolve_api_key,
+            record=lambda *a, **k: None)
+    finally:
+        await runner.cleanup()
+
+    assert result.decision == 'continue'
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_no_verdict_is_not_silent_approval(tmp_path, monkeypatch):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
     await model_command(session, '/model router')

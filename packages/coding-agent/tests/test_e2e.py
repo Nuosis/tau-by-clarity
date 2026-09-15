@@ -1958,10 +1958,11 @@ async def test_tui_extension_custom_component_receives_input_and_restores_editor
 
 
 @pytest.mark.asyncio
-async def test_tui_agent_end_error_is_rendered(monkeypatch):
+@pytest.mark.parametrize("candidate_before_error", [False, True])
+async def test_tui_agent_end_error_is_rendered(monkeypatch, candidate_before_error):
     """
-    If agent fails before streaming assistant deltas and only emits agent_end
-    with an assistant error message, TUI should still show the error.
+    An agent_end assistant error remains visible even if candidate text was
+    already rendered before terminal review failed.
     """
     import re
     from types import SimpleNamespace
@@ -2034,6 +2035,9 @@ async def test_tui_agent_end_error_is_rendered(monkeypatch):
         async def compact(self):
             return ''
 
+        async def restore_router(self):
+            return None
+
         async def set_model(self, model):
             self.model = model
 
@@ -2068,6 +2072,14 @@ async def test_tui_agent_end_error_is_rendered(monkeypatch):
             for listener in list(self._listeners):
                 listener(SimpleNamespace(type="agent_start"))
                 listener(SimpleNamespace(type="turn_start"))
+                if candidate_before_error:
+                    candidate = SimpleNamespace(
+                        role="assistant",
+                        content=[SimpleNamespace(type="text", text="Candidate answer")],
+                        error_message=None,
+                    )
+                    listener(SimpleNamespace(type="message_start", message=candidate))
+                    listener(SimpleNamespace(type="message_end", message=candidate))
                 listener(
                     SimpleNamespace(
                         type="agent_end",

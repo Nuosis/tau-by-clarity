@@ -25,7 +25,8 @@ End review treats intention as its completion target. `accept` requires both
 An unmet target or unsound answer leads to actionable worker continuation. The
 reviewer cannot redefine intention in its end-review output. User corrections may
 revise it, and cancellation remains available. Persistence does not expand tool
-permissions or user authorization. There is no arbitrary retry/turn-count stop.
+permissions or user authorization. Completion review has a bounded protocol:
+decide immediately or make one successful CCR retrieval and then decide.
 
 Verification includes production TUI rendering with a captured terminal transport,
 editor typing/empty-Enter/history behavior, correction via steering and follow-up,
@@ -58,7 +59,14 @@ An `accept` verdict permits the existing output-finalization/Stop flow. A
 `continue` verdict queues actionable requirements for the original worker with
 its tools intact. Queued user input takes precedence. Invalid/missing decisions
 surface an error rather than silent approval. Cancellation drains the review's
-provider producer as well as its consumer. No new retry/turn-count budget exists.
+provider producer as well as its consumer. A completion review must call a review
+tool on its first generation; after one successful CCR retrieval the next request
+is forced to `submit_review`. A provider, schema, retrieval, or tool error ends the
+review immediately and is not sent back to the reviewer for another attempt.
+
+Terminal review errors are shown even when the candidate was already rendered,
+are written to stderr in print mode, and are persisted after the candidate so a
+reopened session cannot make an unapproved candidate look approved.
 
 Session custom entries `tau.turn_review.started/completed/failed` retain selection,
 verdict, CCR calls, duration and review response usage/transcript. The input packet
@@ -85,4 +93,6 @@ an invalid prefixed CCR handle before successful retrieval. The tool schema now
 explicitly specifies bare 12-hex handles. First run: 4 provider calls, 2,125 total
 reported tokens (433 + 534 + 749 + 409), 10.65s rejection / 3.31s acceptance.
 These narrow cases establish live retrieval and verdict behavior, not broad
-review quality, economic savings, or a live rejected-worker continuation.
+review quality, economic savings, or a live rejected-worker continuation. That
+historical run predates the bounded protocol: an invalid CCR handle now ends and
+reports the review instead of asking the reviewer to recover.

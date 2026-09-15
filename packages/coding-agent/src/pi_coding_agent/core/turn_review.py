@@ -66,6 +66,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         record_event(name, metadata={**metadata, 'level': selection_level})
 
     decision = None
+    tool_failure = None
+    evidence_retrieved = False
     calls = []
     started = time.monotonic()
     producer_tasks = set()
@@ -107,16 +109,46 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             record_call()
 
     async def retrieve(call_id, args, signal=None, on_update=None):
+        nonlocal evidence_retrieved
+        if evidence_retrieved and not establish_intention:
+            raise RuntimeError('Completion review permits only one CCR retrieval')
         result = await asyncio.to_thread(_retrieve_tool_response, args['handle'], args['query'], tool_name='ccr_retrieve')
         calls.append({'name': 'ccr_retrieve', 'arguments': args, 'result': result})
         if result.get('isError'):
             raise ValueError(result['content'][0]['text'])
+        evidence_retrieved = True
         return AgentToolResult.model_validate(result)
 
     async def submit(call_id, args, signal=None, on_update=None):
         nonlocal decision
         decision = contract.model_validate(args)
         return AgentToolResult(content=[TextContent(text='Review recorded.')], terminate=True)
+
+    async def stop_after_review_error(turn):
+        nonlocal tool_failure
+        if establish_intention:
+            return False
+        for result in turn.get('tool_results', []):
+            if not getattr(result, 'is_error', False):
+                continue
+            detail = next((block.text for block in result.content
+                           if isinstance(block, TextContent) and block.text.strip()), 'unknown error')
+            tool_failure = f'{result.tool_name} failed: {detail}'
+            return True
+        return False
+
+    async def enforce_completion_contract(request, model):
+        if establish_intention or not isinstance(request, dict):
+            return request
+        if model.api not in {'openai-responses', 'openai-codex-responses'}:
+            return request
+        request = dict(request)
+        request['parallel_tool_calls'] = False
+        request['tool_choice'] = (
+            {'type': 'function', 'name': 'submit_review'}
+            if evidence_retrieved else 'required'
+        )
+        return request
 
     tools = [AgentTool(name='ccr_retrieve', label='Retrieve compressed evidence',
         description='Read specific evidence omitted from a compressed payload using its CCR handle and a focused query. Retrieve missing details before drawing conclusions from abbreviated output.',
@@ -128,7 +160,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         parameters=contract.model_json_schema(), execute=submit)]
 
     reviewer = Agent(AgentOptions(stream_fn=review_stream, get_api_key=get_api_key,
-                                 tool_execution='sequential'))
+                                 tool_execution='sequential', should_stop_after_turn=stop_after_review_error,
+                                 on_payload=enforce_completion_contract))
     reviewer.set_model(selection.model)
     reviewer.set_thinking_level(selection.reasoning or 'off')
     if establish_intention:
@@ -150,7 +183,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             prompt += ' A genuine blocker requiring user involvement may justify a clearly explained ending.'
     if not establish_intention:
         prompt += (' Keep the rationale to at most 30 words. Cite evidence references without repeating evidence text. '
-                   'Use concise actionable follow-up requirements only when needed.')
+                   'Use concise actionable follow-up requirements only when needed. '
+                   'You may retrieve compressed evidence once; after retrieval, submit the review decision.')
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
     from .review_context import build_review_payload
@@ -169,6 +203,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         await reviewer.prompt(payload)
         if cancel_event is not None and cancel_event.is_set():
             raise asyncio.CancelledError()
+        if tool_failure:
+            raise RuntimeError(f'Completion reviewer {tool_failure}; ending was not approved')
         if decision is None:
             raise RuntimeError('Completion reviewer returned no valid decision; ending was not approved'
                                + (f': {reviewer.state.error}' if reviewer.state.error else ''))
