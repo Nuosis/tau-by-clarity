@@ -134,7 +134,9 @@ def word_wrap_line(line: str, max_width: int) -> list[TextChunk]:
                 chunks.append(TextChunk(line[chunk_start:wrap_opp_idx], chunk_start, wrap_opp_idx))
                 chunk_start = wrap_opp_idx
                 current_width -= wrap_opp_width
-            elif chunk_start < char_index:
+            # A word-boundary wrap can still leave too little room for a
+            # double-width grapheme. Hard-wrap the remaining word as well.
+            if current_width + g_width > max_width and chunk_start < char_index:
                 chunks.append(TextChunk(line[chunk_start:char_index], chunk_start, char_index))
                 chunk_start = char_index
                 current_width = 0
@@ -170,6 +172,7 @@ class Editor:
         self._autocomplete_max_visible = max(3, min(20, opts.autocomplete_max_visible))
 
         self._state = _EditorState([""], 0, 0)
+        self.placeholder = ''
         self.focused = False
         self._last_width = 80
         self._scroll_offset = 0
@@ -292,6 +295,13 @@ class Editor:
         horizontal = self.border_color("─")
 
         layout_lines = self._layout_text(layout_width)
+        if not self.get_text() and self.placeholder:
+            # Display only: never change editor state, history, paste or submission.
+            hint = ''.join(c for c in self.placeholder if c.isprintable())
+            layout_lines = [
+                _LayoutLine(chunk.text, i == 0, 0 if i == 0 else None)
+                for i, chunk in enumerate(word_wrap_line(hint, layout_width))
+            ]
 
         terminal_rows = self._tui.terminal.rows if self._tui.terminal else 24
         max_visible_lines = max(5, int(terminal_rows * 0.3))
@@ -346,6 +356,8 @@ class Editor:
                     if line_vis_w > content_width and padding_x > 0:
                         cursor_in_padding = True
 
+            if not self.get_text() and self.placeholder:
+                display_text = '\x1b[2m' + display_text + '\x1b[22m'
             padding = " " * max(0, content_width - visible_width(display_text))
             line_right_pad = right_pad[1:] if cursor_in_padding else right_pad
             result.append(f"{left_pad}{display_text}{padding}{line_right_pad}")

@@ -456,6 +456,11 @@ class AuthStorage:
                 refreshed = self._refresh_oauth_token(provider)
                 if refreshed:
                     return refreshed
+            if provider in {"openai", "openai-codex"}:
+                raise RuntimeError(
+                    "OpenAI subscription authentication expired or is unavailable; "
+                    "run /login openai again. API-key fallback is disabled."
+                )
 
         # 3. Stored key from auth.json
         stored = self.get_api_key(provider)

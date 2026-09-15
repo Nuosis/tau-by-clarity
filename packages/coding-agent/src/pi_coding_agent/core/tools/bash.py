@@ -295,6 +295,10 @@ def create_bash_tool(cwd: str, command_prefix: str | None = None) -> AgentTool:
 
             process = await asyncio.create_subprocess_exec(
                 executable, *exec_args,
+                # Bash tools are non-interactive. Do not let a child command
+                # consume the TUI's controlling terminal while it waits for
+                # input (for example, `read` in a deployment script).
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,

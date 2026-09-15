@@ -1904,3 +1904,34 @@ async def test_invocation_selection_static_key_is_provider_scoped(cross_provider
     await stream.result()
     assert observed == [("selected", None if cross_provider else "configured-provider-key")]
     assert config.model.id == "configured"
+
+
+@pytest.mark.asyncio
+async def test_parent_cancellation_drains_parallel_tool_cleanup(tmp_path):
+    from pi_agent.agent_loop import _execute_tool_calls_parallel
+    from pi_ai import get_model
+    from pi_ai.utils.event_stream import EventStream
+    model = get_model('anthropic', 'claude-3-5-sonnet-20241022')
+    started = [asyncio.Event(), asyncio.Event()]
+    tools = []
+    for index in range(2):
+        async def execute(call_id, params, cancel=None, on_update=None, index=index):
+            started[index].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                (tmp_path / str(index)).write_text('cleanup completed')
+        tools.append(AgentTool(name=f'wait{index}', label='wait', description='Wait',
+                               parameters={'type':'object','properties':{}}, execute=execute))
+    calls = [ToolCall(id=str(i), name=f'wait{i}', arguments={}) for i in range(2)]
+    message = make_assistant_message()
+    message.content = calls
+    context = AgentContext(system_prompt='', messages=[], tools=tools)
+    task = asyncio.create_task(_execute_tool_calls_parallel(
+        tools, context, message, calls, AgentLoopConfig(model=model, convert_to_llm=lambda messages: messages), None, EventStream()))
+    await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [(tmp_path / str(i)).read_text() for i in range(2)] == ['cleanup completed'] * 2

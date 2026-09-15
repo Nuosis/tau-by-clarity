@@ -30,6 +30,11 @@ def envelope(actions, next_metadata):
             "response": {"tool_calls": actions, "next_invocation": next_metadata}}
 
 
+def intention_fixture():
+    return {'outcome': 'Complete the requested fixture operation.',
+            'completion_evidence': ['Requested result is verified.'], 'scope': 'Requested fixture only.'}
+
+
 class Loader:
     def get_extensions(self): return {"extensions": [], "diagnostics": []}
     def get_skills(self): return {"skills": [], "diagnostics": []}
@@ -69,6 +74,7 @@ def make_session(tmp_path, monkeypatch, base_url):
 @pytest.mark.asyncio
 async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, monkeypatch):
     requests, traces = [], []
+    reviews = []
     monkeypatch.setattr("pi_coding_agent.core.agent_session._instr_emit",
                         lambda name, **kwargs: traces.append((name, kwargs)))
     file = tmp_path / "fixture.txt"
@@ -76,6 +82,26 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
 
     async def responses(request):
         body = await request.json()
+        reviewer_tool = next((tool['name'] for tool in body['tools']
+                              if tool['name'] in {'submit_review', 'submit_intention'}), None)
+        if reviewer_tool:
+            if reviewer_tool == 'submit_review':
+                reviews.append(body)
+            args = intention_fixture() if reviewer_tool == 'submit_intention' else {
+                'decision': 'accept', 'rationale': 'Fixture completed.', 'intention_met': True,
+                'answer_sound': True, 'evidence_refs': ['message:0'], 'follow_up_requirements': []}
+            item = {'type': 'function_call', 'id': 'fc_review', 'call_id': 'review',
+                    'name': reviewer_tool, 'status': 'completed', 'arguments': json.dumps(args)}
+            events = [
+                {'type': 'response.output_item.added', 'output_index': 0, 'item': {**item, 'arguments': ''}},
+                {'type': 'response.function_call_arguments.delta', 'item_id': item['id'], 'output_index': 0, 'delta': item['arguments']},
+                {'type': 'response.function_call_arguments.done', 'item_id': item['id'], 'output_index': 0, 'arguments': item['arguments']},
+                {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+                {'type': 'response.completed', 'response': {'id': 'resp_review',
+                    'status': 'completed', 'output': [item],
+                    'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120}}}]
+            return web.Response(text=''.join('data: ' + json.dumps(event) + '\n\n' for event in events),
+                                content_type='text/event-stream')
         requests.append(body)
         step = len(requests)
         if step <= 4:
@@ -125,6 +151,9 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert history == ["Router on."] and footer == ["router on"]
         await session.prompt("Read fixture.txt and replace before with after, preserving the other line.")
         assert session.agent.state.error is None
+        assert len(reviews) == 1
+        assert reviews[0]['model'] == 'max'
+        assert reviews[0]['reasoning']['effort'] == 'high'
         assert [body["model"] for body in requests] == ["default", "ultra-light", "max"]
         assert [body["reasoning"]["effort"] for body in requests] == ["high", "low", "high"]
         assert file.read_text() == "after\npreserve\n"
@@ -139,6 +168,7 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert not session.router_enabled and footer[-1].startswith("light | thinking:")
         await session.prompt("Reply using the selected fixed model.")
         assert requests[-1]["model"] == "light"
+        assert len(reviews) == 2  # Fixed-model replies do not invoke a reviewer.
         assert session.agent.state.error is None
         reopened = SessionManager.open(session._session_manager.get_session_file())
         entries = [{**entry.data, "type": entry.type} for entry in reopened.get_entries()]
@@ -152,10 +182,13 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         from pi_coding_agent.core.model_stats import model_stats, render_model_stats
         stats = model_stats(entries)
         assert stats == session.get_model_stats()
-        assert stats["total"] == 5
-        assert {r["model"]: r["percent"] for r in stats["models"]} == {
-            "default": 40, "ultra-light": 20, "max": 20, "light": 20}
-        assert "40.0%  (2)" in render_model_stats(stats)
+        assert stats["total"] == 9  # Five worker + two intention + two review calls.
+        assert stats['total_tokens'] == 1080
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'worker') == 600
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'reviewer') == 240
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 240
+        assert sum(r['percent'] for r in stats['models']) == pytest.approx(100)
+        assert "22.2%  240 tokens · 2 calls" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
@@ -206,6 +239,11 @@ async def test_invalid_routed_output_cannot_execute_tools(tmp_path, monkeypatch,
     file.write_text("preserve")
 
     async def provider(model, context, options):
+        if any(t.name == 'submit_intention' for t in context.tools):
+            yield EventDone(reason='stop', message=AssistantMessage(content=[ToolCall(
+                id='intent', name='submit_intention', arguments=intention_fixture())],
+                api=model.api, provider=model.provider, model=model.id, timestamp=0))
+            return
         meta = metadata()
         if bad_kind == "unknown":
             meta["method_certainty"] = "unknown"

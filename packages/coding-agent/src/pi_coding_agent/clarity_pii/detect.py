@@ -123,7 +123,15 @@ def _regex_detect(text: str) -> list[tuple[str, str]]:
             continue
         if _luhn_ok(val):
             found.append((val, "CREDIT_CARD"))
-    for m in _PHONE_RE.finditer(text):
+    # Match phones with complete dates masked out first. Otherwise a value at
+    # the end of a log line can join the start of the next date (503\n2026-09),
+    # yielding a partial match that _looks_like_datetime cannot recognize.
+    # Word characters block numeric matches while preserving genuine adjacent
+    # phones, including phone numbers wrapped across lines.
+    phone_text = text
+    for rx in reversed(_DATETIME_RES):  # Mask longer all-dash timestamps first.
+        phone_text = rx.sub(lambda match: "x" * len(match.group(0)), phone_text)
+    for m in _PHONE_RE.finditer(phone_text):
         val = m.group(0).strip()
         if sum(c.isdigit() for c in val) < 7:
             continue

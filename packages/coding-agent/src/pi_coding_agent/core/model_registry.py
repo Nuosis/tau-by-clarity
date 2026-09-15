@@ -529,6 +529,11 @@ class ModelRegistry:
         Resolve API key for a provider.
         Checks custom config first, then auth_storage, then env vars.
         """
+        # An OpenAI subscription model must use its subscription credential,
+        # even when an older models.json still contains a paid API key.
+        if provider == "openai" and self._has_oauth_token(provider):
+            return self._auth_storage.resolve_api_key(provider)
+
         # Custom key from models.json
         key_config = self._custom_provider_api_keys.get(provider)
         if key_config:
@@ -734,8 +739,18 @@ class ModelRegistry:
             return None
         model = get_model("openai-codex", model_id)
         if model is None:
-            return None
-        return Model(**{**model.__dict__, "provider": "openai"})
+            # Authentication selects the transport, independently of catalog age.
+            # Preserve the requested model; unsupported models must be rejected by
+            # the subscription endpoint, never retried against the paid API.
+            model = self._find_config_loaded_model(provider, model_id)
+            model = model or synthetic_model(provider, model_id)
+        if model is None:
+            raise ValueError(f"Cannot resolve OpenAI subscription model {model_id}")
+        return Model(**{
+            **model.__dict__, "provider": "openai",
+            "api": "openai-codex-responses",
+            "base_url": "https://chatgpt.com/backend-api",
+        })
 
     def _has_oauth_token(self, provider: str) -> bool:
         if not self._auth_storage:

@@ -233,6 +233,25 @@ async def test_bash_tool_captures_stderr():
             assert len(str(e)) > 0  # Should have error output
 
 
+@pytest.mark.asyncio
+async def test_bash_tool_does_not_wait_for_terminal_input():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tool = create_bash_tool(tmpdir)
+        result = await tool.execute(
+            "tc1",
+            {
+                "command": (
+                    "read -r value; "
+                    "if [ -z \"$value\" ]; then echo stdin-eof; "
+                    "else echo \"stdin=$value\"; fi"
+                ),
+                "timeout": 1,
+            },
+        )
+
+        assert "stdin-eof" in result.content[0].text
+
+
 # ── LS tool tests ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

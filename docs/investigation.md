@@ -1,3 +1,25 @@
+## Intention placeholder wrapping — 2026-09-14
+
+Observed: rendering a long intention at 20 columns returned only one clipped
+content row. Typing the same sentence character-by-character returned six
+wrapped rows. Thus ordinary typed-text wrapping is not generally broken in the
+component reproduction; the user's terminal-specific symptom remains unverified.
+
+Hypotheses and evidence:
+- Placeholder clipping: confirmed by the failing full-content/reflow regression.
+  The placeholder now uses the editor's word wrapper, without changing input state.
+- Typed text overflow: mixed-width sampling found ` bb界` at width 3 produced
+  a four-column chunk. A failing regression confirmed this independently.
+  Rechecking the remaining width after a word-boundary split fixes that overflow.
+- Ordinary long input: character-by-character rendering and resize checks pass,
+  and submission retains the exact original message.
+
+Validation: both new failure cases failed before the repair, then all 47 selected
+component and intention-UI transport tests passed. These exercise production
+render/input code, not live visual verification in Marcus's terminal. Placeholder
+text remains display-only and disappears on typing; the existing editor viewport
+still limits visible rows for very long content.
+
 ## Problem
 
 OpenAI Responses streaming with `gpt-5.5` failed on a simple prompt with an un-awaited `AsyncResponses.create` coroutine warning and then `'dict' object has no attribute 'content'`.
@@ -359,3 +381,48 @@ focused gate. A wheel-isolated Claire canary then completed against the full
 tool registry using the Anthropic subscription, Opus/high thinking, and default
 compression/PII. Canary run `80bdfe822261` dispatched the provider alias back
 to `world.topics`, completed the read-only tool call, and exited zero.
+
+---
+
+## Tau session slowdown investigation — 2026-09-14
+
+### Problem
+
+Tau session `d90a86c8-d39d-4308-bccd-68f0eb58e473` continues to move, but Terminal input is delayed or appears ignored and rendering is very slow.
+
+### Hypothesis list
+
+| # | Hypothesis | Null hypothesis | Status |
+|---|---|---|---|
+| 1 | Mac-wide memory pressure | Free memory, swap, compressor, and pageout metrics are abnormal | NULLIFIED |
+| 2 | PID 21098 Python heap leak | Its physical footprint/RSS grows materially or exceeds peer Tau sessions | NULLIFIED |
+| 3 | Persisted context is pathologically large | Its transcript/message sizes are materially larger than peers | NULLIFIED |
+| 4 | Terminal rendering contributes | Terminal.app is idle and not drawing text | FALSIFIED; contributor |
+| 5 | A child tool is blocked on interactive input | PID 21098 has no child waiting on `ttys002` input | FALSIFIED; primary cause |
+
+### Debug evidence
+
+- The target session maps to PID 21098 on `ttys002`; its persisted transcript is `.tau/agent/sessions/d90a86c8-d39d-4308-bccd-68f0eb58e473.jsonl`.
+- The host has 128 GiB RAM; the observed snapshot reported 96% free memory, zero swap I/O, zero compressor pages, and zero pageouts.
+- PID 21098 remained near 283 MiB RSS and 219 MiB physical footprint, comparable to the other local Tau sessions.
+- The target transcript was 610,295 bytes across 116 records and 232,470 message characters; peer sessions were equal or larger. Its largest persisted tool result was 21,257 characters.
+- Terminal.app PID 611 used roughly 10–25% CPU during sampling; `sample` showed CoreText glyph layout/drawing. The TUI requests renders for streamed updates and tool/loader state changes.
+- At 08:04:11, PID 21098 spawned PID 23901, `/bin/bash ./deploy.sh`, with stdin `/dev/ttys002` and stdout/stderr piped back to Tau. It remained alive more than 12 minutes with no `ssh`, Docker, curl, sleep, or other child process.
+- `/Users/marcusswift/python/Claire/deploy.sh` reaches `read -r commit_message` when staged changes exist and no commit message argument is supplied. The Claire worktree had staged changes in `app/worker/sms_dispatch.py` and `tests/worker/test_sms_dispatch_addressing.py`, so the script waits for that input before remote deployment.
+- The target's network sockets were `CLOSE_WAIT` and its transcript stopped changing during observation, consistent with a local subprocess wait rather than an active provider stream.
+- Target debug events recorded `memory_not_attached` for curation; this does not indicate a memory leak or host pressure.
+
+### Current hypothesis
+
+The session is blocked in `deploy.sh`'s interactive commit-message `read`, while Tau's busy-state loader and Terminal.app continue rendering. That hidden prompt explains ignored input; shared Terminal rendering explains the secondary visual lag. There is no evidence of system-wide memory pressure or a per-session memory leak.
+
+### Safe recovery
+
+If this deployment is intended, provide the intended commit message to the waiting prompt, then verify the commit, remote deployment, and health check. If it is not intended, cancel the current Tau operation using its normal session control and verify PID 23901 exits; do not send a commit message or interrupt blindly while deployment intent is unknown.
+
+### Repair
+
+Both Python bash execution paths now pass `stdin=asyncio.subprocess.DEVNULL`.
+The focused regression gate passes 26 tests, including a `read` command through
+each path that returns `stdin-eof` instead of waiting for Terminal input. Shell
+heredocs remain usable because they provide explicit input redirection.

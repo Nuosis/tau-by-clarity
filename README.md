@@ -4,6 +4,10 @@
 > an interactive TUI, a headless CLI (`tau`), an agent loop, file tools, and
 > built-in **Tau by Clarity** PII tokenization and active context compression.
 
+Router mode combines configurable model tiers, reviewer-owned intention, and
+completion review: route working calls to the appropriate tier, retain the user's
+intended outcome, and continue work when the evidence or answer does not justify ending.
+
 Run it (`tau`), embed it (`import pi_coding_agent`), or build your own agents on it
 (see [Building agents](#building-agents--tau-as-an-agent-framework)). Tau builds on
 the **PI** project — see [Credits & lineage](#credits--lineage).
@@ -141,6 +145,98 @@ The agent will write the code and save it to your current directory.
 
 ---
 
+## Router, Reviewer, and Intention
+
+### Configure and enable routing
+
+Router mode selects a model and reasoning effort for each working invocation.
+Configure all four tiers through the interactive selectors:
+
+```text
+/set router ultra-light
+/set router light
+/set router default
+/set router max
+/model router
+```
+
+Each selector lets you choose a provider/model and reasoning effort. For scripted
+configuration within the TUI, the syntax is
+`/set router <level> <provider/model> <reasoning|off>`; replace the placeholders with
+models available to your account. These router tiers are separate from the
+provider-specific `strong`, `standard`, and `weak` mappings described above.
+
+| Router tier | Role |
+|---|---|
+| `ultra-light` | Straightforward work with a specified method and direct interpretation |
+| `light` | Work requiring adaptation, bounded interpretation, or one-way dependencies between unresolved choices |
+| `default` | First working invocation for a new prompt, and work requiring design or inference |
+| `max` | Planning, competing explanations, or mutually dependent unresolved choices; also intention and completion review |
+
+The working model returns structured metadata about the next invocation, and Tau
+applies its routing rules to select the tier. The same agent context and tools
+continue across model changes; switching tiers does not start a separate worker.
+
+The footer displays `router on`. Router enablement is saved for later sessions;
+choosing a concrete model with `/model` disables routing and returns to fixed-model
+operation. Tier assignments are saved in Tau's models configuration, normally
+`~/.tau/agent/models.json`. Current router support requires models using the
+`openai-responses` or `openai-codex-responses` API adapters; it does not support
+every provider available in fixed-model mode.
+
+### Intention is set before work begins
+
+For each new user request, the reviewer uses your configured **`max`** tier to
+establish the desired outcome, observable completion evidence, and authorized
+scope. It uses the working instructions, request, memories supplied in context,
+and available evidence. Intention is stored separately from conversation messages
+and restored with the selected session branch.
+
+In the TUI, the outcome appears as **placeholder text in the empty input box**.
+It disappears as soon as you type and reappears when the buffer is empty. It is
+not prefilled input: the placeholder is never submitted, added to input history,
+or injected into a worker prompt by the renderer.
+
+User corrections, including steering and queued follow-ups, can revise intention
+when they reach the working context. Reviewer-generated continuations preserve
+it; incomplete work is not a reason to lower the completion target.
+
+### The reviewer checks completion and answer quality
+
+When the worker proposes an ending at `turn_end`, the configured `max` model
+checks both whether intention has been met and whether the answer is consistent
+with the request, supplied memories, and tool evidence. **There is no hard-coded
+reviewer model:** your `max` provider, model, and reasoning effort apply to both
+intention-setting and ending review.
+
+The reviewer receives compressed working context and can use **`ccr_retrieve`**
+to query evidence omitted from compressed tool outputs. It cannot execute the
+worker's shell or editing tools. Its structured verdict either accepts the ending
+or supplies actionable requirements to the original worker, whose tools remain
+available. Acceptance requires both `intention_met` and `answer_sound`; an
+unsupported completion claim or contradictory answer causes continuation.
+
+This is a continuation gate, not a promise of infallible answers. Review adds
+model calls, latency, and cost. It does not expand authorization, and cancellation
+remains available. Initial streamed drafts may already be visible before review;
+the existing optional cosmetic finalizer runs after semantic acceptance and is
+not recursively reviewed. Fixed-model sessions skip intention-setting and this
+completion-review loop.
+
+### Inspect routing and review
+
+Use `/stats` to inspect token shares by provider/model, router tier,
+recorded reasoning effort, and purpose (worker, intention, reviewer). Percentages
+include uncached input, cached input, cache writes and output; call counts are
+secondary, and missing usage is disclosed. Recorded failed-call usage is included.
+These are token shares, not cost shares. Auxiliary calls without persisted usage
+cannot be included.
+Session records separately retain routing decisions, intention revisions, review
+verdicts, retrievals, and reviewer response usage through `tau.router_*`,
+`tau.intention.*`, and `tau.turn_review.*` entries.
+
+---
+
 ## Common Use Cases
 
 ### Single Prompt (Non-Interactive)
@@ -184,8 +280,11 @@ Type `/` in the interactive TUI to see available commands:
 |---------|-------------|
 | `/login [provider] [api_key]` | Store provider credentials through Tau auth storage |
 | `/model [provider/model]` | Select and persist the current/default model |
+| `/model router` | Enable routing with configured tiers, intention, and completion review |
 | `/models [provider/model]` | Alias for `/model` |
 | `/set <provider> <tier> <model>` | Set a provider tier mapping (`strong`, `standard`, `weak`) |
+| `/set router <level>` | Configure a router tier's provider/model and reasoning effort |
+| `/stats` | Show token shares by model, router tier, effort, and worker/reviewer/intention purpose |
 | `/thinking <level>` | Set thinking detail: `minimal` · `low` · `medium` · `high` · `xhigh` |
 | `/compact` | Compress conversation context to save tokens |
 | `/recover [n|entry_id]` | Branch before a failed tail and inject a recovery checkpoint |
