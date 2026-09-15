@@ -817,8 +817,18 @@ class AgentSession:
                 ]
         self._review_context_messages = list(messages)
         if self._router is not None and included:
-            from .turn_review import review_turn
             from pi_agent.types import AgentContext
+            from .turn_review import review_turn
+
+            rendered = [m if isinstance(m, dict) else _message_to_dict(m) for m in messages]
+            positions = []
+            for request in included:
+                match = next((index for index in range(len(rendered) - 1, -1, -1)
+                              if rendered[index] == request), None)
+                if match is not None:
+                    positions.append(match)
+            if positions:
+                self._review_task_start = min(positions)
             context = AgentContext(system_prompt=self._agent.state.system_prompt,
                                    messages=[], tools=self._agent.state.tools)
             context.messages = messages
@@ -832,6 +842,7 @@ class AgentSession:
                 cancel_event=signal, intention=getattr(self, '_intention', None),
                 establish_intention=True, selection_level=intention_level,
                 session_id=self.session_id,
+                task_start=getattr(self, '_review_task_start', 0),
             )
             self._intention = intention
             self._intention_requests = [r for r in self._intention_requests if r not in included]
@@ -1049,6 +1060,7 @@ class AgentSession:
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
                 intention=getattr(self, '_intention', None),
                 session_id=self.session_id,
+                task_start=getattr(self, '_review_task_start', 0),
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():

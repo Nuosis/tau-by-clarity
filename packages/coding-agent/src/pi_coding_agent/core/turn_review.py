@@ -58,7 +58,7 @@ and accuracy, not writing style. You review rather than execute the user's task.
 
 async def review_turn(selection, context, *, stream_fn, get_api_key, record, cancel_event=None,
                       intention=None, establish_intention=False, selection_level='max',
-                      session_id=None):
+                      session_id=None, task_start=0):
     from ..active_compression.extension import _retrieve_tool_response
 
     record_event = record
@@ -185,7 +185,7 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
     from .review_context import build_review_payload
-    payload, projection = build_review_payload(context, intention)
+    payload, projection = build_review_payload(context, intention, task_start=task_start)
 
     async def watch_cancel():
         await cancel_event.wait()

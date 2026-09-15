@@ -18,6 +18,7 @@ _BRACKET_HANDLE_RE = re.compile(r"\[CCR:([0-9a-fA-F]{12})\]")
 _INLINE_HANDLE_RE = re.compile(r"<<ccr:([0-9a-fA-F]{12})(?:[,\s][^>]*)?>>")
 
 METADATA_KEY = "activeCompression"
+FRESH_EVIDENCE_TOOL_NAMES = frozenset({"read", "Read", "ccr_retrieve"})
 
 
 def extract_ccr_handles(text: str) -> list[str]:
@@ -98,6 +99,9 @@ def compress_message_for_persistence(message: dict[str, Any]) -> tuple[dict[str,
     Only tool-result text is compressed here. User intent and assistant output
     stay exact, matching the outbound active-compression policy.
     """
+    tool_name = message.get("tool_name") or message.get("toolName")
+    if tool_name in FRESH_EVIDENCE_TOOL_NAMES:
+        return message, None
     text_items = _text_items(message)
     if not text_items:
         return message, None
@@ -106,7 +110,6 @@ def compress_message_for_persistence(message: dict[str, Any]) -> tuple[dict[str,
     compressed = copy.deepcopy(message)
     refs: list[dict[str, Any]] = []
     changed = False
-    tool_name = message.get("tool_name") or message.get("toolName")
     tool_call_id = message.get("tool_call_id") or message.get("toolCallId")
     for path, original_text in text_items:
         compressed_text = _compress_text_with_tool_context(

@@ -166,6 +166,10 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         await session.prompt("Report completion again.")
         assert requests[-1]["model"] == "default"
         assert session.router_enabled and session.agent.state.error is None
+        second_review = json.loads(reviews[-1]["input"][-1]["content"][0]["text"])
+        assert second_review["review_scope"]["starts_at"] != "message:0"
+        assert "Read fixture.txt" not in json.dumps(second_review["messages"])
+        assert "Report completion again." in json.dumps(second_review["messages"])
         history, footer = await model_command(session, "/model router-fixture/light")
         assert not session.router_enabled and footer[-1].startswith("light | thinking:")
         await session.prompt("Reply using the selected fixed model.")

@@ -81,6 +81,24 @@ def test_compress_message_for_persistence_keeps_model_facing_message_compressed(
     assert metadata["refs"][0]["original"] == original
 
 
+@pytest.mark.parametrize("tool_name", ["read", "Read", "ccr_retrieve"])
+def test_persistence_preserves_fresh_source_and_retrieval_results(tmp_path, tool_name):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    original = _large_log()
+    message = _large_tool_message(original)
+    message["tool_name"] = tool_name
+    try:
+        persisted, metadata = compress_message_for_persistence(message)
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert persisted == message
+    assert persisted["content"][0]["text"] == original
+    assert metadata is None
+
+
 def test_agent_session_message_end_persists_compressed_tool_result_with_metadata(tmp_path):
     store = CCRStore(str(tmp_path / "ccr.db"))
     previous_store = active_compression_runtime._store

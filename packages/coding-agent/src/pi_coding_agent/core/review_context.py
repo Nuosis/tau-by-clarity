@@ -34,7 +34,7 @@ def _review_start(originals):
     return 0
 
 
-def build_review_payload(context, intention=None):
+def build_review_payload(context, intention=None, *, task_start=0):
     originals = [m.model_dump(mode='json') if hasattr(m, 'model_dump') else asdict(m) if is_dataclass(m) else dict(m)
                  for m in context.messages]
     query_parts = []
@@ -44,8 +44,11 @@ def build_review_payload(context, intention=None):
         if message.get('role') in {'user', 'assistant'}:
             query_parts.append(_content_text(message))
     query = ' '.join(dict.fromkeys(part.strip() for part in query_parts if part.strip()))[:2048]
-    start = _review_start(originals)
+    review_start = _review_start(originals)
+    task_start = min(max(0, int(task_start or 0)), len(originals))
+    start = max(review_start, task_start)
     messages, focused = [], []
+    handle_candidates = []
     store = None
     seen_handles = set()
     focused_chars = 0
@@ -111,8 +114,7 @@ def build_review_payload(context, intention=None):
                         block['text'] = (f'[CCR:{handle}] Abbreviated review evidence; '
                                          'the host retained omitted details for focused review evidence.\n'
                                          + text[:256] + '\n...\n' + text[-256:])
-                        if index >= start:
-                            prefetch(handle, f'message:{index}')
+                        handle_candidates.append((index, handle, f'message:{index}'))
                     except Exception as exc:
                         # Compression/search is an optimization. If storage or
                         # retrieval fails, preserve the supplied evidence.
@@ -121,13 +123,23 @@ def build_review_payload(context, intention=None):
                         logger.warning('Review evidence projection unavailable: %s', type(exc).__name__)
                 blocks.append(block)
             value['content'] = blocks
+        for match in _HANDLE.finditer(_content_text(value)):
+            handle_candidates.append((index, match.group(1), f'message:{index}'))
         if index >= start:
-            try:
-                for match in _HANDLE.finditer(_content_text(value)):
-                    prefetch(match.group(1), f'message:{index}')
-            except Exception as exc:
-                logger.warning('Review evidence prefetch unavailable: %s', type(exc).__name__)
             messages.append({'ref': f'message:{index}', 'message': value})
+    # Preserve the bounded budget for the correction pass first, then use the
+    # nearest earlier source evidence from this user request.  Delta review can
+    # validate against prior evidence without retransmitting the prior messages.
+    ordered_candidates = (
+        [item for item in handle_candidates if item[0] >= start]
+        + list(reversed([item for item in handle_candidates
+                         if task_start <= item[0] < start]))
+    )
+    for _, handle, ref in ordered_candidates:
+        try:
+            prefetch(handle, ref)
+        except Exception as exc:
+            logger.warning('Review evidence prefetch unavailable: %s', type(exc).__name__)
     # Growing history and changing intention/query come after stable instructions
     # and capabilities. Never rewrite the worker's context or stored transcript.
     payload = json.dumps({
@@ -135,7 +147,7 @@ def build_review_payload(context, intention=None):
         'worker_capabilities': [{'name': t.name, 'description': t.description}
                                 for t in sorted(context.tools, key=lambda t: t.name)],
         'intention': intention.model_dump() if intention else None,
-        'review_scope': {'mode': 'delta' if start else 'full',
+        'review_scope': {'mode': 'delta' if review_start else 'full',
                          'starts_at': f'message:{start}'},
         'messages': messages,
         'focused_evidence': focused,
@@ -143,4 +155,4 @@ def build_review_payload(context, intention=None):
     }, default=str, ensure_ascii=False, separators=(',', ':'))
     return payload, {'focused_evidence_count': len(focused),
                      'focused_evidence_characters': focused_chars,
-                     'message_count': len(messages), 'review_scope': 'delta' if start else 'full'}
+                     'message_count': len(messages), 'review_scope': 'delta' if review_start else 'full'}

@@ -61,8 +61,10 @@ expansion or worker mutation tools are exposed to the completion reviewer.
 After a `continue` verdict, the next review packet starts at the latest generated
 review requirements and contains only the subsequent repair evidence and new
 candidate. Instructions, worker capabilities and intention remain at the stable
-front of the packet. The review Agent uses a stable per-session cache identity
-ending in `:completion-review`.
+front of the packet. Focused evidence is selected from the current correction
+pass first, then from the nearest earlier CCR sources within the same user request;
+messages from before that request cannot consume the evidence budget. The review
+Agent uses a stable per-session cache identity ending in `:completion-review`.
 
 An `accept` verdict permits the existing output-finalization/Stop flow. A
 `continue` verdict queues actionable requirements for the original worker with
