@@ -858,9 +858,11 @@ class AgentSession:
         from .turn_review import Intention
         self._intention = None
         self._intention_requests = []
+        self._review_task_start = 0
         for entry in reversed(self._session_manager.get_branch()):
             if entry.data.get('customType') == 'tau.intention.completed':
                 self._intention = Intention.model_validate(entry.data['data']['decision'])
+                self._review_task_start = int(entry.data['data'].get('task_start', 0) or 0)
                 break
 
     @property

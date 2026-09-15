@@ -8,7 +8,7 @@ import json
 
 import pytest
 from pi_agent.types import AgentContext
-from pi_ai.types import AssistantMessage, EventDone, TextContent, ToolCall
+from pi_ai.types import AssistantMessage, EventDone, TextContent, ToolCall, ToolResultMessage
 from pi_coding_agent.core.turn_review import review_turn
 from .test_model_router import make_session, model_command, envelope, metadata, intention_fixture
 
@@ -82,6 +82,67 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_repeat_review_keeps_current_request_source_evidence_without_reread(tmp_path, monkeypatch):
+    from pi_coding_agent import active_compression
+    from pi_coding_agent.active_compression.ccr import CCRStore
+
+    session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    source = tmp_path / 'pricing.txt'
+    source.write_text(
+        'Annual participant pricing is $42 times 55, or $2,310. '
+        'With $2,500 onboarding, the initial total is $4,810.\n' + 'filler\n' * 900)
+    monkeypatch.setattr(active_compression, '_store', CCRStore(str(tmp_path / 'ccr.db')))
+    worker_calls, review_packets = [], []
+
+    async def provider(model, context, options):
+        names = {tool.name for tool in context.tools}
+        if 'submit_intention' in names:
+            yield done(model, [ToolCall(id='intent', name='submit_intention', arguments={
+                'outcome': 'Report the pricing accurately.',
+                'completion_evidence': ['Verify annual pricing and the initial total from source evidence.'],
+                'scope': 'Read-only pricing review.'})])
+        elif 'submit_review' in names:
+            content = context.messages[0].content
+            packet = json.loads(content if isinstance(content, str) else content[0].text)
+            review_packets.append(packet)
+            complete = len(review_packets) == 2
+            if complete:
+                rendered = json.dumps(packet)
+                assert '$2,310' in rendered and '$4,810' in rendered
+                assert packet['review_scope']['mode'] == 'delta'
+                assert all(item['message']['role'] != 'toolResult' for item in packet['messages'])
+            yield done(model, [ToolCall(id='review', name='submit_review', arguments={
+                'decision': 'accept' if complete else 'continue',
+                'rationale': 'Pricing is complete.' if complete else 'Annual pricing is missing.',
+                'intention_met': complete, 'answer_sound': complete,
+                'evidence_refs': ['message:1'],
+                'follow_up_requirements': [] if complete else ['Report annual pricing and the initial total.']})])
+        else:
+            worker_calls.append(context)
+            if len(worker_calls) == 1:
+                actions = [{'name': 'read', 'arguments': {
+                    'path': str(source), 'offset': None, 'limit': None}}]
+                wire = envelope(actions, metadata())
+            else:
+                wire = envelope([], None)
+                wire['text'] = ('Onboarding is $2,500.' if len(worker_calls) == 2 else
+                                'Annual pricing is $42 × 55 = $2,310; with $2,500 onboarding, '
+                                'the initial total is $4,810.')
+            yield done(model, [ToolCall(id=f'worker-{len(worker_calls)}',
+                name='submit_response', arguments=wire)])
+
+    session._provider_stream = provider
+    await model_command(session, '/model router')
+    await session.prompt('Read pricing.txt and report the annual pricing and initial total.')
+
+    assert session.agent.state.error is None
+    assert len(worker_calls) == 3
+    assert len(review_packets) == 2
+    assert sum(getattr(message, 'tool_name', None) == 'read'
+               for message in session.agent.state.messages) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('queue', ['steer', 'follow_up'])
 async def test_user_correction_revises_intention_without_injecting_it(tmp_path, monkeypatch, queue):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
@@ -147,8 +208,12 @@ async def test_reviewer_receives_prefetched_real_ccr_evidence_in_one_call(tmp_pa
             'evidence_refs': [handle], 'follow_up_requirements': ['Investigate the failed deployment.']})])
 
     result = await review_turn(session._router.selections['max'],
-        AgentContext(system_prompt='Verify deployment.', messages=[{'role': 'user', 'timestamp': 0,
-            'content': f'Deployment output compressed [CCR:{handle}]. Candidate: deployed successfully.'}], tools=[]),
+        AgentContext(system_prompt='Verify deployment.', messages=[
+            {'role': 'user', 'timestamp': 0, 'content': 'Verify the deployment.'},
+            ToolResultMessage(tool_call_id='read', tool_name='read', is_error=False, timestamp=0,
+                              content=[TextContent(text=f'Deployment output compressed [CCR:{handle}].')]),
+            done(session.agent.state.model, [TextContent(text='Candidate: deployed successfully.')]).message],
+            tools=[]),
         stream_fn=provider, get_api_key=session._resolve_api_key,
         record=lambda name, **kw: events.append((name, kw)))
     assert result.decision == 'continue'

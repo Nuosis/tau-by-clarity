@@ -123,8 +123,9 @@ def build_review_payload(context, intention=None, *, task_start=0):
                         logger.warning('Review evidence projection unavailable: %s', type(exc).__name__)
                 blocks.append(block)
             value['content'] = blocks
-        for match in _HANDLE.finditer(_content_text(value)):
-            handle_candidates.append((index, match.group(1), f'message:{index}'))
+        if value.get('role') == 'toolResult':
+            for match in _HANDLE.finditer(_content_text(value)):
+                handle_candidates.append((index, match.group(1), f'message:{index}'))
         if index >= start:
             messages.append({'ref': f'message:{index}', 'message': value})
     # Preserve the bounded budget for the correction pass first, then use the

@@ -208,6 +208,7 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         record(event_prefix + '.completed', metadata={
             'provider': selection.model.provider, 'model': selection.model.id, 'reasoning': selection.reasoning,
             'decision': decision.model_dump(), 'retrievals': calls,
+            'task_start': task_start,
             'prefetched_evidence_count': projection['focused_evidence_count'],
             'usage_recording': 'per_invocation',
             'elapsed_seconds': time.monotonic()-started,
