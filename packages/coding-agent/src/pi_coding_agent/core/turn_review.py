@@ -57,7 +57,8 @@ and accuracy, not writing style. You review rather than execute the user's task.
 
 
 async def review_turn(selection, context, *, stream_fn, get_api_key, record, cancel_event=None,
-                      intention=None, establish_intention=False, selection_level='max'):
+                      intention=None, establish_intention=False, selection_level='max',
+                      session_id=None):
     from ..active_compression.extension import _retrieve_tool_response
 
     record_event = record
@@ -67,7 +68,6 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
 
     decision = None
     tool_failure = None
-    evidence_retrieved = False
     calls = []
     started = time.monotonic()
     producer_tasks = set()
@@ -109,14 +109,10 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             record_call()
 
     async def retrieve(call_id, args, signal=None, on_update=None):
-        nonlocal evidence_retrieved
-        if evidence_retrieved and not establish_intention:
-            raise RuntimeError('Completion review permits only one CCR retrieval')
         result = await asyncio.to_thread(_retrieve_tool_response, args['handle'], args['query'], tool_name='ccr_retrieve')
         calls.append({'name': 'ccr_retrieve', 'arguments': args, 'result': result})
         if result.get('isError'):
             raise ValueError(result['content'][0]['text'])
-        evidence_retrieved = True
         return AgentToolResult.model_validate(result)
 
     async def submit(call_id, args, signal=None, on_update=None):
@@ -144,22 +140,22 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             return request
         request = dict(request)
         request['parallel_tool_calls'] = False
-        request['tool_choice'] = (
-            {'type': 'function', 'name': 'submit_review'}
-            if evidence_retrieved else 'required'
-        )
+        request['tool_choice'] = 'required'
         return request
 
-    tools = [AgentTool(name='ccr_retrieve', label='Retrieve compressed evidence',
+    retrieval_tool = AgentTool(name='ccr_retrieve', label='Retrieve compressed evidence',
         description='Read specific evidence omitted from a compressed payload using its CCR handle and a focused query. Retrieve missing details before drawing conclusions from abbreviated output.',
-        parameters={'type': 'object', 'properties': {'handle': {'type': 'string', 'pattern': '^[0-9a-fA-F]{12}$', 'description': 'The 12 hex characters inside [CCR:handle], without CCR: or brackets.'}, 'query': {'type': 'string', 'minLength': 1}}, 'required': ['handle', 'query'], 'additionalProperties': False}, execute=retrieve),
-        AgentTool(name='submit_intention' if establish_intention else 'submit_review', label='Submit reviewer decision',
+        parameters={'type': 'object', 'properties': {'handle': {'type': 'string', 'pattern': '^[0-9a-fA-F]{12}$', 'description': 'The 12 hex characters inside [CCR:handle], without CCR: or brackets.'}, 'query': {'type': 'string', 'minLength': 1}}, 'required': ['handle', 'query'], 'additionalProperties': False}, execute=retrieve)
+    submit_tool = AgentTool(name='submit_intention' if establish_intention else 'submit_review', label='Submit reviewer decision',
         description=('Record the requested outcome, observable checks that will prove completion after the work, and authorized scope. completion_evidence must state future completion checks, not quotations or citations establishing what the user requested. Do not execute the task.'
                      if establish_intention else
                      'Finish the review with accept or actionable continuation requirements. Cite message indexes or retrieved evidence identifiers supporting the decision.'),
-        parameters=contract.model_json_schema(), execute=submit)]
+        parameters=contract.model_json_schema(), execute=submit)
+    tools = [retrieval_tool, submit_tool] if establish_intention else [submit_tool]
 
     reviewer = Agent(AgentOptions(stream_fn=review_stream, get_api_key=get_api_key,
+                                 session_id=(f'{session_id}:{"intention" if establish_intention else "completion-review"}'
+                                             if session_id else None),
                                  tool_execution='sequential', should_stop_after_turn=stop_after_review_error,
                                  on_payload=enforce_completion_contract))
     reviewer.set_model(selection.model)
@@ -184,7 +180,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
     if not establish_intention:
         prompt += (' Keep the rationale to at most 30 words. Cite evidence references without repeating evidence text. '
                    'Use concise actionable follow-up requirements only when needed. '
-                   'You may retrieve compressed evidence once; after retrieval, submit the review decision.')
+                   'Host-prefetched focused_evidence contains query-scoped excerpts from available CCR originals. '
+                   'Submit exactly one review decision.')
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
     from .review_context import build_review_payload
@@ -210,7 +207,9 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
                                + (f': {reviewer.state.error}' if reviewer.state.error else ''))
         record(event_prefix + '.completed', metadata={
             'provider': selection.model.provider, 'model': selection.model.id, 'reasoning': selection.reasoning,
-            'decision': decision.model_dump(), 'retrievals': calls, 'usage_recording': 'per_invocation',
+            'decision': decision.model_dump(), 'retrievals': calls,
+            'prefetched_evidence_count': projection['focused_evidence_count'],
+            'usage_recording': 'per_invocation',
             'elapsed_seconds': time.monotonic()-started,
             'messages': [m.model_dump(mode='json') if hasattr(m, 'model_dump') else m for m in reviewer.state.messages[1:]],
         })

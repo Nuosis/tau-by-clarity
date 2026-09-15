@@ -122,7 +122,7 @@ def test_projection_storage_failure_preserves_full_evidence(monkeypatch):
     assert json.loads(payload)['messages'][0]['message']['content'][0]['text'] == text
 
 
-def test_already_compressed_evidence_is_not_expanded_for_review(tmp_path, monkeypatch):
+def test_already_compressed_evidence_is_prefetched_for_review(tmp_path, monkeypatch):
     store = CCRStore(str(tmp_path / 'ccr.db'))
     monkeypatch.setattr(active_compression, '_store', store)
     handle = store.put('audit_marker=503\n' + 'heartbeat=200\n' * 1000)
@@ -133,7 +133,29 @@ def test_already_compressed_evidence_is_not_expanded_for_review(tmp_path, monkey
     payload, _ = build_review_payload(context)
     packet = json.loads(payload)
     assert packet['messages'][1]['message']['content'][0]['text'] == text
-    assert packet['focused_evidence'] == []
+    assert packet['focused_evidence'][0]['handle'] == handle
+    assert 'audit_marker=503' in packet['focused_evidence'][0]['excerpt']
+
+
+def test_repeat_review_sends_only_delta_after_prior_requirements():
+    messages = [
+        dict(role='user', content='Deploy release 123 and verify it.'),
+        dict(role='assistant', content=[dict(type='text', text='First candidate.')]),
+        dict(role='user', content=(
+            'Completion review requires further work within the existing user authorization:\n'
+            '- Capture the HTTP status.\nEvidence assessment: No verification.')),
+        dict(role='toolResult', tool_call_id='verify', tool_name='exec', is_error=False,
+             content=[dict(type='text', text='release=123 status=200')]),
+        dict(role='assistant', content=[dict(type='text', text='Release 123 is verified.')]),
+    ]
+    context = SimpleNamespace(system_prompt='Ship safely.', messages=messages, tools=[])
+    payload, meta = build_review_payload(context, Intention(
+        outcome='Deploy release 123.', completion_evidence=['HTTP status is 200.'], scope='Release 123 only.'))
+    packet = json.loads(payload)
+    assert [item['ref'] for item in packet['messages']] == ['message:2', 'message:3', 'message:4']
+    assert packet['review_scope'] == {'mode': 'delta', 'starts_at': 'message:2'}
+    assert packet['candidate'] == 'message:4'
+    assert meta['message_count'] == 3
 
 
 def test_review_omits_empty_transport_fields_without_dropping_business_nulls():

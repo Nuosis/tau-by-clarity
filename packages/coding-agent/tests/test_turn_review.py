@@ -5,7 +5,6 @@ then accept the evidenced ending. Verify Max/effort and read-only review tools.
 """
 import asyncio
 import json
-from types import SimpleNamespace
 
 import pytest
 from pi_agent.types import AgentContext
@@ -36,8 +35,16 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
             review_calls.append(model.id)
             assert model.id == 'max'
             assert options.reasoning == 'high'
-            assert names == {'ccr_retrieve', 'submit_review'}
+            assert names == {'submit_review'}
             complete = target.read_text() == 'after'
+            payload_text = context.messages[0].content
+            packet = json.loads(payload_text if isinstance(payload_text, str) else payload_text[0].text)
+            assert packet['review_scope']['mode'] == ('delta' if complete else 'full')
+            if complete:
+                assert packet['messages'][0]['message']['role'] == 'user'
+                review_content = packet['messages'][0]['message']['content']
+                review_text = review_content if isinstance(review_content, str) else review_content[0]['text']
+                assert review_text.startswith('Completion review requires further work')
             args = dict(decision='accept' if complete else 'continue',
                         intention_met=complete, answer_sound=complete,
                         rationale='File content is ' + target.read_text(),
@@ -121,7 +128,7 @@ def test_cannot_accept_unmet_intention_or_unsound_answer(met, sound):
 
 
 @pytest.mark.asyncio
-async def test_reviewer_can_retrieve_real_ccr_evidence(tmp_path, monkeypatch):
+async def test_reviewer_receives_prefetched_real_ccr_evidence_in_one_call(tmp_path, monkeypatch):
     from pi_coding_agent import active_compression
     from pi_coding_agent.active_compression.ccr import CCRStore
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
@@ -133,14 +140,11 @@ async def test_reviewer_can_retrieve_real_ccr_evidence(tmp_path, monkeypatch):
 
     async def provider(model, context, options):
         calls.append(context)
-        if len(calls) == 1:
-            yield done(model, [ToolCall(id='lookup', name='ccr_retrieve',
-                       arguments={'handle': handle, 'query': 'Deployment verification release 123'})])
-        else:
-            assert '503' in str(context.messages)
-            yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
-                'decision': 'continue', 'rationale': 'Deployment failed with HTTP 503.',
-                'evidence_refs': [handle], 'follow_up_requirements': ['Investigate the failed deployment.']})])
+        assert {tool.name for tool in context.tools} == {'submit_review'}
+        assert '503' in str(context.messages)
+        yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
+            'decision': 'continue', 'rationale': 'Deployment failed with HTTP 503.',
+            'evidence_refs': [handle], 'follow_up_requirements': ['Investigate the failed deployment.']})])
 
     result = await review_turn(session._router.selections['max'],
         AgentContext(system_prompt='Verify deployment.', messages=[{'role': 'user', 'timestamp': 0,
@@ -148,8 +152,8 @@ async def test_reviewer_can_retrieve_real_ccr_evidence(tmp_path, monkeypatch):
         stream_fn=provider, get_api_key=session._resolve_api_key,
         record=lambda name, **kw: events.append((name, kw)))
     assert result.decision == 'continue'
-    assert len(calls) == 2
-    assert events[-1][1]['metadata']['retrievals'][0]['arguments']['handle'] == handle
+    assert len(calls) == 1
+    assert events[-1][1]['metadata']['prefetched_evidence_count'] == 1
 
 
 @pytest.mark.asyncio
@@ -208,7 +212,7 @@ async def test_reviewer_schema_error_ends_without_another_model_call(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_reviewer_executes_at_most_one_retrieval(tmp_path, monkeypatch):
+async def test_completion_reviewer_cannot_request_ccr_and_does_not_retry(tmp_path, monkeypatch):
     from pi_coding_agent import active_compression
     from pi_coding_agent.active_compression.ccr import CCRStore
 
@@ -229,7 +233,7 @@ async def test_reviewer_executes_at_most_one_retrieval(tmp_path, monkeypatch):
                 'handle': handle, 'query': 'HTTP status'}),
         ])
 
-    with pytest.raises(RuntimeError, match='permits only one CCR retrieval'):
+    with pytest.raises(RuntimeError, match='ccr_retrieve failed: Tool ccr_retrieve not found'):
         await review_turn(session._router.selections['max'],
             AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
             get_api_key=session._resolve_api_key, record=lambda *a, **k: None)
@@ -290,7 +294,7 @@ async def test_intention_establishment_keeps_existing_retrieval_lifecycle(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_completion_review_requires_action_then_verdict_after_one_retrieval(tmp_path, monkeypatch):
+async def test_completion_review_forces_single_verdict_action(tmp_path, monkeypatch):
     from pi_coding_agent import active_compression
     from pi_coding_agent.active_compression.ccr import CCRStore
 
@@ -303,18 +307,14 @@ async def test_completion_review_requires_action_then_verdict_after_one_retrieva
 
     async def provider(model, context, options):
         body = {
-            'tools': [{'name': 'ccr_retrieve'}, {'name': 'submit_review'}],
+            'tools': [{'name': 'submit_review'}],
             'tool_choice': 'auto', 'parallel_tool_calls': True,
         }
         body = await options.on_payload(body, model)
         requests.append(body)
-        if len(requests) == 1:
-            yield done(model, [ToolCall(id='lookup', name='ccr_retrieve', arguments={
-                'handle': handle, 'query': 'deployment status'})])
-        else:
-            yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
-                'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
-                'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']})])
+        yield done(model, [ToolCall(id='verdict', name='submit_review', arguments={
+            'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
+            'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']})])
 
     result = await review_turn(session._router.selections['max'],
         AgentContext(system_prompt='', messages=[], tools=[]), stream_fn=provider,
@@ -323,12 +323,11 @@ async def test_completion_review_requires_action_then_verdict_after_one_retrieva
     assert result.decision == 'continue'
     assert requests[0]['tool_choice'] == 'required'
     assert requests[0]['parallel_tool_calls'] is False
-    assert requests[1]['tool_choice'] == {'type': 'function', 'name': 'submit_review'}
-    assert requests[1]['parallel_tool_calls'] is False
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_openai_http_contract_forces_verdict_after_retrieval(tmp_path, monkeypatch):
+async def test_openai_http_contract_forces_one_verdict_with_stable_cache_key(tmp_path, monkeypatch):
     from aiohttp import web
     from pi_coding_agent import active_compression
     from pi_coding_agent.active_compression.ccr import CCRStore
@@ -341,15 +340,12 @@ async def test_openai_http_contract_forces_verdict_after_retrieval(tmp_path, mon
     async def responses(request):
         body = await request.json()
         requests.append(body)
-        if len(requests) == 1:
-            assert body['tool_choice'] == 'required'
-            name = 'ccr_retrieve'
-            args = {'handle': handle, 'query': 'deployment status'}
-        else:
-            assert body['tool_choice'] == {'type': 'function', 'name': 'submit_review'}
-            name = 'submit_review'
-            args = {'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
-                    'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']}
+        assert body['tool_choice'] == 'required'
+        assert body['prompt_cache_key'] == 'session-123:completion-review'
+        assert [tool['name'] for tool in body['tools']] == ['submit_review']
+        name = 'submit_review'
+        args = {'decision': 'continue', 'rationale': 'Deployment returned HTTP 503.',
+                'evidence_refs': [handle], 'follow_up_requirements': ['Investigate deployment.']}
         assert body['parallel_tool_calls'] is False
         item = {'type': 'function_call', 'id': f'fc_{len(requests)}',
                 'call_id': f'call_{len(requests)}', 'name': name,
@@ -382,12 +378,12 @@ async def test_openai_http_contract_forces_verdict_after_retrieval(tmp_path, mon
         result = await review_turn(session._router.selections['max'],
             AgentContext(system_prompt='', messages=[], tools=[]),
             stream_fn=session._provider_stream, get_api_key=session._resolve_api_key,
-            record=lambda *a, **k: None)
+            record=lambda *a, **k: None, session_id='session-123')
     finally:
         await runner.cleanup()
 
     assert result.decision == 'continue'
-    assert len(requests) == 2
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
@@ -467,21 +463,16 @@ async def test_session_review_uses_persisted_compression_and_custom_memory(tmp_p
         assert 'Prefer verification over assumptions.' in rendered
         assert 'edit' in {tool['name'] for tool in packet['worker_capabilities']}
         assert packet['candidate'] == 'message:2'
-        if len(calls) == 1:
-            yield done(model, [ToolCall(id='retrieve', name='ccr_retrieve', arguments={
-                'handle': metadata['refs'][0]['handle'], 'query': 'auth_middleware_unique_token'})])
-            return
-        retrieved = context.messages[2]
-        assert retrieved.role == 'toolResult' and not retrieved.is_error
-        assert retrieved.details['kept_items'] > 0
-        assert 'worker-42 persisted context auth_middleware_unique_token processing queue' in retrieved.content[0].text
+        assert 'worker-42 persisted context auth_middleware_unique_token processing queue' in rendered
+        assert {tool.name for tool in context.tools} == {'submit_review'}
         yield done(model, [ToolCall(id='review', name='submit_review', arguments={
             'decision': 'accept', 'rationale': 'Verified.', 'evidence_refs': ['message:2'],
             'follow_up_requirements': []})])
     session._provider_stream = provider
-    candidate = done(session.agent.state.model, [TextContent(text='Complete.')]).message
+    candidate = done(session.agent.state.model, [TextContent(
+        text='Complete: auth_middleware_unique_token was verified in worker-42 output.')]).message
     context = AgentContext(system_prompt='Task instructions', messages=[], tools=session.agent.state.tools)
     await session._prepare_next_turn({'context': context, 'message': candidate, 'tool_results': []})
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert session._review_context_messages == worker_before

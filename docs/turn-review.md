@@ -25,8 +25,9 @@ End review treats intention as its completion target. `accept` requires both
 An unmet target or unsound answer leads to actionable worker continuation. The
 reviewer cannot redefine intention in its end-review output. User corrections may
 revise it, and cancellation remains available. Persistence does not expand tool
-permissions or user authorization. Completion review has a bounded protocol:
-decide immediately or make one successful CCR retrieval and then decide.
+permissions or user authorization. Completion review uses one forced verdict
+generation. The host resolves bounded, query-scoped evidence from available CCR
+handles before that generation.
 
 Verification includes production TUI rendering with a captured terminal transport,
 editor typing/empty-Enter/history behavior, correction via steering and follow-up,
@@ -51,17 +52,24 @@ scripted worker responses. Both live replays passed. The source checks passed
 The reviewer receives the transformed working context (persisted CCR compression,
 context extensions and recalled memory), current instructions, worker capability
 descriptions and candidate answer. It is a separate native Agent with only
-`ccr_retrieve` and `submit_review`. Retrieval uses the existing same-process CCR
-store and focused-query search; no full-history expansion or worker mutation
-tools are exposed to the reviewer.
+`submit_review`. Before invoking it, the host searches originals for visible CCR
+handles using intention, completion evidence and recent candidate context. Up to
+six excerpts and 8,192 characters are included; missing CCR entries leave the
+compressed evidence intact instead of creating another model turn. No full-history
+expansion or worker mutation tools are exposed to the completion reviewer.
+
+After a `continue` verdict, the next review packet starts at the latest generated
+review requirements and contains only the subsequent repair evidence and new
+candidate. Instructions, worker capabilities and intention remain at the stable
+front of the packet. The review Agent uses a stable per-session cache identity
+ending in `:completion-review`.
 
 An `accept` verdict permits the existing output-finalization/Stop flow. A
 `continue` verdict queues actionable requirements for the original worker with
 its tools intact. Queued user input takes precedence. Invalid/missing decisions
 surface an error rather than silent approval. Cancellation drains the review's
-provider producer as well as its consumer. A completion review must call a review
-tool on its first generation; after one successful CCR retrieval the next request
-is forced to `submit_review`. A provider, schema, retrieval, or tool error ends the
+provider producer as well as its consumer. A completion review must call
+`submit_review` on its sole generation. A provider, schema or tool error ends the
 review immediately and is not sent back to the reviewer for another attempt.
 
 Terminal review errors are shown even when the candidate was already rendered,
@@ -69,13 +77,28 @@ are written to stderr in print mode, and are persisted after the candidate so a
 reopened session cannot make an unapproved candidate look approved.
 
 Session custom entries `tau.turn_review.started/completed/failed` retain selection,
-verdict, CCR calls, duration and review response usage/transcript. The input packet
-is not duplicated in the completion event. Existing `/stats` working-response
-shares do not include auxiliary reviewer calls.
+verdict, host-prefetched evidence count, duration and review response
+usage/transcript. The input packet is not duplicated in the completion event.
+Existing `/stats` working-response shares do not include auxiliary reviewer calls.
 
 This is a continuation gate, not a streaming presentation gate: an initial draft
 can already be visible before review. The existing cosmetic finalizer runs after
 semantic acceptance and is not recursively reviewed.
+
+## One-call local-model verification, 2026-09-15
+
+A pinned local Qwen3.6-35B causal pair held the candidate text constant and changed
+only the CCR original's audit marker. The reviewer accepted the 503-supported
+candidate and returned `continue` when the hidden source instead said 200. Each
+case made one `/v1/responses` request with only `submit_review`, required tool
+choice, disabled parallel tool calls and the same completion-review cache key.
+The eval-owned llama.cpp process was fingerprinted, terminated and its ephemeral
+port verified closed. Evidence is under
+`/Users/marcusswift/.codex/evidence/tau-one-call-review-20260915`.
+
+This focused pair establishes the local model can consume the prefetched evidence
+through the one-call path. It is not a matched before/after token-cost benchmark
+and does not establish broad Astra/Max review quality.
 
 ## Verification, 2026-09-14
 

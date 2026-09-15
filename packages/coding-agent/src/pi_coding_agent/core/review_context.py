@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, is_dataclass
 import re
+from dataclasses import asdict, is_dataclass
 
 from ..active_compression import _ccr
 from ..active_compression.search import search_original
@@ -13,23 +13,64 @@ logger = logging.getLogger(__name__)
 
 LONG_EVIDENCE_CHARS = 4096
 FOCUSED_EVIDENCE_CHARS = 2048
+MAX_FOCUSED_EVIDENCE_ITEMS = 6
+MAX_FOCUSED_EVIDENCE_CHARS = 8192
+REVIEW_CONTINUATION_PREFIX = 'Completion review requires further work within the existing user authorization:'
 _HANDLE = re.compile(r'\[CCR:([0-9a-fA-F]{12})\]')
+
+
+def _content_text(message):
+    content = message.get('content', '')
+    if isinstance(content, str):
+        return content
+    return ' '.join(block.get('text', '') for block in content if isinstance(block, dict))
+
+
+def _review_start(originals):
+    for index in range(len(originals) - 1, -1, -1):
+        message = originals[index]
+        if message.get('role') == 'user' and _content_text(message).startswith(REVIEW_CONTINUATION_PREFIX):
+            return index
+    return 0
 
 
 def build_review_payload(context, intention=None):
     originals = [m.model_dump(mode='json') if hasattr(m, 'model_dump') else asdict(m) if is_dataclass(m) else dict(m)
                  for m in context.messages]
-    query = intention.outcome if intention else ''
-    if not query:
-        for message in reversed(originals):
-            if message.get('role') == 'user':
-                content = message.get('content', '')
-                query = content if isinstance(content, str) else ' '.join(
-                    b.get('text', '') for b in content if isinstance(b, dict))
-                break
-    query = query[:1024]
+    query_parts = []
+    if intention:
+        query_parts.extend([intention.outcome, *intention.completion_evidence])
+    for message in originals[-4:]:
+        if message.get('role') in {'user', 'assistant'}:
+            query_parts.append(_content_text(message))
+    query = ' '.join(dict.fromkeys(part.strip() for part in query_parts if part.strip()))[:2048]
+    start = _review_start(originals)
     messages, focused = [], []
     store = None
+    seen_handles = set()
+    focused_chars = 0
+
+    def prefetch(handle, ref):
+        nonlocal store, focused_chars
+        handle = handle.lower()
+        if (handle in seen_handles or not query or
+                len(focused) >= MAX_FOCUSED_EVIDENCE_ITEMS or
+                focused_chars >= MAX_FOCUSED_EVIDENCE_CHARS):
+            return
+        seen_handles.add(handle)
+        store = store or _ccr()
+        source = store.get(handle)
+        if source is None:
+            return
+        result = search_original(source, query, max_items=8)
+        if result.get('kept_items', 0) <= 0:
+            return
+        excerpt = result.get('text', '')[:min(FOCUSED_EVIDENCE_CHARS,
+                                                MAX_FOCUSED_EVIDENCE_CHARS - focused_chars)]
+        if excerpt:
+            focused.append({'ref': ref, 'handle': handle, 'excerpt': excerpt, 'partial': True})
+            focused_chars += len(excerpt)
+
     for index, original in enumerate(originals):
         value = {k: v for k, v in original.items()
                  if k not in {'usage', 'api', 'provider', 'model', 'timestamp'}}
@@ -68,34 +109,38 @@ def build_review_payload(context, intention=None):
                                            compression_strategy='review_evidence')
                         # Query-independent preview remains stable across reviews.
                         block['text'] = (f'[CCR:{handle}] Abbreviated review evidence; '
-                                         'use ccr_retrieve with a focused query for omitted details.\n'
+                                         'the host retained omitted details for focused review evidence.\n'
                                          + text[:256] + '\n...\n' + text[-256:])
-                        if source is not None and query:
-                            result = search_original(source, query, max_items=8)
-                            excerpt = result.get('text', '')[:FOCUSED_EVIDENCE_CHARS]
-                            if excerpt:
-                                focused.append({'ref': f'message:{index}', 'handle': handle,
-                                                'excerpt': excerpt,
-                                                'partial': True})
+                        if index >= start:
+                            prefetch(handle, f'message:{index}')
                     except Exception as exc:
                         # Compression/search is an optimization. If storage or
                         # retrieval fails, preserve the supplied evidence.
                         block = dict(block)
                         block['text'] = text
                         logger.warning('Review evidence projection unavailable: %s', type(exc).__name__)
-
                 blocks.append(block)
             value['content'] = blocks
-        messages.append({'ref': f'message:{index}', 'message': value})
+        if index >= start:
+            try:
+                for match in _HANDLE.finditer(_content_text(value)):
+                    prefetch(match.group(1), f'message:{index}')
+            except Exception as exc:
+                logger.warning('Review evidence prefetch unavailable: %s', type(exc).__name__)
+            messages.append({'ref': f'message:{index}', 'message': value})
     # Growing history and changing intention/query come after stable instructions
     # and capabilities. Never rewrite the worker's context or stored transcript.
     payload = json.dumps({
         'working_instructions': context.system_prompt,
         'worker_capabilities': [{'name': t.name, 'description': t.description}
                                 for t in sorted(context.tools, key=lambda t: t.name)],
-        'messages': messages,
         'intention': intention.model_dump() if intention else None,
+        'review_scope': {'mode': 'delta' if start else 'full',
+                         'starts_at': f'message:{start}'},
+        'messages': messages,
         'focused_evidence': focused,
-        'candidate': f'message:{len(messages)-1}',
+        'candidate': f'message:{len(originals)-1}',
     }, default=str, ensure_ascii=False, separators=(',', ':'))
-    return payload, {'focused_evidence_count': len(focused)}
+    return payload, {'focused_evidence_count': len(focused),
+                     'focused_evidence_characters': focused_chars,
+                     'message_count': len(messages), 'review_scope': 'delta' if start else 'full'}

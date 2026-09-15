@@ -831,6 +831,7 @@ class AgentSession:
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
                 cancel_event=signal, intention=getattr(self, '_intention', None),
                 establish_intention=True, selection_level=intention_level,
+                session_id=self.session_id,
             )
             self._intention = intention
             self._intention_requests = [r for r in self._intention_requests if r not in included]
@@ -1047,6 +1048,7 @@ class AgentSession:
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
                 intention=getattr(self, '_intention', None),
+                session_id=self.session_id,
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
