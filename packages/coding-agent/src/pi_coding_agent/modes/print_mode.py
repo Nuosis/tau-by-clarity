@@ -95,10 +95,11 @@ async def run_print_mode(
             pass
 
     printed_assistant_text = False
+    printed_error = False
 
     # Subscribe to events
     def on_event(event: AgentEvent) -> None:
-        nonlocal printed_assistant_text
+        nonlocal printed_assistant_text, printed_error
         if mode == "json":
             try:
                 obj = _event_to_dict(event)
@@ -111,6 +112,13 @@ async def run_print_mode(
                     isinstance(block, TextContent) and bool(block.text)
                     for block in event.message.content
                 )
+            elif event.type == "agent_end":
+                for message in getattr(event, "messages", None) or []:
+                    error = getattr(message, "error_message", None)
+                    if isinstance(error, str) and error.strip():
+                        print(error, file=sys.stderr, flush=True)
+                        printed_error = True
+                        break
             _handle_print_event(event, show_thinking=show_thinking)
 
     unsub = session.subscribe(on_event)
@@ -138,7 +146,8 @@ async def run_print_mode(
                 stop = getattr(last, "stop_reason", None) or getattr(last, "stopReason", None)
                 if stop in ("error", "aborted"):
                     err_msg = getattr(last, "error_message", None) or getattr(last, "errorMessage", f"Request {stop}")
-                    print(err_msg or f"Request {stop}", file=sys.stderr, flush=True)
+                    if not printed_error:
+                        print(err_msg or f"Request {stop}", file=sys.stderr, flush=True)
                     return 1
 
                 # Output text content

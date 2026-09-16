@@ -57,7 +57,8 @@ and accuracy, not writing style. You review rather than execute the user's task.
 
 
 async def review_turn(selection, context, *, stream_fn, get_api_key, record, cancel_event=None,
-                      intention=None, establish_intention=False, selection_level='max'):
+                      intention=None, establish_intention=False, selection_level='max',
+                      session_id=None, task_start=0):
     from ..active_compression.extension import _retrieve_tool_response
 
     record_event = record
@@ -66,6 +67,7 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         record_event(name, metadata={**metadata, 'level': selection_level})
 
     decision = None
+    tool_failure = None
     calls = []
     started = time.monotonic()
     producer_tasks = set()
@@ -118,17 +120,44 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         decision = contract.model_validate(args)
         return AgentToolResult(content=[TextContent(text='Review recorded.')], terminate=True)
 
-    tools = [AgentTool(name='ccr_retrieve', label='Retrieve compressed evidence',
+    async def stop_after_review_error(turn):
+        nonlocal tool_failure
+        if establish_intention:
+            return False
+        for result in turn.get('tool_results', []):
+            if not getattr(result, 'is_error', False):
+                continue
+            detail = next((block.text for block in result.content
+                           if isinstance(block, TextContent) and block.text.strip()), 'unknown error')
+            tool_failure = f'{result.tool_name} failed: {detail}'
+            return True
+        return False
+
+    async def enforce_completion_contract(request, model):
+        if establish_intention or not isinstance(request, dict):
+            return request
+        if model.api not in {'openai-responses', 'openai-codex-responses'}:
+            return request
+        request = dict(request)
+        request['parallel_tool_calls'] = False
+        request['tool_choice'] = 'required'
+        return request
+
+    retrieval_tool = AgentTool(name='ccr_retrieve', label='Retrieve compressed evidence',
         description='Read specific evidence omitted from a compressed payload using its CCR handle and a focused query. Retrieve missing details before drawing conclusions from abbreviated output.',
-        parameters={'type': 'object', 'properties': {'handle': {'type': 'string', 'pattern': '^[0-9a-fA-F]{12}$', 'description': 'The 12 hex characters inside [CCR:handle], without CCR: or brackets.'}, 'query': {'type': 'string', 'minLength': 1}}, 'required': ['handle', 'query'], 'additionalProperties': False}, execute=retrieve),
-        AgentTool(name='submit_intention' if establish_intention else 'submit_review', label='Submit reviewer decision',
+        parameters={'type': 'object', 'properties': {'handle': {'type': 'string', 'pattern': '^[0-9a-fA-F]{12}$', 'description': 'The 12 hex characters inside [CCR:handle], without CCR: or brackets.'}, 'query': {'type': 'string', 'minLength': 1}}, 'required': ['handle', 'query'], 'additionalProperties': False}, execute=retrieve)
+    submit_tool = AgentTool(name='submit_intention' if establish_intention else 'submit_review', label='Submit reviewer decision',
         description=('Record the requested outcome, observable checks that will prove completion after the work, and authorized scope. completion_evidence must state future completion checks, not quotations or citations establishing what the user requested. Do not execute the task.'
                      if establish_intention else
                      'Finish the review with accept or actionable continuation requirements. Cite message indexes or retrieved evidence identifiers supporting the decision.'),
-        parameters=contract.model_json_schema(), execute=submit)]
+        parameters=contract.model_json_schema(), execute=submit)
+    tools = [retrieval_tool, submit_tool] if establish_intention else [submit_tool]
 
     reviewer = Agent(AgentOptions(stream_fn=review_stream, get_api_key=get_api_key,
-                                 tool_execution='sequential'))
+                                 session_id=(f'{session_id}:{"intention" if establish_intention else "completion-review"}'
+                                             if session_id else None),
+                                 tool_execution='sequential', should_stop_after_turn=stop_after_review_error,
+                                 on_payload=enforce_completion_contract))
     reviewer.set_model(selection.model)
     reviewer.set_thinking_level(selection.reasoning or 'off')
     if establish_intention:
@@ -150,11 +179,13 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
             prompt += ' A genuine blocker requiring user involvement may justify a clearly explained ending.'
     if not establish_intention:
         prompt += (' Keep the rationale to at most 30 words. Cite evidence references without repeating evidence text. '
-                   'Use concise actionable follow-up requirements only when needed.')
+                   'Use concise actionable follow-up requirements only when needed. '
+                   'Host-prefetched focused_evidence contains query-scoped excerpts from available CCR originals. '
+                   'Submit exactly one review decision.')
     reviewer.set_system_prompt(prompt)
     reviewer.set_tools(tools)
     from .review_context import build_review_payload
-    payload, projection = build_review_payload(context, intention)
+    payload, projection = build_review_payload(context, intention, task_start=task_start)
 
     async def watch_cancel():
         await cancel_event.wait()
@@ -169,12 +200,17 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
         await reviewer.prompt(payload)
         if cancel_event is not None and cancel_event.is_set():
             raise asyncio.CancelledError()
+        if tool_failure:
+            raise RuntimeError(f'Completion reviewer {tool_failure}; ending was not approved')
         if decision is None:
             raise RuntimeError('Completion reviewer returned no valid decision; ending was not approved'
                                + (f': {reviewer.state.error}' if reviewer.state.error else ''))
         record(event_prefix + '.completed', metadata={
             'provider': selection.model.provider, 'model': selection.model.id, 'reasoning': selection.reasoning,
-            'decision': decision.model_dump(), 'retrievals': calls, 'usage_recording': 'per_invocation',
+            'decision': decision.model_dump(), 'retrievals': calls,
+            'task_start': task_start,
+            'prefetched_evidence_count': projection['focused_evidence_count'],
+            'usage_recording': 'per_invocation',
             'elapsed_seconds': time.monotonic()-started,
             'messages': [m.model_dump(mode='json') if hasattr(m, 'model_dump') else m for m in reviewer.state.messages[1:]],
         })

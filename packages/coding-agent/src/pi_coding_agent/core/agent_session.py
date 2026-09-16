@@ -828,8 +828,18 @@ class AgentSession:
                 ]
         self._review_context_messages = list(messages)
         if self._router is not None and included:
-            from .turn_review import review_turn
             from pi_agent.types import AgentContext
+            from .turn_review import review_turn
+
+            rendered = [m if isinstance(m, dict) else _message_to_dict(m) for m in messages]
+            positions = []
+            for request in included:
+                match = next((index for index in range(len(rendered) - 1, -1, -1)
+                              if rendered[index] == request), None)
+                if match is not None:
+                    positions.append(match)
+            if positions:
+                self._review_task_start = min(positions)
             context = AgentContext(system_prompt=self._agent.state.system_prompt,
                                    messages=[], tools=self._agent.state.tools)
             context.messages = messages
@@ -842,6 +852,8 @@ class AgentSession:
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
                 cancel_event=signal, intention=getattr(self, '_intention', None),
                 establish_intention=True, selection_level=intention_level,
+                session_id=self.session_id,
+                task_start=getattr(self, '_review_task_start', 0),
             )
             self._intention = intention
             self._intention_requests = [r for r in self._intention_requests if r not in included]
@@ -857,9 +869,11 @@ class AgentSession:
         from .turn_review import Intention
         self._intention = None
         self._intention_requests = []
+        self._review_task_start = 0
         for entry in reversed(self._session_manager.get_branch()):
             if entry.data.get('customType') == 'tau.intention.completed':
                 self._intention = Intention.model_validate(entry.data['data']['decision'])
+                self._review_task_start = int(entry.data['data'].get('task_start', 0) or 0)
                 break
 
     @property
@@ -1058,6 +1072,8 @@ class AgentSession:
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
                 intention=getattr(self, '_intention', None),
+                session_id=self.session_id,
+                task_start=getattr(self, '_review_task_start', 0),
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
@@ -1267,12 +1283,30 @@ class AgentSession:
 
         # ── agent_end: check retry and compaction ─────────────────────────────
         if event.type == "agent_end":
+            # Exceptions raised after a candidate message_end (notably completion
+            # review failures) only arrive on agent_end. Persist that distinct
+            # terminal error so a reopened session cannot make the candidate
+            # appear approved. Provider errors already seen on message_end are
+            # the same object as _last_assistant_msg and must not be duplicated.
+            distinct_terminal_error = False
+            for terminal_msg in getattr(event, "messages", None) or []:
+                if terminal_msg is self._last_assistant_msg:
+                    continue
+                if (getattr(terminal_msg, "role", "") == "assistant"
+                        and getattr(terminal_msg, "error_message", None)):
+                    self._session_manager.append_message(_message_to_dict(terminal_msg))
+                    distinct_terminal_error = True
+                    break
             # Provider failures exit the loop before prepare_next_turn runs.
             # Do not let a failed finalization leave tools disabled or its
             # one-shot voice context attached to the next user turn.
             if self._turn_end_finalizing:
                 self._restore_after_turn_end_finalization()
-            if self._last_assistant_msg is not None:
+            if distinct_terminal_error:
+                # The candidate did not pass review. Do not run successful-turn
+                # curation, compaction, or retry work after reporting the error.
+                self._last_assistant_msg = None
+            elif self._last_assistant_msg is not None:
                 msg = self._last_assistant_msg
                 self._last_assistant_msg = None
                 # Schedule retry / compaction check asynchronously

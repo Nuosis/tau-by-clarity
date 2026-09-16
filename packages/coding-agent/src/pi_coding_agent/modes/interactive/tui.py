@@ -2174,19 +2174,19 @@ async def _run_pi_tui(
                             set_stream(assistant_rendered_line(final_text))
 
                 elif etype == "agent_end":
-                    if not rendered_response:
-                        terminal_messages = getattr(event, "messages", None)
-                        if isinstance(terminal_messages, list):
-                            for msg in terminal_messages:
-                                if getattr(msg, "role", None) != "assistant":
-                                    continue
-                                err = getattr(msg, "error_message", None)
-                                if isinstance(err, str) and err.strip():
-                                    trace(f"on_event: agent_end error={err!r}")
-                                    set_stream(f"{red('Error:')} {err}")
-                                    rendered_response = err
-                                    response_is_error = True
-                                    break
+                    terminal_messages = getattr(event, "messages", None)
+                    if isinstance(terminal_messages, list):
+                        for msg in terminal_messages:
+                            if getattr(msg, "role", None) != "assistant":
+                                continue
+                            err = getattr(msg, "error_message", None)
+                            if isinstance(err, str) and err.strip():
+                                trace(f"on_event: agent_end error={err!r}")
+                                set_stream(f"{red('Error:')} {err}")
+                                rendered_response = err
+                                response_is_error = True
+                                break
+                            if not rendered_response:
                                 fallback_text = assistant_text_from_message(msg)
                                 if fallback_text:
                                     trace(f"on_event: agent_end fallback_text len={len(fallback_text)}")

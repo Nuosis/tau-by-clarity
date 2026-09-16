@@ -8,7 +8,7 @@ from pi_agent.types import AgentContext
 from pi_ai.types import AssistantMessage, EventDone, TextContent, Usage
 from pi_coding_agent import active_compression
 from pi_coding_agent.active_compression.ccr import CCRStore
-from pi_coding_agent.core.review_context import build_review_payload
+from pi_coding_agent.core.review_context import MAX_FOCUSED_EVIDENCE_ITEMS, build_review_payload
 from pi_coding_agent.core.turn_review import Intention, review_turn
 from pi_coding_agent.core.model_stats import model_stats
 from .test_model_router import make_session, model_command
@@ -122,7 +122,7 @@ def test_projection_storage_failure_preserves_full_evidence(monkeypatch):
     assert json.loads(payload)['messages'][0]['message']['content'][0]['text'] == text
 
 
-def test_already_compressed_evidence_is_not_expanded_for_review(tmp_path, monkeypatch):
+def test_already_compressed_evidence_is_prefetched_for_review(tmp_path, monkeypatch):
     store = CCRStore(str(tmp_path / 'ccr.db'))
     monkeypatch.setattr(active_compression, '_store', store)
     handle = store.put('audit_marker=503\n' + 'heartbeat=200\n' * 1000)
@@ -133,7 +133,116 @@ def test_already_compressed_evidence_is_not_expanded_for_review(tmp_path, monkey
     payload, _ = build_review_payload(context)
     packet = json.loads(payload)
     assert packet['messages'][1]['message']['content'][0]['text'] == text
-    assert packet['focused_evidence'] == []
+    assert packet['focused_evidence'][0]['handle'] == handle
+    assert 'audit_marker=503' in packet['focused_evidence'][0]['excerpt']
+
+
+def test_repeat_review_sends_only_delta_after_prior_requirements():
+    messages = [
+        dict(role='user', content='Deploy release 123 and verify it.'),
+        dict(role='assistant', content=[dict(type='text', text='First candidate.')]),
+        dict(role='user', content=(
+            'Completion review requires further work within the existing user authorization:\n'
+            '- Capture the HTTP status.\nEvidence assessment: No verification.')),
+        dict(role='toolResult', tool_call_id='verify', tool_name='exec', is_error=False,
+             content=[dict(type='text', text='release=123 status=200')]),
+        dict(role='assistant', content=[dict(type='text', text='Release 123 is verified.')]),
+    ]
+    context = SimpleNamespace(system_prompt='Ship safely.', messages=messages, tools=[])
+    payload, meta = build_review_payload(context, Intention(
+        outcome='Deploy release 123.', completion_evidence=['HTTP status is 200.'], scope='Release 123 only.'))
+    packet = json.loads(payload)
+    assert [item['ref'] for item in packet['messages']] == ['message:2', 'message:3', 'message:4']
+    assert packet['review_scope'] == {'mode': 'delta', 'starts_at': 'message:2'}
+    assert packet['candidate'] == 'message:4'
+    assert meta['message_count'] == 3
+
+
+def test_repeat_review_prefetches_earlier_ccr_evidence_without_resending_history(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    handle = store.put(
+        'annual participant pricing: $42 times 55 is $2,310; '
+        'plus $2,500 onboarding puts the initial total near $4,810\n'
+        + 'unrelated transcript line\n' * 1000
+    )
+    messages = [
+        dict(role='user', content='Review the transcript and extract pricing and todos.'),
+        dict(role='toolResult', tool_call_id='read', tool_name='read', is_error=False,
+             content=[dict(type='text', text=f'[CCR:{handle}] compressed transcript')]),
+        dict(role='assistant', content=[dict(type='text', text='I need to summarize this.')]),
+        dict(role='user', content=(
+            'Completion review requires further work within the existing user authorization:\n'
+            '- Report the annual participant pricing and initial total.\n'
+            'Evidence assessment: Pricing is incomplete.')),
+        dict(role='assistant', content=[dict(type='text', text='Onboarding costs $2,500.')]),
+    ]
+    context = SimpleNamespace(system_prompt='Review accurately.', messages=messages, tools=[])
+    payload, meta = build_review_payload(context, Intention(
+        outcome='Review the transcript pricing.',
+        completion_evidence=['Annual participant pricing and initial total are supported.'],
+        scope='Read-only transcript review.'))
+    packet = json.loads(payload)
+
+    assert [item['ref'] for item in packet['messages']] == ['message:3', 'message:4']
+    assert packet['review_scope'] == {'mode': 'delta', 'starts_at': 'message:3'}
+    assert packet['focused_evidence'][0]['handle'] == handle
+    assert '$2,310' in packet['focused_evidence'][0]['excerpt']
+    assert meta['focused_evidence_count'] == 1
+
+
+def test_repeat_review_does_not_prefetch_ccr_from_prior_user_request(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    old_handle = store.put('current pricing keyword from an unrelated prior request')
+    current_handle = store.put('current pricing is $42 per participant')
+    messages = [
+        dict(role='user', content='Review the old request.'),
+        dict(role='toolResult', content=[dict(type='text', text=f'[CCR:{old_handle}] old')]),
+        dict(role='assistant', content='Old request complete.'),
+        dict(role='user', content='Review current pricing.'),
+        dict(role='toolResult', content=[dict(type='text', text=f'[CCR:{current_handle}] current')]),
+        dict(role='assistant', content='Current draft.'),
+        dict(role='user', content=(
+            'Completion review requires further work within the existing user authorization:\n'
+            '- Verify current pricing.\nEvidence assessment: Incomplete.')),
+        dict(role='assistant', content='Current pricing is reported.'),
+    ]
+    payload, _ = build_review_payload(SimpleNamespace(
+        system_prompt='', messages=messages, tools=[]), Intention(
+        outcome='Review current pricing.', completion_evidence=['Verify current pricing.'],
+        scope='Current request only.'), task_start=3)
+    handles = [item['handle'] for item in json.loads(payload)['focused_evidence']]
+
+    assert current_handle in handles
+    assert old_handle not in handles
+
+
+def test_repeat_review_prioritizes_delta_ccr_before_bounded_earlier_evidence(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / 'ccr.db'))
+    monkeypatch.setattr(active_compression, '_store', store)
+    earlier = [store.put(f'pricing evidence earlier {index}') for index in range(7)]
+    delta = store.put('pricing evidence from the correction pass')
+    messages = [dict(role='user', content='Review pricing.')]
+    messages.extend(dict(role='toolResult', content=[dict(type='text', text=f'[CCR:{handle}]')])
+                    for handle in earlier)
+    messages.extend([
+        dict(role='assistant', content='Initial draft.'),
+        dict(role='user', content=(
+            'Completion review requires further work within the existing user authorization:\n'
+            '- Verify pricing evidence.\nEvidence assessment: Incomplete.')),
+        dict(role='toolResult', content=[dict(type='text', text=f'[CCR:{delta}]')]),
+        dict(role='assistant', content='Corrected draft.'),
+    ])
+    payload, meta = build_review_payload(SimpleNamespace(
+        system_prompt='', messages=messages, tools=[]), Intention(
+        outcome='Review pricing.', completion_evidence=['Verify pricing evidence.'],
+        scope='Current request only.'))
+    handles = [item['handle'] for item in json.loads(payload)['focused_evidence']]
+
+    assert handles[0] == delta
+    assert len(handles) == MAX_FOCUSED_EVIDENCE_ITEMS
+    assert meta['focused_evidence_count'] == MAX_FOCUSED_EVIDENCE_ITEMS
 
 
 def test_review_omits_empty_transport_fields_without_dropping_business_nulls():

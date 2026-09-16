@@ -517,6 +517,58 @@ class TestPrintMode:
         assert code == 0
         assert capsys.readouterr().out.strip().splitlines() == ["only once"]
 
+    @pytest.mark.asyncio
+    async def test_run_print_mode_reports_agent_end_error_after_candidate(self, capsys):
+        from types import SimpleNamespace
+
+        from pi_ai.types import AssistantMessage, TextContent, Usage
+        from pi_coding_agent.modes.print_mode import PrintModeOptions, run_print_mode
+
+        candidate = AssistantMessage(
+            content=[TextContent(text="candidate")],
+            api="openai-codex-responses",
+            provider="openai",
+            model="gpt-5.5",
+            usage=Usage(),
+            timestamp=0,
+        )
+        failure = AssistantMessage(
+            content=[TextContent(text="")],
+            api="openai-codex-responses",
+            provider="openai",
+            model="gpt-5.5",
+            usage=Usage(),
+            stop_reason="error",
+            error_message="Completion reviewer returned no valid decision",
+            timestamp=0,
+        )
+
+        class FakeSession:
+            def __init__(self):
+                self._listeners = []
+                self.state = SimpleNamespace(messages=[])
+
+            def subscribe(self, listener):
+                self._listeners.append(listener)
+                return lambda: self._listeners.remove(listener)
+
+            async def prompt(self, text, images=None):
+                self.state.messages.extend([candidate, failure])
+                self.state.error = failure.error_message
+                for listener in list(self._listeners):
+                    listener(SimpleNamespace(type="message_end", message=candidate))
+                    listener(SimpleNamespace(type="agent_end", messages=[failure]))
+
+        code = await run_print_mode(
+            FakeSession(),
+            options=PrintModeOptions(mode="text", initial_message="hello"),
+        )
+
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.out.strip().splitlines() == ["candidate"]
+        assert "Completion reviewer returned no valid decision" in captured.err
+
 
 # ── core/session_manager tree/branch tests ────────────────────────────────────
 

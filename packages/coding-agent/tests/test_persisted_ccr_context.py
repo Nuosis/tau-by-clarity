@@ -1,9 +1,10 @@
+import asyncio
 import re
 from types import SimpleNamespace
 
 import pytest
 
-from pi_ai import TextContent, ToolResultMessage
+from pi_ai import AssistantMessage, TextContent, ToolResultMessage, Usage
 from pi_coding_agent import active_compression as active_compression_runtime
 from pi_coding_agent.active_compression.ccr import CCRStore
 from pi_coding_agent.active_compression.extension import extension_factory
@@ -80,6 +81,24 @@ def test_compress_message_for_persistence_keeps_model_facing_message_compressed(
     assert metadata["refs"][0]["original"] == original
 
 
+@pytest.mark.parametrize("tool_name", ["read", "Read", "ccr_retrieve"])
+def test_persistence_preserves_fresh_source_and_retrieval_results(tmp_path, tool_name):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    original = _large_log()
+    message = _large_tool_message(original)
+    message["tool_name"] = tool_name
+    try:
+        persisted, metadata = compress_message_for_persistence(message)
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert persisted == message
+    assert persisted["content"][0]["text"] == original
+    assert metadata is None
+
+
 def test_agent_session_message_end_persists_compressed_tool_result_with_metadata(tmp_path):
     store = CCRStore(str(tmp_path / "ccr.db"))
     previous_store = active_compression_runtime._store
@@ -105,6 +124,55 @@ def test_agent_session_message_end_persists_compressed_tool_result_with_metadata
     assert "ccr_retrieve" in persisted_text
     assert raw["activeCompression"]["refs"][0]["original"] == original
     assert raw["activeCompression"]["refs"][0]["toolCallId"] == "call-persist-hook"
+
+
+@pytest.mark.asyncio
+async def test_agent_session_persists_agent_end_error_after_candidate(tmp_path, monkeypatch):
+    sm = SessionManager.create(str(tmp_path), session_dir=str(tmp_path / "sessions"), session_id="review-error")
+    session = AgentSession(cwd=str(tmp_path), session_manager=sm)
+    candidate = AssistantMessage(
+        content=[TextContent(text="Candidate answer")], api="openai-responses",
+        provider="openai", model="gpt-5.5", usage=Usage(), timestamp=1,
+    )
+    failure = AssistantMessage(
+        content=[TextContent(text="")], api="openai-responses", provider="openai",
+        model="gpt-5.5", usage=Usage(), stop_reason="error",
+        error_message="Completion reviewer returned no valid decision", timestamp=2,
+    )
+    post_turn_checks = []
+
+    async def capture_post_turn(message):
+        post_turn_checks.append(message)
+
+    monkeypatch.setattr(session, "_post_turn_checks", capture_post_turn)
+
+    session._on_agent_event(SimpleNamespace(type="message_end", message=candidate))
+    session._on_agent_event(SimpleNamespace(type="agent_end", messages=[failure]))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    messages = [entry.data["message"] for entry in sm.get_entries() if entry.type == "message"]
+    assert [message.get("stop_reason") for message in messages] == ["stop", "error"]
+    assert messages[-1]["error_message"] == "Completion reviewer returned no valid decision"
+    reopened_messages = SessionManager.open(sm.get_session_file()).get_messages()
+    assert reopened_messages[-1]["stop_reason"] == "error"
+    assert reopened_messages[-1]["error_message"] == "Completion reviewer returned no valid decision"
+    assert post_turn_checks == []
+
+
+def test_agent_session_does_not_duplicate_error_seen_on_message_end(tmp_path):
+    sm = SessionManager.create(str(tmp_path), session_dir=str(tmp_path / "sessions"), session_id="provider-error")
+    session = AgentSession(cwd=str(tmp_path), session_manager=sm)
+    failure = AssistantMessage(
+        content=[TextContent(text="")], api="openai-responses", provider="openai",
+        model="gpt-5.5", usage=Usage(), stop_reason="error",
+        error_message="HTTP 503", timestamp=2,
+    )
+
+    session._on_agent_event(SimpleNamespace(type="message_end", message=failure))
+    session._on_agent_event(SimpleNamespace(type="agent_end", messages=[failure]))
+
+    assert len([entry for entry in sm.get_entries() if entry.type == "message"]) == 1
 
 
 def test_refresh_or_rebuild_session_refs_restores_expired_ccr_from_session_metadata(tmp_path, monkeypatch):

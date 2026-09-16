@@ -86,6 +86,8 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
                               if tool['name'] in {'submit_review', 'submit_intention'}), None)
         if reviewer_tool:
             if reviewer_tool == 'submit_review':
+                assert body['tool_choice'] == 'required'
+                assert body['parallel_tool_calls'] is False
                 reviews.append(body)
             args = intention_fixture() if reviewer_tool == 'submit_intention' else {
                 'decision': 'accept', 'rationale': 'Fixture completed.', 'intention_met': True,
@@ -104,7 +106,7 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
                                 content_type='text/event-stream')
         requests.append(body)
         step = len(requests)
-        if step <= 4:
+        if step <= 5:
             assert body["tool_choice"] == {"type": "function", "name": "submit_response"}
             assert body["tools"][0]["strict"] is True
             assert body["parallel_tool_calls"] is False
@@ -164,31 +166,44 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         await session.prompt("Report completion again.")
         assert requests[-1]["model"] == "default"
         assert session.router_enabled and session.agent.state.error is None
+        second_review = json.loads(reviews[-1]["input"][-1]["content"][0]["text"])
+        assert second_review["review_scope"]["starts_at"] != "message:0"
+        assert "Read fixture.txt" not in json.dumps(second_review["messages"])
+        assert "Report completion again." in json.dumps(second_review["messages"])
+        await session.prompt("Report completion again.")
+        third_review = json.loads(reviews[-1]["input"][-1]["content"][0]["text"])
+        second_start = int(second_review["review_scope"]["starts_at"].split(":")[1])
+        third_start = int(third_review["review_scope"]["starts_at"].split(":")[1])
+        assert third_start > second_start
+        assert json.dumps(third_review["messages"]).count("Report completion again.") == 1
         history, footer = await model_command(session, "/model router-fixture/light")
         assert not session.router_enabled and footer[-1].startswith("light | thinking:")
         await session.prompt("Reply using the selected fixed model.")
         assert requests[-1]["model"] == "light"
-        assert len(reviews) == 2  # Fixed-model replies do not invoke a reviewer.
+        assert len(reviews) == 3  # Fixed-model replies do not invoke a reviewer.
         assert session.agent.state.error is None
         reopened = SessionManager.open(session._session_manager.get_session_file())
         entries = [{**entry.data, "type": entry.type} for entry in reopened.get_entries()]
         decisions = [entry["data"] for entry in entries
                      if entry.get("customType") == "tau.router_selection"]
-        assert [row["level"] for row in decisions] == ["default", "ultra-light", "max", "default"]
-        assert [row["reasoning"] for row in decisions] == ["high", "low", "high", "high"]
+        assert [row["level"] for row in decisions] == ["default", "ultra-light", "max", "default", "default"]
+        assert [row["reasoning"] for row in decisions] == ["high", "low", "high", "high", "high"]
         assert decisions[2]["rule"] == "planning"
         assert decisions[2]["next_invocation"]["classification_explanations"]
-        assert len([e for e in entries if e.get("customType") == "tau.router_metadata"]) == 4
+        assert len([e for e in entries if e.get("customType") == "tau.router_metadata"]) == 5
+        session._review_task_start = 999
+        session._restore_intention()
+        assert session._review_task_start == third_start
         from pi_coding_agent.core.model_stats import model_stats, render_model_stats
         stats = model_stats(entries)
         assert stats == session.get_model_stats()
-        assert stats["total"] == 9  # Five worker + two intention + two review calls.
-        assert stats['total_tokens'] == 1080
-        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'worker') == 600
-        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'reviewer') == 240
-        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 240
+        assert stats["total"] == 12  # Six worker + three intention + three review calls.
+        assert stats['total_tokens'] == 1440
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'worker') == 720
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'reviewer') == 360
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 360
         assert sum(r['percent'] for r in stats['models']) == pytest.approx(100)
-        assert "22.2%  240 tokens · 2 calls" in render_model_stats(stats)
+        assert "25.0%  360 tokens · 3 calls" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
@@ -230,7 +245,7 @@ def test_sketch_policy(meta, probe, expected):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_kind", ["pending_null", "unknown", "missing_carrier"])
+@pytest.mark.parametrize("bad_kind", ["pending_null", "unknown", "missing_carrier", "missing_probe"])
 async def test_invalid_routed_output_cannot_execute_tools(tmp_path, monkeypatch, bad_kind):
     from pi_ai.types import AssistantMessage, EventDone, TextContent, ToolCall, Usage
 
@@ -249,6 +264,8 @@ async def test_invalid_routed_output_cannot_execute_tools(tmp_path, monkeypatch,
             meta["method_certainty"] = "unknown"
         wire = envelope([{"name": "edit", "arguments": {"path": str(file), "oldText": "preserve", "newText": "changed"}}],
                         None if bad_kind == "pending_null" else meta)
+        if bad_kind == "missing_probe":
+            wire.pop("dependency_probe")
         content = ([TextContent(text="No carrier")] if bad_kind == "missing_carrier" else
                    [ToolCall(id="bad", name="submit_response", arguments=wire)])
         final = AssistantMessage(content=content, api=model.api, provider=model.provider,
