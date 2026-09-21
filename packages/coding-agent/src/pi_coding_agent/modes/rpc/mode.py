@@ -15,6 +15,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 from pi_coding_agent.core.source_info import create_synthetic_source_info, source_info_to_dict
 from .jsonl import JsonlLineReader, serialize_json_line
+from .login import RpcLoginController
 
 from .types import (
     RpcCommand,
@@ -417,6 +418,8 @@ async def run_rpc_mode(session: "AgentSession") -> None:
         else:
             _output(obj)
 
+    login = RpcLoginController(output)
+
     ui_ctx = _create_extension_ui_context(pending_extension_requests, _output)
 
     await active_session.bind_extensions({
@@ -448,6 +451,30 @@ async def run_rpc_mode(session: "AgentSession") -> None:
         if cmd_type == "prompt":
             _handle_prompt_command(active_session, cmd_id, command, output)
             return None
+
+        elif cmd_type == "login":
+            return _success(
+                cmd_id,
+                "login",
+                login.start(
+                    active_session,
+                    provider=command.get("provider"),
+                    method=command.get("method"),
+                ),
+            )
+
+        elif cmd_type == "login_response":
+            login.respond(
+                login_id=str(command.get("loginId") or ""),
+                request_id=str(command.get("requestId") or ""),
+                value=command.get("value"),
+                cancelled=bool(command.get("cancelled")),
+            )
+            return _success(cmd_id, "login_response")
+
+        elif cmd_type == "login_cancel":
+            login.cancel(login_id=str(command.get("loginId") or ""))
+            return _success(cmd_id, "login_cancel")
 
         elif cmd_type == "steer":
             await active_session.steer(command["message"], command.get("images"))
