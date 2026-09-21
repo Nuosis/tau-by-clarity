@@ -3304,16 +3304,7 @@ async def _compatible_provider_login(
 async def _subscription_login(provider: str, session: "AgentSession", append_history, show_input) -> None:
     import webbrowser
 
-    from pi_ai.utils.oauth.types import OAuthLoginCallbacks
-
-    if provider == "openai":
-        from pi_ai.utils.oauth.openai_codex import openai_codex_oauth_provider as oauth_provider
-    elif provider == "anthropic":
-        from pi_ai.utils.oauth.anthropic import anthropic_oauth_provider as oauth_provider
-    elif provider == "google":
-        from pi_ai.utils.oauth.google_gemini_cli import gemini_cli_oauth_provider as oauth_provider
-    else:
-        raise ValueError(f"{provider} does not support subscription login")
+    from pi_coding_agent.core.login import subscription_login
 
     def on_auth(info) -> None:
         opened = False
@@ -3332,28 +3323,10 @@ async def _subscription_login(provider: str, session: "AgentSession", append_his
             raise RuntimeError("OAuth login cancelled")
         return "" if value is None else str(value)
 
-    credentials = await oauth_provider.login(
-        OAuthLoginCallbacks(
-            on_auth=on_auth,
-            on_prompt=on_prompt,
-            on_progress=lambda message: append_history(str(message)),
-        )
+    await subscription_login(
+        provider,
+        session,
+        on_auth=on_auth,
+        on_prompt=on_prompt,
+        on_progress=lambda message: append_history(str(message)),
     )
-    token = {
-        "access_token": credentials.access,
-        "refresh_token": credentials.refresh,
-        "expires_at": credentials.expires / 1000 if credentials.expires else 0,
-        "access": credentials.access,
-        "refresh": credentials.refresh,
-        "expires": credentials.expires,
-        "oauth_provider": getattr(oauth_provider, "id", provider),
-        **dict(credentials.extra),
-    }
-    auth = getattr(session, "auth_storage", None)
-    if auth is None:
-        auth = getattr(session, "_auth_storage", None)
-    if auth is None or not hasattr(auth, "set_oauth_token"):
-        raise RuntimeError("Session auth storage does not support OAuth tokens")
-    auth.set_oauth_token(provider, token)
-    if provider == "google":
-        auth.set_oauth_token("google-gemini-cli", token)

@@ -15,6 +15,20 @@ import pytest
 # ============================================================================
 
 class TestRpcTypes:
+    def test_rpc_login_commands_serialize_correlated_flow(self):
+        from pi_coding_agent.modes.rpc.types import (
+            RpcCommandLogin,
+            RpcCommandLoginCancel,
+            RpcCommandLoginResponse,
+        )
+
+        assert RpcCommandLogin(type="login").model_dump()["type"] == "login"
+        response = RpcCommandLoginResponse(
+            type="login_response", loginId="login-1", requestId="request-1", value="anthropic"
+        )
+        assert response.loginId == "login-1" and response.requestId == "request-1"
+        assert RpcCommandLoginCancel(type="login_cancel", loginId="login-1").loginId == "login-1"
+
     def test_rpc_command_prompt_serializes(self):
         from pi_coding_agent.modes.rpc.types import RpcCommandPrompt
         cmd = RpcCommandPrompt(type="prompt", message="Hello world")
@@ -421,6 +435,132 @@ def test_rpc_command_exception_response_preserves_command_identity() -> None:
     assert response.command == "get_state"
     assert response.success is False
     assert response.error == "boom"
+
+
+@pytest.mark.asyncio
+async def test_rpc_login_uses_native_oauth_storage_without_opening_browser(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import webbrowser
+
+    from pi_ai.utils.oauth.types import OAuthAuthInfo, OAuthCredentials, OAuthPrompt
+    from pi_coding_agent.core.auth_storage import AuthStorage
+    from pi_coding_agent.modes.rpc.login import RpcLoginController
+
+    output: list[dict] = []
+    browser_open_calls: list[str] = []
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda url, *args, **kwargs: browser_open_calls.append(url),
+    )
+    auth_path = tmp_path / "agent" / "auth.json"
+    native_auth = AuthStorage.create(str(auth_path))
+
+    async def native_subscription(provider, session, *, on_auth, on_prompt, on_progress):
+        assert provider == "anthropic"
+        on_auth(OAuthAuthInfo(url="https://auth.invalid/authorize", instructions="Authorize synthetic account"))
+        on_progress("Waiting for authorization")
+        code = await on_prompt(OAuthPrompt(message="Paste the authorization code:"))
+        credentials = OAuthCredentials(refresh="synthetic-refresh", access=f"synthetic-{code}", expires=123000)
+        session.auth_storage.set_oauth_token(provider, credentials.to_dict())
+
+    class Settings:
+        def __init__(self): self.saved = []
+        def save_project(self, key, value): self.saved.append((key, value))
+
+    class Session:
+        session_id = "rpc-session-1"
+        auth_storage = native_auth
+        settings_manager = Settings()
+
+    controller = RpcLoginController(output.append, subscription_runner=native_subscription)
+    accepted = controller.start(Session(), provider="anthropic", method="subscription")
+    assert accepted["sessionId"] == "rpc-session-1"
+    await asyncio.sleep(0)
+    prompt = next(event for event in output if event.get("event") == "request")
+    assert prompt["sensitive"] is True
+    assert next(event for event in output if event.get("event") == "authorization")["url"].startswith("https://")
+    controller.respond(
+        login_id=accepted["loginId"], request_id=prompt["requestId"], value="synthetic-code"
+    )
+    await controller._task
+
+    stored = AuthStorage.create(str(auth_path)).get_oauth_token("anthropic")
+    assert stored["access"] == "synthetic-synthetic-code"
+    assert auth_path.stat().st_mode & 0o777 == 0o600
+    assert b"synthetic-code" not in auth_path.read_bytes()
+    assert output[-1]["event"] == "completed"
+    assert browser_open_calls == []
+    assert all("synthetic-code" not in str(event) for event in output)
+
+
+@pytest.mark.asyncio
+async def test_shared_subscription_login_persists_native_oauth_credentials() -> None:
+    from pi_ai.utils.oauth.types import OAuthAuthInfo, OAuthCredentials, OAuthPrompt
+    from pi_coding_agent.core.auth_storage import AuthStorage, InMemoryAuthStorageBackend
+    from pi_coding_agent.core.login import subscription_login
+
+    class Provider:
+        id = "anthropic"
+
+        async def login(self, callbacks):
+            callbacks.on_auth(OAuthAuthInfo(url="https://auth.invalid/native"))
+            callbacks.on_progress("Synthetic provider progress")
+            code = await callbacks.on_prompt(OAuthPrompt(message="Authorization code"))
+            return OAuthCredentials(
+                refresh="synthetic-refresh", access=f"synthetic-{code}", expires=456000
+            )
+
+    class Session:
+        auth_storage = AuthStorage(storage=InMemoryAuthStorageBackend())
+
+    auth_events = []
+    progress = []
+    await subscription_login(
+        "anthropic",
+        Session(),
+        on_auth=auth_events.append,
+        on_prompt=lambda _prompt: asyncio.sleep(0, result="authorization-code"),
+        on_progress=progress.append,
+        oauth_provider=Provider(),
+    )
+
+    stored = Session.auth_storage.get_oauth_token("anthropic")
+    assert stored["access"] == "synthetic-authorization-code"
+    assert stored["refresh"] == "synthetic-refresh"
+    assert auth_events[0].url == "https://auth.invalid/native"
+    assert progress == ["Synthetic provider progress"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_login_rejects_wrong_flow_and_supports_cancel_and_failure() -> None:
+    from pi_coding_agent.modes.rpc.login import RpcLoginController
+
+    class Session:
+        session_id = "rpc-session-2"
+
+    output: list[dict] = []
+    controller = RpcLoginController(output.append)
+    accepted = controller.start(Session())
+    await asyncio.sleep(0)
+    request = next(event for event in output if event.get("event") == "request")
+    with pytest.raises(ValueError, match="another RPC session"):
+        controller.respond(login_id="other", request_id=request["requestId"], value="anthropic")
+    controller.cancel(login_id=accepted["loginId"])
+    await controller._task
+    assert output[-1]["event"] == "cancelled"
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    output.clear()
+    controller = RpcLoginController(output.append, subscription_runner=fail)
+    controller.start(Session(), provider="anthropic", method="subscription")
+    await controller._task
+    assert output[-1]["event"] == "failed"
+    assert "provider unavailable" in output[-1]["message"]
 
 
 # ============================================================================
