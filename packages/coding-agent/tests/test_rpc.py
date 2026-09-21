@@ -548,19 +548,71 @@ async def test_rpc_login_rejects_wrong_flow_and_supports_cancel_and_failure() ->
     request = next(event for event in output if event.get("event") == "request")
     with pytest.raises(ValueError, match="another RPC session"):
         controller.respond(login_id="other", request_id=request["requestId"], value="anthropic")
+    with pytest.raises(ValueError, match="active request"):
+        controller.respond(
+            login_id=accepted["loginId"], request_id="stale-request", value="anthropic"
+        )
+    controller.respond(
+        login_id=accepted["loginId"], request_id=request["requestId"], value="anthropic"
+    )
+    with pytest.raises(ValueError, match="active request"):
+        controller.respond(
+            login_id=accepted["loginId"], request_id=request["requestId"], value="anthropic"
+        )
+    # Cancellation wins a race after an answer has been accepted but before
+    # the login task advances to its next provider step.
     controller.cancel(login_id=accepted["loginId"])
     await controller._task
     assert output[-1]["event"] == "cancelled"
 
+    leaked = "synthetic-access-token-and-code"
+
     async def fail(*args, **kwargs):
-        raise RuntimeError("provider unavailable")
+        raise RuntimeError(f"token response contained {leaked}")
 
     output.clear()
     controller = RpcLoginController(output.append, subscription_runner=fail)
     controller.start(Session(), provider="anthropic", method="subscription")
     await controller._task
     assert output[-1]["event"] == "failed"
-    assert "provider unavailable" in output[-1]["message"]
+    assert output[-1]["message"] == (
+        "Provider sign-in failed. Start /login again and retry, "
+        "or choose another authentication method."
+    )
+    assert all(leaked not in str(event) for event in output)
+
+
+@pytest.mark.asyncio
+async def test_rpc_login_preserves_native_allow_empty_prompt_semantics() -> None:
+    from pi_ai.utils.oauth.types import OAuthPrompt
+    from pi_coding_agent.modes.rpc.login import RpcLoginController
+
+    class Session:
+        session_id = "rpc-session-allow-empty"
+
+        class Settings:
+            def save_project(self, key, value):
+                return None
+
+        settings_manager = Settings()
+
+    async def prompt_for_optional_value(provider, session, *, on_auth, on_prompt, on_progress):
+        value = await on_prompt(OAuthPrompt(message="Optional code", allow_empty=True))
+        assert value == ""
+
+    output: list[dict] = []
+    controller = RpcLoginController(output.append, subscription_runner=prompt_for_optional_value)
+    accepted = controller.start(Session(), provider="anthropic", method="subscription")
+    await asyncio.sleep(0)
+    request = next(event for event in output if event.get("event") == "request")
+    assert request["allowEmpty"] is True
+    controller.respond(
+        login_id=accepted["loginId"],
+        request_id=request["requestId"],
+        value="",
+    )
+    await controller._task
+    assert output[-1]["event"] == "completed"
 
 
 # ============================================================================
