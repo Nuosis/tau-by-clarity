@@ -2,17 +2,48 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import traceback
 import uuid
 from collections.abc import Callable
 from typing import Any
 
 from pi_coding_agent.core.login import subscription_login
+from pi_coding_agent.core.cli_debug_log import log_event
 from pi_coding_agent.core.provider_profiles import PROVIDER_PROFILES, get_provider_profile
 
 _RPC_PROVIDERS = tuple(
     profile for profile in PROVIDER_PROFILES
     if profile.id in {"openai", "anthropic", "google"}
 )
+
+_OAUTH_ERRORS = frozenset({
+    "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+    "unsupported_grant_type", "invalid_scope", "access_denied", "server_error",
+    "temporarily_unavailable",
+})
+
+
+def _failure_diagnostic(exc: Exception) -> dict[str, Any]:
+    # Older OAuth adapters put a provider JSON body inside RuntimeError.
+    # Extract only a known OAuth enum; never log exception text or source lines.
+    oauth_error = "unknown"
+    text = str(exc)
+    if text.startswith("Token exchange failed: "):
+        try:
+            value = json.loads(text.removeprefix("Token exchange failed: ")).get("error")
+            if isinstance(value, str) and value in _OAUTH_ERRORS:
+                oauth_error = value
+        except (ValueError, AttributeError):
+            pass
+    return {
+        "exception_type": type(exc).__name__,
+        "failure_code": oauth_error,
+        "frames": [
+            {"function": frame.name, "line": frame.lineno}
+            for frame in traceback.extract_tb(exc.__traceback__)
+        ],
+    }
 
 
 class _SafeLoginError(ValueError):
@@ -53,6 +84,7 @@ class RpcLoginController:
         if request_id != self._request_id or self._response is None or self._response.done():
             raise ValueError("Login response does not match the active request")
         self._response.set_result(None if cancelled else str(value or ""))
+        log_event("native_login_response", login_id=self.login_id, request_id=request_id, cancelled=cancelled)
 
     def cancel(self, *, login_id: str) -> None:
         self._require_flow(login_id)
@@ -66,6 +98,7 @@ class RpcLoginController:
             raise ValueError("Login flow is absent or belongs to another RPC session")
 
     def _emit(self, event: str, **data: Any) -> None:
+        log_event("native_login_event", login_id=self.login_id, session_id=self.session_id, login_event=event)
         self.output({
             "type": "login_event",
             "event": event,
@@ -106,6 +139,7 @@ class RpcLoginController:
         return value
 
     async def _run(self, session: Any, *, provider: str | None, method: str | None) -> None:
+        stage = "provider_selection"
         try:
             self._emit("started", message="Choose a provider to sign in to Tau.")
             if provider is None:
@@ -117,6 +151,7 @@ class RpcLoginController:
             profile = get_provider_profile(provider)
             if profile not in _RPC_PROVIDERS:
                 raise _SafeLoginError("That provider is not available for this sign-in flow.")
+            stage = "method_selection"
             if method is None:
                 if len(profile.auth_methods) == 1:
                     method = profile.auth_methods[0]
@@ -133,6 +168,7 @@ class RpcLoginController:
                 )
 
             if method == "subscription":
+                stage = "subscription"
                 def on_auth(info: Any) -> None:
                     self._emit(
                         "authorization",
@@ -156,6 +192,7 @@ class RpcLoginController:
                     on_progress=lambda message: self._emit("progress", message=str(message)),
                 )
             else:
+                stage = "api_key"
                 key = await self._ask(
                     kind="input",
                     message=f"{profile.label} API key",
@@ -163,6 +200,7 @@ class RpcLoginController:
                 )
                 session.login_api_key(profile.id, key)
 
+            stage = "settings"
             settings = getattr(session, "settings_manager", None)
             save_project = getattr(settings, "save_project", None)
             if callable(save_project):
@@ -172,7 +210,9 @@ class RpcLoginController:
             self._emit("cancelled", message="Login cancelled.")
         except _SafeLoginError as exc:
             self._emit("failed", message=str(exc))
-        except Exception:
+        except Exception as exc:
+            log_event("native_login_failed", login_id=self.login_id, session_id=self.session_id,
+                      stage=stage, **_failure_diagnostic(exc))
             # OAuth providers may include raw HTTP bodies or token data in
             # exceptions. Keep those values out of RPC output and its UI/log
             # consumers; the user only needs a safe recovery action here.
