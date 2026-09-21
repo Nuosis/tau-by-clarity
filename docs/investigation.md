@@ -404,3 +404,24 @@ Both Python bash execution paths now pass `stdin=asyncio.subprocess.DEVNULL`.
 The focused regression gate passes 26 tests, including a `read` command through
 each path that returns `stdin-eof` instead of waiting for Terminal input. Shell
 heredocs remain usable because they provide explicit input redirection.
+
+
+## Claire native login diagnostics — September 21, 2026
+
+Marcus completed authorization but the native login failed. The original RPC
+handler discarded its exception, so later expired-refresh errors cannot
+identify that failure. Endpoint connectivity and service-user file access
+probes passed; the historical exchange cause remains unknown.
+
+Metadata-only failure logging is installed on Claire2 in the Claire Tau RPC
+login module, SHA256 a3c4229229a8112981d165f695b50e87f70e42c139e3b746effd854523f7b095.
+Three focused tests pass using the actual controller/provider/storage with an
+HTTP substitute. A live installed-controller call with a synthetic invalid
+code returned stage subscription, failure_code invalid_grant, and the
+login_anthropic stack location, with no credential saved or secret in logs.
+This verifies diagnostics, not recovery of Marcus’s account.
+
+Backup: /opt/agents/backups/claire-login-diagnostics-bce9582/login.py.before.
+Chat service stayed active; no warm Tau subprocess existed during installation.
+Private investigation: ~/.codex/evidence/claire-login-20260921/investigation.md.
+Await a fresh owner exchange to capture the error that was previously erased.
