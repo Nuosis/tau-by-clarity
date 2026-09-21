@@ -15,6 +15,10 @@ _RPC_PROVIDERS = tuple(
 )
 
 
+class _SafeLoginError(ValueError):
+    """A validation failure whose text is safe to show to the user."""
+
+
 class RpcLoginController:
     """Own one login exchange for one RPC session at a time."""
 
@@ -90,6 +94,7 @@ class RpcLoginController:
             message=message,
             options=options or [],
             sensitive=sensitive,
+            allowEmpty=allow_empty,
         )
         value = await response
         self._request_id = None
@@ -97,7 +102,7 @@ class RpcLoginController:
         if value is None:
             raise asyncio.CancelledError
         if not allow_empty and not value.strip():
-            raise ValueError("A value is required")
+            raise _SafeLoginError("A value is required to continue sign-in.")
         return value
 
     async def _run(self, session: Any, *, provider: str | None, method: str | None) -> None:
@@ -111,7 +116,7 @@ class RpcLoginController:
                 )
             profile = get_provider_profile(provider)
             if profile not in _RPC_PROVIDERS:
-                raise ValueError(f"Provider is not available for RPC login: {provider}")
+                raise _SafeLoginError("That provider is not available for this sign-in flow.")
             if method is None:
                 if len(profile.auth_methods) == 1:
                     method = profile.auth_methods[0]
@@ -123,7 +128,9 @@ class RpcLoginController:
                         options=[{"value": item, "label": labels[item]} for item in profile.auth_methods],
                     )
             if method not in profile.auth_methods:
-                raise ValueError(f"{profile.label} does not support {method} login")
+                raise _SafeLoginError(
+                    f"{profile.label} does not support that authentication method."
+                )
 
             if method == "subscription":
                 def on_auth(info: Any) -> None:
@@ -163,8 +170,19 @@ class RpcLoginController:
             self._emit("completed", message=f"Login stored for {profile.label}.", provider=profile.id)
         except asyncio.CancelledError:
             self._emit("cancelled", message="Login cancelled.")
-        except Exception as exc:
-            self._emit("failed", message=f"Login failed: {exc}")
+        except _SafeLoginError as exc:
+            self._emit("failed", message=str(exc))
+        except Exception:
+            # OAuth providers may include raw HTTP bodies or token data in
+            # exceptions. Keep those values out of RPC output and its UI/log
+            # consumers; the user only needs a safe recovery action here.
+            self._emit(
+                "failed",
+                message=(
+                    "Provider sign-in failed. Start /login again and retry, "
+                    "or choose another authentication method."
+                ),
+            )
         finally:
             self._request_id = None
             self._response = None
