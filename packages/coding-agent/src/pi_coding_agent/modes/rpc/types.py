@@ -184,6 +184,28 @@ class RpcCommandGetCommands(BaseModel):
     id: str | None = None
 
 
+class RpcCommandLogin(BaseModel):
+    type: Literal["login"]
+    id: str | None = None
+    provider: str | None = None
+    method: Literal["subscription", "api_key"] | None = None
+
+
+class RpcCommandLoginResponse(BaseModel):
+    type: Literal["login_response"]
+    id: str | None = None
+    loginId: str
+    requestId: str
+    value: str | None = None
+    cancelled: bool = False
+
+
+class RpcCommandLoginCancel(BaseModel):
+    type: Literal["login_cancel"]
+    id: str | None = None
+    loginId: str
+
+
 RpcCommand = Union[
     RpcCommandPrompt,
     RpcCommandSteer,
@@ -214,6 +236,9 @@ RpcCommand = Union[
     RpcCommandSetSessionName,
     RpcCommandGetMessages,
     RpcCommandGetCommands,
+    RpcCommandLogin,
+    RpcCommandLoginResponse,
+    RpcCommandLoginCancel,
 ]
 
 
