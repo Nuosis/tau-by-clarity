@@ -447,3 +447,97 @@ Backup: /opt/agents/backups/claire-login-diagnostics-bce9582/login.py.before.
 Chat service stayed active; no warm Tau subprocess existed during installation.
 Private investigation: ~/.codex/evidence/claire-login-20260921/investigation.md.
 Await a fresh owner exchange to capture the error that was previously erased.
+
+---
+
+## Completion review missing verdict — 2026-09-15
+
+### Problem
+
+Tau session `521e693f-ca1d-465e-84ef-0165cc129c45` spent most of its cost in
+completion review, then ended with `Completion reviewer returned no valid
+decision; ending was not approved`. The candidate had already been rendered, so
+the interactive UI did not show the terminal review error.
+
+### Hypothesis list
+
+| # | Hypothesis | Null hypothesis | Status |
+|---|---|---|---|
+| 1 | The reviewer retried the same error four times | The preceding calls were successful review actions | NULLIFIED |
+| 2 | CCR retrieval failed and caused recovery attempts | Every recorded retrieval returned non-error evidence | NULLIFIED |
+| 3 | Automatic tool choice permitted a terminal response without `submit_review` | The provider was required to call a review tool | FALSIFIED; root cause |
+| 4 | The TUI reported the review exception after rendering the candidate | Prior rendered text suppressed `agent_end` errors | FALSIFIED; reporting defect |
+
+### Debug evidence
+
+- The session contains one `tau.turn_review.started`, three successful
+  `ccr_retrieve` tool calls, one fourth provider response with empty text and
+  stop reason `stop`, and one `tau.turn_review.failed` RuntimeError.
+- Replaying all three CCR lookups against the recorded handles returned
+  non-error results. The calls were evidence retrievals, not error retries.
+- The OpenAI Responses request builder supplied `tool_choice="auto"` and
+  `parallel_tool_calls=true`, while `review_turn` can assign a decision only
+  through `submit_review`. Empty terminal output therefore satisfied the
+  provider request but violated Tau's review contract.
+- The TUI handled `agent_end` errors only inside `if not rendered_response`.
+  Print mode likewise returned exit code 1 without stderr once candidate text
+  had already been printed. Session persistence listened only to `message_end`,
+  while this post-candidate exception existed only on `agent_end`.
+
+### Repair
+
+Completion review now requires a tool action on its first OpenAI Responses
+generation. It may submit immediately or make one successful CCR retrieval; the
+following request is then forced to `submit_review`, with parallel tool calls
+disabled. A review tool error terminates locally and is reported without another
+model call. Intention establishment and shared worker-tool error behavior are
+unchanged.
+
+Interactive and print modes now report terminal errors even after candidate
+output, and the session persists the distinct error entry after the candidate.
+Focused tests cover the original rendered-candidate case, print stderr, persisted
+reopen state, one-call termination after a bad CCR lookup, provider request
+enforcement, successful retrieval plus verdict, and the existing missing-verdict
+failure.
+
+### Human verification protocol
+
+1. Start a fresh router session and produce a candidate that triggers completion
+   review.
+2. Confirm the first review request contains `tool_choice="required"` and has
+   parallel calls disabled.
+3. If CCR evidence is retrieved, confirm the next request specifically requires
+   `submit_review` and no third review generation occurs.
+4. Induce a bad CCR handle and confirm Tau ends once, displays the review error,
+   exits nonzero in print mode, and persists the error after the candidate.
+
+## Python 3.11 compressor import failure — 2026-09-22
+
+### Problem
+
+Curtis Claire could resolve and activate all four router tiers, but the first
+routed Tau process exited before a model request with `f-string expression part
+cannot include a backslash` at `active_compression/compressor.py:1434`.
+
+### Hypothesis list
+
+| # | Hypothesis | Null hypothesis | Status |
+|---|------------|-----------------|--------|
+| 1 | The installed Tau source contains syntax unsupported by Curtis's Python 3.11 runtime | The installed compressor compiles under Python 3.11 | FALSIFIED |
+| 2 | Router model configuration causes the startup failure | The failure occurs while parsing the compressor, before router dispatch | NULLIFIED |
+
+### Debug evidence
+
+Both the source file and the installed Curtis file failed `python3.11 -m
+py_compile` on the same escaped quote expression. The project declares Python
+3.11 support. A focused regression invokes Python 3.11 against the production
+module, so the check cannot pass merely because the development test runner is
+Python 3.12 or newer.
+
+### Current hypothesis
+
+Root cause found: `_csv_quote_if_needed` used PEP 701 f-string expression
+syntax while Tau supports Python 3.11. Build the quoted CSV value with ordinary
+string concatenation, then rerun the same routed Curtis session.
+
+---

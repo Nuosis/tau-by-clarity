@@ -1431,7 +1431,7 @@ def _csv_quote_if_needed(value: str) -> str:
     if value.startswith("<<ccr:") and value.endswith(">>"):
         return value
     if any(char in value for char in (",", '"', "\n", "\r")):
-        return f'"{value.replace("\"", "\"\"")}"'
+        return '"' + value.replace('"', '""') + '"'
     return value
 
 
