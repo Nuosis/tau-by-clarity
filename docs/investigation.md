@@ -427,65 +427,23 @@ The focused regression gate passes 26 tests, including a `read` command through
 each path that returns `stdin-eof` instead of waiting for Terminal input. Shell
 heredocs remain usable because they provide explicit input redirection.
 
----
 
-## Completion review missing verdict — 2026-09-15
+## Claire native login diagnostics — September 21, 2026
 
-### Problem
+Marcus completed authorization but the native login failed. The original RPC
+handler discarded its exception, so later expired-refresh errors cannot
+identify that failure. Endpoint connectivity and service-user file access
+probes passed; the historical exchange cause remains unknown.
 
-Tau session `521e693f-ca1d-465e-84ef-0165cc129c45` spent most of its cost in
-completion review, then ended with `Completion reviewer returned no valid
-decision; ending was not approved`. The candidate had already been rendered, so
-the interactive UI did not show the terminal review error.
+Metadata-only failure logging is installed on Claire2 in the Claire Tau RPC
+login module, SHA256 a3c4229229a8112981d165f695b50e87f70e42c139e3b746effd854523f7b095.
+Three focused tests pass using the actual controller/provider/storage with an
+HTTP substitute. A live installed-controller call with a synthetic invalid
+code returned stage subscription, failure_code invalid_grant, and the
+login_anthropic stack location, with no credential saved or secret in logs.
+This verifies diagnostics, not recovery of Marcus’s account.
 
-### Hypothesis list
-
-| # | Hypothesis | Null hypothesis | Status |
-|---|---|---|---|
-| 1 | The reviewer retried the same error four times | The preceding calls were successful review actions | NULLIFIED |
-| 2 | CCR retrieval failed and caused recovery attempts | Every recorded retrieval returned non-error evidence | NULLIFIED |
-| 3 | Automatic tool choice permitted a terminal response without `submit_review` | The provider was required to call a review tool | FALSIFIED; root cause |
-| 4 | The TUI reported the review exception after rendering the candidate | Prior rendered text suppressed `agent_end` errors | FALSIFIED; reporting defect |
-
-### Debug evidence
-
-- The session contains one `tau.turn_review.started`, three successful
-  `ccr_retrieve` tool calls, one fourth provider response with empty text and
-  stop reason `stop`, and one `tau.turn_review.failed` RuntimeError.
-- Replaying all three CCR lookups against the recorded handles returned
-  non-error results. The calls were evidence retrievals, not error retries.
-- The OpenAI Responses request builder supplied `tool_choice="auto"` and
-  `parallel_tool_calls=true`, while `review_turn` can assign a decision only
-  through `submit_review`. Empty terminal output therefore satisfied the
-  provider request but violated Tau's review contract.
-- The TUI handled `agent_end` errors only inside `if not rendered_response`.
-  Print mode likewise returned exit code 1 without stderr once candidate text
-  had already been printed. Session persistence listened only to `message_end`,
-  while this post-candidate exception existed only on `agent_end`.
-
-### Repair
-
-Completion review now requires a tool action on its first OpenAI Responses
-generation. It may submit immediately or make one successful CCR retrieval; the
-following request is then forced to `submit_review`, with parallel tool calls
-disabled. A review tool error terminates locally and is reported without another
-model call. Intention establishment and shared worker-tool error behavior are
-unchanged.
-
-Interactive and print modes now report terminal errors even after candidate
-output, and the session persists the distinct error entry after the candidate.
-Focused tests cover the original rendered-candidate case, print stderr, persisted
-reopen state, one-call termination after a bad CCR lookup, provider request
-enforcement, successful retrieval plus verdict, and the existing missing-verdict
-failure.
-
-### Human verification protocol
-
-1. Start a fresh router session and produce a candidate that triggers completion
-   review.
-2. Confirm the first review request contains `tool_choice="required"` and has
-   parallel calls disabled.
-3. If CCR evidence is retrieved, confirm the next request specifically requires
-   `submit_review` and no third review generation occurs.
-4. Induce a bad CCR handle and confirm Tau ends once, displays the review error,
-   exits nonzero in print mode, and persists the error after the candidate.
+Backup: /opt/agents/backups/claire-login-diagnostics-bce9582/login.py.before.
+Chat service stayed active; no warm Tau subprocess existed during installation.
+Private investigation: ~/.codex/evidence/claire-login-20260921/investigation.md.
+Await a fresh owner exchange to capture the error that was previously erased.
