@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-from pi_coding_agent.config import CONFIG_DIR_NAME
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from typing import Any
 
 from pi_ai import get_model, get_models, get_providers
 from pi_ai.types import Model
+from pi_coding_agent.config import get_models_path
 from pi_coding_agent.core.provider_profiles import PROVIDER_PROFILES, synthetic_model
 
 
@@ -214,9 +214,7 @@ class ModelRegistry:
     ) -> None:
         self._auth_storage = auth_storage
         if models_json_path is None:
-            models_json_path = os.path.join(
-                os.path.expanduser("~"), CONFIG_DIR_NAME, "agent", "models.json"
-            )
+            models_json_path = get_models_path()
         self._models_json_path = models_json_path
         self._models: list[Model] = []
         self._custom_provider_api_keys: dict[str, str] = {}

@@ -540,4 +540,12 @@ Root cause found: `_csv_quote_if_needed` used PEP 701 f-string expression
 syntax while Tau supports Python 3.11. Build the quoted CSV value with ordinary
 string concatenation, then rerun the same routed Curtis session.
 
+The repaired process then reached router setup and exposed a second independent
+failure: `ModelRegistry()` hard-coded `~/.tau/agent/models.json`, while the
+router read its assignments from the tenant-specific `PI_CODING_AGENT_DIR`.
+That split made every custom tenant model unknown at dispatch time. The registry
+now obtains its default path from `get_models_path()`, and a regression proves
+an explicit tenant agent directory supplies the model registry as well as the
+router.
+
 ---

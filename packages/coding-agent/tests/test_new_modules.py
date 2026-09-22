@@ -667,6 +667,35 @@ class TestCompactionExtended:
 # ── core/model_registry extended tests ───────────────────────────────────────
 
 class TestModelRegistryExtended:
+    def test_default_models_path_honors_explicit_agent_dir(self, monkeypatch, tmp_path):
+        import json
+
+        from pi_coding_agent.core.model_registry import ModelRegistry
+
+        agent_dir = tmp_path / "tenant-agent"
+        agent_dir.mkdir()
+        (agent_dir / "models.json").write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "tenant-provider": {
+                            "name": "Tenant provider",
+                            "api": "openai-codex-responses",
+                            "baseUrl": "https://example.invalid/backend-api",
+                            "models": [{"id": "tenant-model", "name": "Tenant model"}],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+        model = ModelRegistry().find("tenant-provider", "tenant-model")
+
+        assert model is not None
+        assert model.id == "tenant-model"
+
     def test_get_all_returns_list(self):
         from pi_coding_agent.core.model_registry import ModelRegistry
         mr = ModelRegistry()
