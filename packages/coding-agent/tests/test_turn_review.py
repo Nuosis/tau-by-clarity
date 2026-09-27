@@ -21,6 +21,11 @@ def done(model, content):
 @pytest.mark.asyncio
 async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
+    alignment_inputs = []
+    async def alignment(active, latest_input, **kwargs):
+        alignment_inputs.append((active.outcome, latest_input))
+        return 'continues_active_intention'
+    monkeypatch.setattr('pi_coding_agent.core.intention_alignment.judge_intention_alignment', alignment)
     target = tmp_path / 'result.txt'
     target.write_text('before')
     worker_calls, review_calls = [], []
@@ -70,11 +75,13 @@ async def test_rejection_resumes_worker_tools_then_accepts(tmp_path, monkeypatch
     assert review_calls == ['max', 'max']
     assert intention_calls == ['ultra-light']
     await session.prompt('Report the current result without modifying it.')
-    assert intention_calls == ['ultra-light', 'max']
+    assert intention_calls == ['ultra-light']
+    assert alignment_inputs == [(intention_fixture()['outcome'],
+                                 'Report the current result without modifying it.')]
     from pathlib import Path
     entries = [json.loads(line) for line in Path(session._session_manager.get_session_file()).read_text().splitlines()]
     assert [e['data']['level'] for e in entries
-            if e.get('customType') == 'tau.intention.invocation'] == ['ultra-light', 'max']
+            if e.get('customType') == 'tau.intention.invocation'] == ['ultra-light']
     assert review_calls == ['max', 'max', 'max']
     assert target.read_text() == 'after'
     assert session.intention_placeholder == intention_fixture()['outcome']
@@ -146,7 +153,7 @@ async def test_repeat_review_keeps_current_request_source_evidence_without_rerea
 @pytest.mark.parametrize('queue', ['steer', 'follow_up'])
 async def test_jev_choice_keeps_or_replaces_active_intention_without_injecting_it(tmp_path, monkeypatch, queue):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
-    intentions, reviews, workers = [], [], []
+    intentions, reviews, workers, intention_models = [], [], [], []
     alignment_inputs = []
     async def alignment(active, latest_input, **kwargs):
         alignment_inputs.append((active.outcome, latest_input))
@@ -156,6 +163,7 @@ async def test_jev_choice_keeps_or_replaces_active_intention_without_injecting_i
     async def provider(model, context, options):
         names = {t.name for t in context.tools}
         if 'submit_intention' in names:
+            intention_models.append(model.id)
             value = {**intention_fixture(), 'outcome': f'INTENT_ONLY_{len(intentions)}'}
             intentions.append(value)
             yield done(model, [ToolCall(id='intent', name='submit_intention', arguments=value)])
@@ -186,6 +194,7 @@ async def test_jev_choice_keeps_or_replaces_active_intention_without_injecting_i
     assert all('INTENT_ONLY_' not in str(m) for m in session.agent.state.messages)
     await session.prompt('Start an unrelated task: summarize the fixture.')
     assert alignment_inputs[-1] == ('INTENT_ONLY_0', 'Start an unrelated task: summarize the fixture.')
+    assert intention_models == ['ultra-light', 'ultra-light']
     assert session.session_intention.outcome == 'INTENT_ONLY_0'
     assert session.active_intention.outcome == 'INTENT_ONLY_1'
     await session.switch_session(session._session_manager.get_session_file())
