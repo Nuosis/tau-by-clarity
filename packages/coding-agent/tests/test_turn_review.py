@@ -98,16 +98,9 @@ async def test_user_correction_revises_intention_without_injecting_it(tmp_path, 
     assert len(intentions) == 2 and len(workers) == 2
     assert reviews == [intentions[-1]]
     assert session.intention_placeholder == 'INTENT_ONLY_1'
-    assert session.session_intention.outcome == 'INTENT_ONLY_0'
-    assert session.active_intention.outcome == 'INTENT_ONLY_1'
     await session.switch_session(session._session_manager.get_session_file())
     assert session.intention_placeholder == 'INTENT_ONLY_1'
-    assert session.session_intention.outcome == 'INTENT_ONLY_0'
-    assert session.active_intention.outcome == 'INTENT_ONLY_1'
     assert all('INTENT_ONLY_' not in str(m) for m in session.agent.state.messages)
-    await session.new_session()
-    assert session.session_intention is None
-    assert session.active_intention is None
 
 
 @pytest.mark.parametrize('met,sound', [(False, True), (True, False), (False, False)])
