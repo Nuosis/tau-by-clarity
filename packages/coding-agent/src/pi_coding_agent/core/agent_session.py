@@ -817,20 +817,6 @@ class AgentSession:
                 ]
         self._review_context_messages = list(messages)
         if self._router is not None and included:
-            starts_new_intention = self.active_intention is None
-            if self.active_intention is not None:
-                from .intention_alignment import judge_intention_alignment
-                latest_request = next((r for r in reversed(included) if r.get('role') == 'user'), included[-1])
-                latest = latest_request.get('content', '')
-                latest_input = self._extract_user_message_text(latest) or json.dumps(latest, default=str)
-                choice = await judge_intention_alignment(
-                    self.active_intention, latest_input,
-                    get_api_key=self._resolve_api_key, record=self._record_router_event,
-                )
-                starts_new_intention = choice == 'starts_new_intention'
-            if not starts_new_intention:
-                self._intention_requests = [r for r in self._intention_requests if r not in included]
-                return messages
             from .turn_review import review_turn
             from pi_agent.types import AgentContext
             context = AgentContext(system_prompt=self._agent.state.system_prompt,
@@ -839,7 +825,7 @@ class AgentSession:
             intention = await review_turn(
                 self._router.selections['max'], context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
-                cancel_event=signal, intention=None,
+                cancel_event=signal, intention=self.active_intention,
                 establish_intention=True,
             )
             if self.session_intention is None:

@@ -11,25 +11,9 @@ Before the first working invocation for a user request, configured Max establish
 an `Intention`: outcome, completion evidence and authorization scope. The reviewer
 receives compressed context and CCR retrieval during this stage too. Intention is
 stored separately from conversation messages in `tau.intention.completed` session
-entries and restored from the selected session branch. In 0.58.9, user steering
-or queued follow-ups triggered revision when they reached working context.
-Reviewer-generated continuations did not trigger revisions.
-
-## Jev continuity check (2026-09-27)
-
-Before work on a later user input, Tau sends the latest input and
-`active_intention` to Jev through OpenRouter's Decisions API. Jev chooses
-`continues_active_intention` or `starts_new_intention`. Continuing keeps the
-current completion target; a new intention is established through the configured
-Max model. `session_intention` remains the first established intention on the
-selected branch, while `active_intention` is the latest. Steering and queued
-follow-ups take the same path when they reach working context. The Jev decision
-is stored as a `tau.intention_alignment.*` session entry without duplicating
-the user input in that event.
-
-This check needs an OpenRouter credential available to Tau. The Jev decision
-does not replace the configured Max model's intention establishment or
-completion review.
+entries and restored from the selected session branch. User steering or queued
+follow-ups trigger a revision when that input reaches the working context.
+Reviewer-generated continuations do not trigger revisions.
 
 The input editor displays the outcome as **placeholder text only** while its text
 buffer is empty. Typing hides it; clearing the buffer reveals it again. It never
@@ -39,8 +23,8 @@ An `intention_changed` event updates the TUI without modifying the editor buffer
 End review treats intention as its completion target. `accept` requires both
 `intention_met=true` and `answer_sound=true`; the host rejects inconsistent verdicts.
 An unmet target or unsound answer leads to actionable worker continuation. The
-reviewer cannot redefine intention in its end-review output. Cancellation
-remains available. Persistence does not expand tool
+reviewer cannot redefine intention in its end-review output. User corrections may
+revise it, and cancellation remains available. Persistence does not expand tool
 permissions or user authorization. There is no arbitrary retry/turn-count stop.
 
 Verification includes production TUI rendering with a captured terminal transport,

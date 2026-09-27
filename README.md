@@ -197,11 +197,9 @@ It disappears as soon as you type and reappears when the buffer is empty. It is
 not prefilled input: the placeholder is never submitted, added to input history,
 or injected into a worker prompt by the renderer.
 
-For each later user input, Jev checks whether it still belongs to the active
-intention. Clarifications, corrections, implementation, and verification of the
-same work keep that intention. A separate or replacing request establishes a new
-active intention; the first session intention remains recorded. Reviewer-generated
-continuations preserve the active intention.
+User corrections, including steering and queued follow-ups, can revise intention
+when they reach the working context. Reviewer-generated continuations preserve
+it; incomplete work is not a reason to lower the completion target.
 
 ### The reviewer checks completion and answer quality
 
@@ -229,9 +227,8 @@ completion-review loop.
 
 Use `/stats` to inspect working-response shares by provider/model, router tier,
 and recorded reasoning effort. This chart excludes auxiliary reviewer calls.
-Session records separately retain routing decisions, Jev intention-alignment
-choices, established intentions, review verdicts, retrievals, and reviewer
-response usage through `tau.router_*`, `tau.intention_alignment.*`,
+Session records separately retain routing decisions, intention revisions, review
+verdicts, retrievals, and reviewer response usage through `tau.router_*`,
 `tau.intention.*`, and `tau.turn_review.*` entries.
 
 ---

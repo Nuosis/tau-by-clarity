@@ -75,11 +75,6 @@ def make_session(tmp_path, monkeypatch, base_url):
 async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, monkeypatch):
     requests, traces = [], []
     reviews = []
-    alignment_inputs = []
-    async def alignment(active, latest_input, **kwargs):
-        alignment_inputs.append((active.outcome, latest_input))
-        return 'continues_active_intention'
-    monkeypatch.setattr('pi_coding_agent.core.intention_alignment.judge_intention_alignment', alignment)
     monkeypatch.setattr("pi_coding_agent.core.agent_session._instr_emit",
                         lambda name, **kwargs: traces.append((name, kwargs)))
     file = tmp_path / "fixture.txt"
@@ -167,7 +162,6 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         selected = [kw["metadata"]["level"] for name, kw in traces if name == "tau.router_selection"]
         assert selected == ["default", "ultra-light", "max"]
         await session.prompt("Report completion again.")
-        assert alignment_inputs == [(intention_fixture()['outcome'], 'Report completion again.')]
         assert requests[-1]["model"] == "default"
         assert session.router_enabled and session.agent.state.error is None
         history, footer = await model_command(session, "/model router-fixture/light")
