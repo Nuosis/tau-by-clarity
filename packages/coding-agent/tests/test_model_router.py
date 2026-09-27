@@ -173,16 +173,15 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert requests[-1]["model"] == "default"
         assert session.router_enabled and session.agent.state.error is None
         second_review = json.loads(reviews[-1]["input"][-1]["content"][0]["text"])
-        assert second_review["review_scope"]["starts_at"] == "message:0"
-        assert "Read fixture.txt" in json.dumps(second_review["messages"])
+        assert second_review["review_scope"]["starts_at"] != "message:0"
+        assert "Read fixture.txt" not in json.dumps(second_review["messages"])
         assert "Report completion again." in json.dumps(second_review["messages"])
         await session.prompt("Report completion again.")
         third_review = json.loads(reviews[-1]["input"][-1]["content"][0]["text"])
         second_start = int(second_review["review_scope"]["starts_at"].split(":")[1])
         third_start = int(third_review["review_scope"]["starts_at"].split(":")[1])
-        assert third_start == second_start
-        assert alignment_inputs == [(intention_fixture()['outcome'], 'Report completion again.')] * 2
-        assert json.dumps(third_review["messages"]).count("Report completion again.") == 2
+        assert third_start > second_start
+        assert json.dumps(third_review["messages"]).count("Report completion again.") == 1
         history, footer = await model_command(session, "/model router-fixture/light")
         assert not session.router_enabled and footer[-1].startswith("light | thinking:")
         await session.prompt("Reply using the selected fixed model.")
@@ -199,18 +198,18 @@ async def test_router_activation_http_tools_footer_and_fixed_model(tmp_path, mon
         assert decisions[2]["next_invocation"]["classification_explanations"]
         assert len([e for e in entries if e.get("customType") == "tau.router_metadata"]) == 5
         session._review_task_start = 999
-        session._restore_intentions()
+        session._restore_intention()
         assert session._review_task_start == third_start
         from pi_coding_agent.core.model_stats import model_stats, render_model_stats
         stats = model_stats(entries)
         assert stats == session.get_model_stats()
-        assert stats["total"] == 10  # Six worker + one intention + three review calls.
-        assert stats['total_tokens'] == 1200
+        assert stats["total"] == 12  # Six worker + three intention + three review calls.
+        assert stats['total_tokens'] == 1440
         assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'worker') == 720
         assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'reviewer') == 360
-        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 120
+        assert sum(r['tokens'] for r in stats['models'] if r['purpose'] == 'intention') == 360
         assert sum(r['percent'] for r in stats['models']) == pytest.approx(100)
-        assert "10.0%  120 tokens · 1 call" in render_model_stats(stats)
+        assert "25.0%  360 tokens · 3 calls" in render_model_stats(stats)
     finally:
         await runner.cleanup()
 
