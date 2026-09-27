@@ -828,20 +828,6 @@ class AgentSession:
                 ]
         self._review_context_messages = list(messages)
         if self._router is not None and included:
-            starts_new_intention = self.active_intention is None
-            if self.active_intention is not None:
-                from .intention_alignment import judge_intention_alignment
-                latest_request = next((r for r in reversed(included) if r.get('role') == 'user'), included[-1])
-                latest = latest_request.get('content', '')
-                latest_input = self._extract_user_message_text(latest) or json.dumps(latest, default=str)
-                choice = await judge_intention_alignment(
-                    self.active_intention, latest_input,
-                    get_api_key=self._resolve_api_key, record=self._record_router_event,
-                )
-                starts_new_intention = choice == 'starts_new_intention'
-            if not starts_new_intention:
-                self._intention_requests = [r for r in self._intention_requests if r not in included]
-                return messages
             from pi_agent.types import AgentContext
             from .turn_review import review_turn
 
@@ -857,13 +843,14 @@ class AgentSession:
             context = AgentContext(system_prompt=self._agent.state.system_prompt,
                                    messages=[], tools=self._agent.state.tools)
             context.messages = messages
-            # Each newly established intention is a bounded planning pass.
-            intention_level = 'ultra-light'
+            # Initial intention is a bounded planning pass. Keep later intention
+            # revisions and completion review on their existing Max selection.
+            intention_level = 'ultra-light' if self.active_intention is None else 'max'
             intention_selection = self._router.selections[intention_level]
             intention = await review_turn(
                 intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
-                cancel_event=signal, intention=None,
+                cancel_event=signal, intention=self.active_intention,
                 establish_intention=True, selection_level=intention_level,
                 session_id=self.session_id,
                 task_start=getattr(self, '_review_task_start', 0),

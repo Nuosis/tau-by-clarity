@@ -186,30 +186,28 @@ every provider available in fixed-model mode.
 
 ### Intention is set before work begins
 
-For the first request and each new intention, the reviewer uses your configured
-**`ultra-light`** tier to establish the desired outcome, observable completion
-evidence, and authorized scope. It uses the working instructions, request,
-memories supplied in context, and available evidence. Intention is stored
-separately from conversation messages and restored with the selected session branch.
+For each new user request, the reviewer uses your configured **`max`** tier to
+establish the desired outcome, observable completion evidence, and authorized
+scope. It uses the working instructions, request, memories supplied in context,
+and available evidence. Intention is stored separately from conversation messages
+and restored with the selected session branch.
 
 In the TUI, the outcome appears as **placeholder text in the empty input box**.
 It disappears as soon as you type and reappears when the buffer is empty. It is
 not prefilled input: the placeholder is never submitted, added to input history,
 or injected into a worker prompt by the renderer.
 
-For each later user input, Jev checks whether it still belongs to the active
-intention. Clarifications, corrections, implementation, and verification of the
-same work keep that intention. A separate or replacing request establishes a new
-active intention; the first session intention remains recorded. Reviewer-generated
-continuations preserve the active intention.
+User corrections, including steering and queued follow-ups, can revise intention
+when they reach the working context. Reviewer-generated continuations preserve
+it; incomplete work is not a reason to lower the completion target.
 
 ### The reviewer checks completion and answer quality
 
 When the worker proposes an ending at `turn_end`, the configured `max` model
 checks both whether intention has been met and whether the answer is consistent
 with the request, supplied memories, and tool evidence. **There is no hard-coded
-reviewer model:** your configured `ultra-light` tier establishes a new intention,
-and your `max` tier reviews endings.
+reviewer model:** your `max` provider, model, and reasoning effort apply to both
+intention-setting and ending review.
 
 The reviewer receives compressed working context and can use **`ccr_retrieve`**
 to query evidence omitted from compressed tool outputs. It cannot execute the
@@ -233,9 +231,8 @@ include uncached input, cached input, cache writes and output; call counts are
 secondary, and missing usage is disclosed. Recorded failed-call usage is included.
 These are token shares, not cost shares. Auxiliary calls without persisted usage
 cannot be included.
-Session records separately retain routing decisions, Jev intention-alignment
-choices, established intentions, review verdicts, retrievals, and reviewer
-response usage through `tau.router_*`, `tau.intention_alignment.*`,
+Session records separately retain routing decisions, intention revisions, review
+verdicts, retrievals, and reviewer response usage through `tau.router_*`,
 `tau.intention.*`, and `tau.turn_review.*` entries.
 
 ---
