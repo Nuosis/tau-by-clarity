@@ -243,7 +243,7 @@ class AgentSession:
         # Restore that branch before extensions receive their first input event
         # so extension context and provider context observe the same history.
         initial_context = self._session_manager.build_context()
-        self._restore_intention()
+        self._restore_intentions()
         if initial_context.messages:
             self._agent.replace_messages(initial_context.messages)
 
@@ -825,12 +825,15 @@ class AgentSession:
             intention = await review_turn(
                 self._router.selections['max'], context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
-                cancel_event=signal, intention=getattr(self, '_intention', None),
+                cancel_event=signal, intention=self.active_intention,
                 establish_intention=True,
             )
-            self._intention = intention
+            if self.session_intention is None:
+                self.session_intention = intention
+            self.active_intention = intention
             self._intention_requests = [r for r in self._intention_requests if r not in included]
-            self._emit({'type': 'intention_changed', 'intention': intention.model_dump()})
+            self._emit({'type': 'intention_changed', 'intention': intention.model_dump(),
+                        'session_intention': self.session_intention.model_dump()})
         return messages
 
     def _track_intention_request(self, message) -> None:
@@ -838,18 +841,21 @@ class AgentSession:
             self._intention_requests = []
         self._intention_requests.append(message if isinstance(message, dict) else _message_to_dict(message))
 
-    def _restore_intention(self) -> None:
+    def _restore_intentions(self) -> None:
         from .turn_review import Intention
-        self._intention = None
+        self.active_intention = None
+        self.session_intention = None
         self._intention_requests = []
-        for entry in reversed(self._session_manager.get_branch()):
+        for entry in self._session_manager.get_branch():
             if entry.data.get('customType') == 'tau.intention.completed':
-                self._intention = Intention.model_validate(entry.data['data']['decision'])
-                break
+                intention = Intention.model_validate(entry.data['data']['decision'])
+                if self.session_intention is None:
+                    self.session_intention = intention
+                self.active_intention = intention
 
     @property
     def intention_placeholder(self) -> str:
-        intention = getattr(self, '_intention', None)
+        intention = self.active_intention
         return intention.outcome if intention is not None else ''
 
     async def _resolve_api_key(self, provider: str) -> str | None:
@@ -1042,7 +1048,7 @@ class AgentSession:
                 self._router.selections['max'], review_context,
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
-                intention=getattr(self, '_intention', None),
+                intention=self.active_intention,
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
@@ -1779,9 +1785,10 @@ class AgentSession:
         self._pending_next_turn_messages = []
 
         self._session_manager = session_manager
-        self._restore_intention()
+        self._restore_intentions()
         self._emit({'type': 'intention_changed',
-                    'intention': self._intention.model_dump() if self._intention else None})
+                    'intention': self.active_intention.model_dump() if self.active_intention else None,
+                    'session_intention': self.session_intention.model_dump() if self.session_intention else None})
         self.session_id = session_manager.get_session_id()
 
         # Restore context from session
@@ -2176,9 +2183,10 @@ class AgentSession:
                 pass
 
         self._session_manager.set_leaf_id(target_id)
-        self._restore_intention()
+        self._restore_intentions()
         self._emit({'type': 'intention_changed',
-                    'intention': self._intention.model_dump() if self._intention else None})
+                    'intention': self.active_intention.model_dump() if self.active_intention else None,
+                    'session_intention': self.session_intention.model_dump() if self.session_intention else None})
 
         # Rebuild context from new position
         context = self._session_manager.build_context(target_id)
