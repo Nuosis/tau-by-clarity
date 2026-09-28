@@ -254,6 +254,36 @@ def test_oversized_tool_result_uses_shared_retrievable_fallback(tmp_path, monkey
         active_compression_runtime.register_with_pi_ai()
 
 
+def test_oversized_excluded_read_is_bounded_after_normal_policy(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    original = "\n".join(f"source line {index:05d}: unique-value-{index:05d}" for index in range(5_000))
+    monkeypatch.setattr(active_compression_runtime, "_compress_text", lambda text, ccr, **kwargs: text)
+    pi_ai.register_compressor(active_compression_runtime.compress)
+    try:
+        result = pi_ai.compress_context(Context(messages=[ToolResultMessage(
+            tool_call_id="call-large-read", tool_name="read",
+            content=[TextContent(type="text", text=original)], timestamp=0,
+        )]))
+        visible = result.messages[0].content[0].text
+        match = re.search(r"\[CCR:([0-9a-f]{12})\]", visible)
+        assert match is not None
+        assert len(visible) < 1_000
+        assert store.get(match.group(1)) == original
+
+        small = "current source line"
+        ordinary = pi_ai.compress_context(Context(messages=[ToolResultMessage(
+            tool_call_id="call-small-read", tool_name="read",
+            content=[TextContent(type="text", text=small)], timestamp=0,
+        )]))
+        assert ordinary.messages[0].content[0].text == small
+    finally:
+        active_compression_runtime._store = previous_store
+        pi_ai.unregister_compressor()
+        active_compression_runtime.register_with_pi_ai()
+
+
 @pytest.mark.asyncio
 async def test_ccr_retrieve_rejects_task_id_as_handle():
     pi = _FakePi()
