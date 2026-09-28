@@ -288,6 +288,10 @@ _current_tool_call_id: ContextVar[str | None] = ContextVar(
     "pi_ai_compression_tool_call_id",
     default=None,
 )
+_current_message_role: ContextVar[str | None] = ContextVar(
+    "pi_ai_compression_message_role",
+    default=None,
+)
 _breaker_failures = 0
 _breaker_open_until = 0.0
 
@@ -434,6 +438,11 @@ def get_current_compression_tool_call_id() -> str | None:
     record in memory.tool_log_memory via the shared `tool_call_id` key.
     """
     return _current_tool_call_id.get()
+
+
+def get_current_compression_message_role() -> str | None:
+    """Role of the message currently passed to the registered compressor."""
+    return _current_message_role.get()
 
 
 def set_current_compression_tool_context(
@@ -1222,7 +1231,8 @@ def _text_blocks_content(content: Any) -> str | None:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        texts = [getattr(block, "text", None) for block in content]
+        texts = [block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+                 for block in content]
         if texts and all(isinstance(text, str) for text in texts):
             return "\n".join(texts)
     return None
@@ -1277,11 +1287,14 @@ def _replace_text_content(content: Any, marker: str) -> Any:
         replaced = False
         blocks: list[Any] = []
         for block in content:
-            if not replaced and isinstance(getattr(block, "text", None), str):
-                blocks.append(block.model_copy(update={"text": marker}))
+            text_value = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            if not replaced and isinstance(text_value, str):
+                blocks.append({**block, "text": marker} if isinstance(block, dict)
+                              else block.model_copy(update={"text": marker}))
                 replaced = True
-            elif isinstance(getattr(block, "text", None), str):
-                blocks.append(block.model_copy(update={"text": ""}))
+            elif isinstance(text_value, str):
+                blocks.append({**block, "text": ""} if isinstance(block, dict)
+                              else block.model_copy(update={"text": ""}))
             else:
                 blocks.append(block)
         return blocks
@@ -1489,7 +1502,11 @@ def _compress_anthropic_tool_result_block(
     if original_tokens < _current_min_tokens_to_compress():
         _record_unit_outcome("below_unit_floor")
         return block, False
-    compressed = _compress_text_preserving_markers(original, fn)
+    role_token = _current_message_role.set(role)
+    try:
+        compressed = _compress_text_preserving_markers(original, fn)
+    finally:
+        _current_message_role.reset(role_token)
     if compressed == original:
         _record_unit_outcome("compressor_no_change")
         return block, False
@@ -1571,7 +1588,11 @@ def _compress_text_value(
     if original_tokens < _current_min_tokens_to_compress():
         _record_unit_outcome("below_unit_floor")
         return None
-    compressed = _compress_text_preserving_markers(original, fn)
+    role_token = _current_message_role.set(role)
+    try:
+        compressed = _compress_text_preserving_markers(original, fn)
+    finally:
+        _current_message_role.reset(role_token)
     if compressed == original:
         _record_unit_outcome("compressor_no_change")
         return None
@@ -2833,6 +2854,7 @@ def compress_context(context: Any) -> Any:
         )
         cache_context = _apply_compression_cache(context, frozen_count=frozen_count)
         transformed = _compress_context_inner(cache_context, fn, policy)
+        transformed = _bound_outbound_tool_results(transformed, fn)
         tokens_after = _context_token_count(transformed)
         if tokens_after > tokens_before:
             _restore_compression_stats(stats_before)
@@ -2854,6 +2876,48 @@ def compress_context(context: Any) -> Any:
         _current_min_tokens.reset(min_tokens_token)
         _current_target_ratio.reset(target_token)
         _current_text_compression_cache.reset(cache_token)
+
+
+def _bound_outbound_tool_results(context: Any, fn: CompressFn) -> Any:
+    """Give oversized tool results one last reversible compression opportunity.
+
+    Normal policy may exempt fresh reads or preserve an uncompressible payload.
+    This check runs after those rules, so their useful compact output is kept.
+    """
+    messages = list(getattr(context, "messages", []) or [])
+    changed = False
+    for index, message in enumerate(messages):
+        if _message_role(message) != "toolResult":
+            continue
+        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+        original = _text_blocks_content(content)
+        if original is None or len(original) <= 32768:
+            continue
+        tool_name = message.get("tool_name") if isinstance(message, dict) else getattr(message, "tool_name", None)
+        call_id = message.get("tool_call_id") if isinstance(message, dict) else getattr(message, "tool_call_id", None)
+        if not call_id:
+            continue
+        role_token = _current_message_role.set("toolResult")
+        name_token = _current_tool_name.set(tool_name)
+        call_token = _current_tool_call_id.set(call_id)
+        try:
+            bounded = fn(original)
+        except Exception:
+            bounded = None
+        finally:
+            _current_tool_call_id.reset(call_token)
+            _current_tool_name.reset(name_token)
+            _current_message_role.reset(role_token)
+        if not isinstance(bounded, str) or len(bounded) >= len(original):
+            continue
+        replacement = _replace_text_content(content, bounded)
+        messages[index] = (
+            {**message, "content": replacement}
+            if isinstance(message, dict)
+            else message.model_copy(update={"content": replacement})
+        )
+        changed = True
+    return context.model_copy(update={"messages": messages}) if changed else context
 
 
 def _compress_context_inner(context: Any, fn: CompressFn, policy: CompressionPolicy) -> Any:

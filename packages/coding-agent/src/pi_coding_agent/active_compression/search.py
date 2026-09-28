@@ -38,6 +38,8 @@ _BM25_B = 0.75
 _LINE_WINDOW_BEFORE = 1
 _LINE_WINDOW_AFTER = 5
 _MAX_RETURN_LINES = 80
+_MAX_SEARCH_ITEM_CHARS = 4096
+_SEARCH_ITEM_OVERLAP = 128
 _MAX_FALLBACK_TERMS = 4
 _MAX_STRUCTURAL_LABELS = 8
 _MAX_WALK_TERMS = 6
@@ -108,8 +110,28 @@ def _split_items(original: str) -> tuple[list[str], bool]:
     except Exception:
         parsed = None
     if isinstance(parsed, list) and parsed and all(isinstance(x, dict) for x in parsed):
-        return [json.dumps(x, ensure_ascii=False) for x in parsed], True
-    return stripped.splitlines(), False
+        items = [json.dumps(x, ensure_ascii=False) for x in parsed]
+        if all(len(item) <= _MAX_SEARCH_ITEM_CHARS for item in items):
+            return items, True
+    else:
+        items = stripped.splitlines()
+
+    # A line or JSON object can itself contain an entire archive. A line-count
+    # bound does not bound model context when one searchable item is enormous.
+    # Overlap keeps phrases crossing a chunk boundary searchable; the source
+    # remains in CCR for further queries.
+    chunks: list[str] = []
+    stride = _MAX_SEARCH_ITEM_CHARS - _SEARCH_ITEM_OVERLAP
+    for index, item in enumerate(items, 1):
+        if len(item) <= _MAX_SEARCH_ITEM_CHARS:
+            chunks.append(item)
+            continue
+        for start in range(0, len(item), stride):
+            end = min(len(item), start + _MAX_SEARCH_ITEM_CHARS)
+            chunks.append(f"[source item {index} chars {start}-{end}] {item[start:end]}")
+            if end == len(item):
+                break
+    return chunks, False
 
 
 def _bm25_scores(items: list[str], query: str) -> list[float]:
