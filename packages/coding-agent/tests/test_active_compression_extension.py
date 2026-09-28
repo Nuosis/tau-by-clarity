@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 
 import pi_ai
@@ -158,6 +159,99 @@ async def test_ccr_retrieve_requires_query_scoped_retrieval(tmp_path):
     assert result["details"]["handle"] == handle
     assert result["details"]["query"] == "needle payment"
     assert store.is_expanded(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_ccr_retrieve_pages_oversized_matching_record_without_losing_it(tmp_path):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    handle = "abc123abc124"
+    # One source record is larger than the provider-safe response. The sought
+    # evidence appears in its middle, as in Claire's failed World summary.
+    original = "header\n" + "".join(
+        f"record {index:04d} " + "irrelevant " * 450 + "Your receipt from Apple 14.28 "
+        for index in range(50)
+    )
+    store.put_with_handle(handle, original)
+    try:
+        pi = _FakePi()
+        extension_factory(pi)
+        tool = pi.tools["ccr_retrieve"]["execute"]
+        first = await tool("tool-1", {"handle": handle, "query": "Your receipt from Apple 14.28"}, None, None, None)
+        pages = [first]
+        while pages[-1]["details"]["next_offset"] is not None:
+            pages.append(await tool(
+                "tool-1",
+                {"handle": handle, "query": "Your receipt from Apple 14.28",
+                 "offset": pages[-1]["details"]["next_offset"]},
+                None, None, None,
+            ))
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert all(len(page["content"][0]["text"]) < 34_000 for page in pages)
+    assert len(pages) > 1
+    assert "Your receipt from Apple 14.28" in "".join(
+        page["content"][0]["text"] for page in pages
+    )
+    assert sum(len(page["content"][0]["text"].split("\n", 1)[1]) for page in pages) == first["details"]["chars"]
+    assert store.is_expanded(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_ccr_retrieve_searches_inside_oversized_json_object(tmp_path):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    handle = "abc123abc125"
+    store.put_with_handle(handle, json.dumps([
+        {"id": "large", "summary": "unrelated " * 30_000 + "invoice 428 marker" + " other" * 30_000},
+        {"id": "small", "summary": "different record"},
+    ]))
+    try:
+        pi = _FakePi()
+        extension_factory(pi)
+        result = await pi.tools["ccr_retrieve"]["execute"](
+            "tool-1", {"handle": handle, "query": "invoice 428 marker"}, None, None, None,
+        )
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert "invoice 428 marker" in result["content"][0]["text"]
+    assert len(result["content"][0]["text"]) < 34_000
+    assert "different record" not in result["content"][0]["text"]
+
+
+def test_oversized_tool_result_uses_shared_retrievable_fallback(tmp_path, monkeypatch):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    original = "\n".join(f"invoice-{index:05d} detail-{index:05d}" for index in range(5_000))
+    # Exercise the common outbound boundary when content-aware compression
+    # cannot reduce a source shape, as observed for the older SMS/World runs.
+    monkeypatch.setattr(active_compression_runtime, "_compress_text", lambda text, ccr, **kwargs: text)
+    pi_ai.register_compressor(active_compression_runtime.compress)
+    pi_ai.set_current_compression_tool_context("world.lookup", "call-large-world")
+    try:
+        source = Context(messages=[ToolResultMessage(
+            tool_call_id="call-large-world", tool_name="world.lookup",
+            content=[TextContent(type="text", text=original)], timestamp=0,
+        )])
+        result = pi_ai.compress_context(source)
+        visible = result.messages[0].content[0].text
+        match = re.search(r"\[CCR:([0-9a-f]{12})\]", visible)
+        assert match is not None
+        assert len(visible) < 1_000
+        assert store.get(match.group(1)) == original
+        # The tool context remains set by the harness between calls; it alone
+        # must not cause an unrelated message to be elided.
+        assert active_compression_runtime.compress(original) == original
+    finally:
+        pi_ai.set_current_compression_tool_context()
+        active_compression_runtime._store = previous_store
+        pi_ai.unregister_compressor()
+        active_compression_runtime.register_with_pi_ai()
 
 
 @pytest.mark.asyncio

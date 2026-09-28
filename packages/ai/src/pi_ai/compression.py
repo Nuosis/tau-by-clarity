@@ -288,6 +288,10 @@ _current_tool_call_id: ContextVar[str | None] = ContextVar(
     "pi_ai_compression_tool_call_id",
     default=None,
 )
+_current_message_role: ContextVar[str | None] = ContextVar(
+    "pi_ai_compression_message_role",
+    default=None,
+)
 _breaker_failures = 0
 _breaker_open_until = 0.0
 
@@ -434,6 +438,11 @@ def get_current_compression_tool_call_id() -> str | None:
     record in memory.tool_log_memory via the shared `tool_call_id` key.
     """
     return _current_tool_call_id.get()
+
+
+def get_current_compression_message_role() -> str | None:
+    """Role of the message currently passed to the registered compressor."""
+    return _current_message_role.get()
 
 
 def set_current_compression_tool_context(
@@ -1489,7 +1498,11 @@ def _compress_anthropic_tool_result_block(
     if original_tokens < _current_min_tokens_to_compress():
         _record_unit_outcome("below_unit_floor")
         return block, False
-    compressed = _compress_text_preserving_markers(original, fn)
+    role_token = _current_message_role.set(role)
+    try:
+        compressed = _compress_text_preserving_markers(original, fn)
+    finally:
+        _current_message_role.reset(role_token)
     if compressed == original:
         _record_unit_outcome("compressor_no_change")
         return block, False
@@ -1571,7 +1584,11 @@ def _compress_text_value(
     if original_tokens < _current_min_tokens_to_compress():
         _record_unit_outcome("below_unit_floor")
         return None
-    compressed = _compress_text_preserving_markers(original, fn)
+    role_token = _current_message_role.set(role)
+    try:
+        compressed = _compress_text_preserving_markers(original, fn)
+    finally:
+        _current_message_role.reset(role_token)
     if compressed == original:
         _record_unit_outcome("compressor_no_change")
         return None

@@ -19,6 +19,7 @@ from pi_coding_agent.active_compression import is_enabled, retrieve
 from pi_coding_agent.active_compression.search import search_original
 
 _VALID_CCR_HANDLE_RE = re.compile(r"^[0-9a-fA-F]{12}$")
+_MAX_RETRIEVAL_CHARS = 32768
 
 
 def _format_count_map(values: dict[str, int]) -> str:
@@ -114,7 +115,9 @@ def _stats_text() -> str:
     ])
 
 
-def _retrieve_tool_response(handle: str, query: str, *, tool_name: str) -> dict[str, Any]:
+def _retrieve_tool_response(
+    handle: str, query: str, *, tool_name: str, offset: int = 0,
+) -> dict[str, Any]:
     if not _VALID_CCR_HANDLE_RE.fullmatch(handle or ""):
         return {
             "content": [{
@@ -141,15 +144,30 @@ def _retrieve_tool_response(handle: str, query: str, *, tool_name: str) -> dict[
     # issues another scoped query; it cannot dump the whole payload back in.
     res = search_original(original, query)
     if res["kept_items"] > 0:
+        body = res["text"]
+        if offset < 0 or offset > len(body):
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Invalid CCR offset {offset}; result has {len(body)} characters.",
+                }],
+                "isError": True,
+            }
+        end = min(len(body), offset + _MAX_RETRIEVAL_CHARS)
+        next_offset = end if end < len(body) else None
+        continuation = (
+            f"Continue with offset={next_offset}, or use a more specific query."
+            if next_offset is not None
+            else f"If insufficient, issue another {tool_name} with a more specific query."
+        )
         note = (
             f"[CCR query '{query}': route={res.get('route', 'unknown')} "
             f"steps={','.join(res.get('steps') or []) or 'none'}; "
-            f"{res['kept_items']} of {res['total_items']} items. If insufficient, "
-            f"issue another {tool_name} with a more specific ID, symbol, label, "
-            f"schema word, or relationship term.]"
+            f"{res['kept_items']} of {res['total_items']} items; "
+            f"chars {offset}-{end} of {len(body)}. {continuation}]"
         )
         return {
-            "content": [{"type": "text", "text": f"{note}\n{res['text']}"}],
+            "content": [{"type": "text", "text": f"{note}\n{body[offset:end]}"}],
             "details": {
                 "handle": handle,
                 "query": query,
@@ -160,7 +178,9 @@ def _retrieve_tool_response(handle: str, query: str, *, tool_name: str) -> dict[
                 "fallback_used": res.get("fallback_used"),
                 "route": res.get("route"),
                 "steps": res.get("steps"),
-                "chars": len(res["text"]),
+                "chars": len(body),
+                "offset": offset,
+                "next_offset": next_offset,
             },
         }
     # No matches → tell the model so it can refine. Never dump the full payload.
@@ -188,7 +208,13 @@ def extension_factory(pi: Any) -> None:
         params = params or {}
         handle = params.get("handle", "")
         query = (params.get("query") or "").strip()
-        return _retrieve_tool_response(handle, query, tool_name="ccr_retrieve")
+        offset = params.get("offset", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            return {
+                "content": [{"type": "text", "text": "CCR offset must be a nonnegative integer."}],
+                "isError": True,
+            }
+        return _retrieve_tool_response(handle, query, tool_name="ccr_retrieve", offset=offset)
 
     pi.register_tool(
         name="ccr_retrieve",
@@ -217,6 +243,11 @@ def extension_factory(pi: Any) -> None:
                         "schema words such as target, instruction, operation, question, "
                         "key, or id."
                     ),
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset from a previous page's next_offset for the same handle and query.",
                 },
             },
             "required": ["handle", "query"],
