@@ -161,6 +161,68 @@ async def test_ccr_retrieve_requires_query_scoped_retrieval(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ccr_retrieve_pages_oversized_matching_record_without_losing_it(tmp_path):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    handle = "abc123abc124"
+    # One source record is larger than the provider-safe response. The sought
+    # evidence appears in its middle, as in Claire's failed World summary.
+    original = "header\n" + "".join(
+        f"record {index:04d} " + "irrelevant " * 450 + "Your receipt from Apple 14.28 "
+        for index in range(50)
+    )
+    store.put_with_handle(handle, original)
+    try:
+        pi = _FakePi()
+        extension_factory(pi)
+        tool = pi.tools["ccr_retrieve"]["execute"]
+        first = await tool("tool-1", {"handle": handle, "query": "Your receipt from Apple 14.28"}, None, None, None)
+        pages = [first]
+        while pages[-1]["details"]["next_offset"] is not None:
+            pages.append(await tool(
+                "tool-1",
+                {"handle": handle, "query": "Your receipt from Apple 14.28",
+                 "offset": pages[-1]["details"]["next_offset"]},
+                None, None, None,
+            ))
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert all(len(page["content"][0]["text"]) < 34_000 for page in pages)
+    assert len(pages) > 1
+    assert "Your receipt from Apple 14.28" in "".join(
+        page["content"][0]["text"] for page in pages
+    )
+    assert sum(len(page["content"][0]["text"].split("\n", 1)[1]) for page in pages) == first["details"]["chars"]
+    assert store.is_expanded(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_ccr_retrieve_searches_inside_oversized_json_object(tmp_path):
+    store = CCRStore(str(tmp_path / "ccr.db"))
+    previous_store = active_compression_runtime._store
+    active_compression_runtime._store = store
+    handle = "abc123abc125"
+    store.put_with_handle(handle, json.dumps([
+        {"id": "large", "summary": "unrelated " * 30_000 + "invoice 428 marker" + " other" * 30_000},
+        {"id": "small", "summary": "different record"},
+    ]))
+    try:
+        pi = _FakePi()
+        extension_factory(pi)
+        result = await pi.tools["ccr_retrieve"]["execute"](
+            "tool-1", {"handle": handle, "query": "invoice 428 marker"}, None, None, None,
+        )
+    finally:
+        active_compression_runtime._store = previous_store
+
+    assert "invoice 428 marker" in result["content"][0]["text"]
+    assert len(result["content"][0]["text"]) < 34_000
+    assert "different record" not in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_ccr_retrieve_rejects_task_id_as_handle():
     pi = _FakePi()
     extension_factory(pi)
