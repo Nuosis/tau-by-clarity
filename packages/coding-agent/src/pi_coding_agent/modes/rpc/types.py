@@ -25,6 +25,12 @@ class RpcCommandPrompt(BaseModel):
     streamingBehavior: Literal["steer", "followUp"] | None = None
 
 
+class RpcCommandSlash(BaseModel):
+    type: Literal["slash_command"]
+    id: str | None = None
+    message: str
+
+
 class RpcCommandSteer(BaseModel):
     type: Literal["steer"]
     id: str | None = None
@@ -208,6 +214,7 @@ class RpcCommandLoginCancel(BaseModel):
 
 RpcCommand = Union[
     RpcCommandPrompt,
+    RpcCommandSlash,
     RpcCommandSteer,
     RpcCommandFollowUp,
     RpcCommandAbort,
