@@ -51,6 +51,8 @@ def calculate_cost(model: Model, usage: Usage) -> float:
 
 def supports_xhigh(model: Model) -> bool:
     """Check if a model supports xhigh reasoning."""
+    if model.provider == "openai" and model.id == "gpt-6-astra":
+        return True
     if any(version in model.id for version in ("gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.2")):
         return True
     if model.api == "anthropic-messages":

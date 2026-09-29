@@ -146,6 +146,159 @@ def _handle_prompt_command(
     asyncio.ensure_future(run_prompt())
 
 
+def _thinking_options_for_model(model: Any) -> tuple[str, ...]:
+    """Return levels the selected model can use in this RPC command surface."""
+    from pi_ai import supports_adaptive, supports_xhigh
+
+    if model is None or not getattr(model, "reasoning", False):
+        return ("off",)
+    if model.provider == "openai" and model.id == "gpt-6-astra":
+        return ("low", "medium", "high", "xhigh", "max")
+    levels = ["off", "minimal", "low", "medium", "high"]
+    if supports_xhigh(model):
+        levels.append("xhigh")
+    if supports_adaptive(model):
+        levels.append("adaptive")
+    return tuple(levels)
+
+
+async def _handle_slash_command(session: Any, command: dict[str, Any]) -> dict[str, Any]:
+    """Execute a slash command in Tau without building a model prompt."""
+    raw = str(command.get("message") or "").strip()
+    if not raw.startswith("/"):
+        raise ValueError("A slash command must start with /")
+    name, _, argument = raw.partition(" ")
+    name = name.lower()
+    argument = argument.strip()
+
+    if name in {"/model", "/models"}:
+        from pi_coding_agent.core.model_resolver import find_exact_model_reference_match
+
+        if argument.lower() == "router":
+            await session.enable_router()
+            return {"text": "Router on."}
+        available = await session.model_registry.get_available()
+        if not argument:
+            current = session.model
+            return {
+                "text": f"Current model: {current.provider}/{current.id} (thinking {session.thinking_level})\n"
+                "Use /model <provider/model> [thinking level] to switch.\n"
+                + "\n".join(f"{item.provider}/{item.id}" for item in available),
+            }
+        parts = argument.split()
+        if len(parts) > 2:
+            raise ValueError("Usage: /model <provider/model> [thinking level]")
+        model_reference = parts[0]
+        requested_level = parts[1].lower() if len(parts) == 2 else None
+        target = find_exact_model_reference_match(model_reference, available)
+        if target is None:
+            raise ValueError(f"Unknown model: {model_reference}")
+        if requested_level and requested_level not in _thinking_options_for_model(target):
+            raise ValueError(
+                f"Thinking level for {target.provider}/{target.id} must be one of: "
+                + ", ".join(_thinking_options_for_model(target))
+            )
+        await session.set_model(target)
+        if requested_level:
+            session.set_thinking_level(requested_level)
+        session.settings_manager.save_project("defaultProvider", target.provider)
+        session.settings_manager.save_project("defaultModel", target.id)
+        if requested_level:
+            session.settings_manager.save_project("defaultThinkingLevel", session.thinking_level)
+        return {
+            "text": f"Switched to {target.provider}/{target.id} "
+            f"(thinking {session.thinking_level}) and saved for this agent."
+        }
+
+    if name == "/set":
+        from pi_coding_agent.core.provider_profiles import STRENGTHS, normalize_provider_id
+        from pi_coding_agent.modes.interactive.tui import _store_tier_config
+
+        parts = argument.split()
+        if parts and parts[0].lower() == "router":
+            from pi_coding_agent.config import get_models_path
+            from pi_coding_agent.core.router_config import (
+                ROUTER_LEVELS, RouterAssignment, store_router_assignment,
+            )
+
+            if len(parts) != 4 or parts[1] not in ROUTER_LEVELS:
+                return {"text": "Usage: /set router <level> <provider/model> <reasoning|off>"}
+            provider, separator, model = parts[2].partition("/")
+            if not separator or not provider or not model:
+                raise ValueError("Use provider/model for the router assignment")
+            assignment = RouterAssignment(
+                provider=provider, model=model,
+                reasoning=None if parts[3] == "off" else parts[3],
+            )
+            store_router_assignment(
+                get_models_path(), parts[1], assignment, session.model_registry,
+            )
+            return {"text": f"Set router {parts[1]} to {parts[2]} (thinking {parts[3]})."}
+        if len(parts) < 3:
+            return {"text": "Usage: /set <provider> <strong|standard|weak> <model> [thinking level]"}
+        provider = normalize_provider_id(parts[0])
+        tier = parts[1].lower()
+        if tier not in STRENGTHS:
+            raise ValueError("Tier must be strong, standard, or weak")
+        model_id = parts[2]
+        thinking = parts[3] if len(parts) > 3 else "off"
+        if len(parts) > 4:
+            raise ValueError("Usage: /set <provider> <tier> <model> [thinking level]")
+        _store_tier_config(provider, tier, model_id, thinking)
+        reload_registry = getattr(session.model_registry, "reload", None)
+        if callable(reload_registry):
+            reload_registry()
+        return {"text": f"Set {provider} {tier} to {model_id} (thinking {thinking})."}
+
+    if name == "/settings":
+        settings = session.settings_manager.get_merged_raw()
+        keys = ("defaultProvider", "defaultModel", "defaultThinkingLevel")
+        return {"text": "\n".join(f"{key}: {settings.get(key) or '-'}" for key in keys)}
+
+    if name == "/help":
+        return {"text": "Commands: /model <provider/model> [thinking level], /thinking [level], /set, /settings, /compact, /tools, /session, /stats. Extension commands are also available."}
+
+    if name == "/thinking":
+        options = _thinking_options_for_model(session.model)
+        if argument:
+            level = argument.lower()
+            if level not in options:
+                raise ValueError("Thinking level must be one of: " + ", ".join(options))
+            session.set_thinking_level(level)
+        elif session.model.provider == "openai" and session.model.id == "gpt-6-astra":
+            current = session.thinking_level
+            level = options[(options.index(current) + 1) % len(options)] if current in options else options[0]
+            session.set_thinking_level(level)
+        else:
+            level = session.cycle_thinking_level()
+        if level:
+            session.settings_manager.save_project("defaultThinkingLevel", session.thinking_level)
+        return {"text": f"Thinking level: {session.thinking_level if level else 'not supported by current model'}"}
+
+    if name == "/compact":
+        result = await session.compact(argument or None)
+        return {"text": f"Compaction complete.\n{result or ''}".strip()}
+
+    if name == "/tools":
+        return {"text": "Active tools:\n" + "\n".join(session.get_active_tool_names())}
+
+    if name == "/session":
+        stats = session.get_session_stats()
+        return {"text": "Session stats: " + ", ".join(f"{key}={value}" for key, value in stats.items())}
+
+    if name == "/stats":
+        from pi_coding_agent.core.model_stats import render_model_stats
+
+        return {"text": render_model_stats(session.get_model_stats())}
+
+    extension_runner = getattr(session, "extension_runner", None)
+    extension = extension_runner.get_command(name[1:]) if extension_runner else None
+    if extension is not None:
+        await session.prompt(raw, source="rpc")
+        return {"text": f"{name} completed."}
+    raise ValueError(f"Unknown slash command: {name}")
+
+
 def _looks_like_runtime_host(value: Any) -> bool:
     return all(hasattr(value, name) for name in ("session", "new_session", "switch_session", "fork"))
 
@@ -450,6 +603,17 @@ async def run_rpc_mode(session: "AgentSession") -> None:
 
         if cmd_type == "prompt":
             _handle_prompt_command(active_session, cmd_id, command, output)
+            return None
+
+        elif cmd_type == "slash_command":
+            async def run_slash() -> None:
+                try:
+                    result = await _handle_slash_command(active_session, command)
+                    output(_success(cmd_id, "slash_command", result))
+                except Exception as exc:
+                    output(_error(cmd_id, "slash_command", str(exc)))
+
+            asyncio.ensure_future(run_slash())
             return None
 
         elif cmd_type == "login":
