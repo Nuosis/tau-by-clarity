@@ -272,7 +272,8 @@ def _append_to_last_user_message(params: Any, text: str) -> bool:
                 msg["content"] = f"{content}\n\n{text}"
                 return True
             if isinstance(content, list):
-                content.append({"type": "text", "text": text})
+                item_type = "input_text" if key == "input" else "text"
+                content.append({"type": item_type, "text": text})
                 return True
             if isinstance(msg.get("parts"), list):      # google shape
                 msg["parts"].append({"text": text})

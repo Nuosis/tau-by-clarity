@@ -128,3 +128,23 @@ async def test_responses_final_tool_call_without_arguments_done(raw, repaired):
     assert tool_call.arguments == {"path": "/tmp/readme.md", "content": "truncated"}
     assert tool_call.arguments_repair_applied is repaired
     assert bool(tool_call.arguments_parse_error) is repaired
+
+def test_codex_request_uses_provider_safe_tool_name():
+    from pi_ai.providers.openai_codex_responses import _build_request_body
+    from pi_ai.providers.openai_responses_shared import build_responses_tool_name_map
+    from pi_ai.types import Context, Tool
+
+    model = Model(
+        id="gpt-6.1-sol", name="GPT-6.1 Sol", api="openai-codex-responses",
+        provider="openai", base_url="https://chatgpt.com/backend-api",
+        cost=ModelCost(), context_window=1050000, max_tokens=128000,
+    )
+    tool = Tool(name="sessionkit.get", description="Read session kit", parameters={"type": "object"})
+    context = Context(tools=[tool])
+    internal_to_provider = build_responses_tool_name_map(context.tools)
+    provider_name = internal_to_provider[tool.name]
+    body = _build_request_body(model, context, {}, [], tool_name_map=internal_to_provider)
+
+    assert body["tools"][0]["name"] == provider_name
+    assert provider_name != tool.name
+    assert provider_name.replace("_", "").isalnum()
