@@ -152,7 +152,7 @@ def _thinking_options_for_model(model: Any) -> tuple[str, ...]:
 
     if model is None or not getattr(model, "reasoning", False):
         return ("off",)
-    if model.provider == "openai" and model.id == "gpt-6-astra":
+    if model.provider == "openai" and model.id in {"gpt-6-astra", "gpt-6.1-sol"}:
         return ("low", "medium", "high", "xhigh", "max")
     levels = ["off", "minimal", "low", "medium", "high"]
     if supports_xhigh(model):
@@ -265,7 +265,7 @@ async def _handle_slash_command(session: Any, command: dict[str, Any]) -> dict[s
             if level not in options:
                 raise ValueError("Thinking level must be one of: " + ", ".join(options))
             session.set_thinking_level(level)
-        elif session.model.provider == "openai" and session.model.id == "gpt-6-astra":
+        elif session.model.provider == "openai" and session.model.id in {"gpt-6-astra", "gpt-6.1-sol"}:
             current = session.thinking_level
             level = options[(options.index(current) + 1) % len(options)] if current in options else options[0]
             session.set_thinking_level(level)
