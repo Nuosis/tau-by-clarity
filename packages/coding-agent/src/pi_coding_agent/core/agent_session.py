@@ -1216,6 +1216,11 @@ class AgentSession:
 
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent events — persist messages and notify listeners."""
+        if event.type == "run_state" and getattr(event, "state", "") == "output_limit_recovery":
+            # Accounting survives restart without admitting abandoned tool content.
+            self._session_manager.append_custom_entry(
+                "tau.output_limit_attempt", dict(getattr(event, "details", {}))
+            )
         # ── 2a: Persist messages on message_end (not agent_end) ──────────────
         if event.type == "message_end":
             msg = getattr(event, "message", None)
@@ -2587,6 +2592,16 @@ class AgentSession:
                     cost = getattr(usage, "cost", None)
                     if cost:
                         total_cost += getattr(cost, "total", 0) or 0.0
+
+        for entry in self._session_manager.get_entries():
+            if entry.type != "custom" or entry.data.get("customType") != "tau.output_limit_attempt":
+                continue
+            usage = entry.data.get("data", {}).get("usage", {})
+            total_input += usage.get("input", 0)
+            total_output += usage.get("output", 0)
+            total_cache_read += usage.get("cache_read", 0)
+            total_cache_write += usage.get("cache_write", 0)
+            total_cost += usage.get("cost", {}).get("total", 0) or 0.0
 
         return {
             "sessionId": self.session_id,

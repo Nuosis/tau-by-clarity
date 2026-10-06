@@ -396,6 +396,49 @@ async def _stream_assistant_response(
     ev_stream: EventStream[AgentEvent, list[AgentMessage]],
     stream_fn: StreamFn | None,
 ) -> AssistantMessage:
+    """Recover a truncated generation without replaying completed tool work."""
+    prefix_length = len(context.messages)
+    recovery_budget: int | None = None
+    while True:
+        message, model_limit = await _stream_assistant_attempt(
+            context, config, cancel_event, ev_stream, stream_fn,
+            recovery_budget=recovery_budget,
+        )
+        if message.stop_reason != "length":
+            return message
+
+        # The interrupted assistant turn has not been committed or executed.
+        # Reissue only that generation against the same completed prefix. This
+        # also avoids sending a partial tool call or an assistant prefill back
+        # to providers which reject them.
+        del context.messages[prefix_length:]
+        used_budget = max(message.usage.output, recovery_budget or config.max_tokens or 0, 1)
+        recovery_budget = min(model_limit, max(used_budget * 2, min(model_limit, 32000)))
+        _emit_run_state(
+            ev_stream, "output_limit_recovery", phase="model",
+            reason="max_output_tokens", details={
+                "provider": message.provider,
+                "model": message.model,
+                "usage": message.usage.model_dump(),
+                "next_max_tokens": recovery_budget,
+            },
+        )
+        # USER-AUTHORIZED — Marcus, October 5, 2026: implement output-limit
+        # recovery without a new retry ceiling; existing cancellation remains.
+        if cancel_event and cancel_event.is_set():
+            raise RuntimeError("Output-limit recovery was cancelled")
+        await asyncio.sleep(0)
+
+
+async def _stream_assistant_attempt(
+    context: AgentContext,
+    config: AgentLoopConfig,
+    cancel_event: asyncio.Event | None,
+    ev_stream: EventStream[AgentEvent, list[AgentMessage]],
+    stream_fn: StreamFn | None,
+    *,
+    recovery_budget: int | None = None,
+) -> tuple[AssistantMessage, int]:
     """
     Stream an assistant response from the LLM.
     Mirrors streamAssistantResponse() in TypeScript.
@@ -456,7 +499,8 @@ async def _stream_assistant_response(
         reasoning=selected_reasoning,
         thinking_budgets=config.thinking_budgets,
         temperature=config.temperature,
-        max_tokens=config.max_tokens,
+        max_tokens=(min(recovery_budget, selected_model.max_tokens)
+                    if recovery_budget is not None else config.max_tokens),
         signal=cancel_event,
         api_key=resolved_api_key,
         transport=config.transport,
@@ -505,14 +549,15 @@ async def _stream_assistant_response(
                 context.messages.append(final_message)
             if not added_partial:
                 ev_stream.push(AgentEventMessageStart(message=final_message))
-            ev_stream.push(AgentEventMessageEnd(message=final_message))
-            return final_message
+            if final_message.stop_reason != "length":
+                ev_stream.push(AgentEventMessageEnd(message=final_message))
+            return final_message, selected_model.max_tokens
 
     # Fallback: return partial if no done/error event
     if partial_message:
         if cancel_event and cancel_event.is_set():
             raise RuntimeError("Request was aborted")
-        return partial_message
+        return partial_message, selected_model.max_tokens
 
     raise RuntimeError("Stream ended without a final message")
 
