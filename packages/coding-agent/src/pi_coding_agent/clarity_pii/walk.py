@@ -90,9 +90,6 @@ def list_string_slots(
 
 
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
-# Tool definitions carry schemas, defaults and examples, never media; they keep
-# the plain walker so a media-shaped example is still tokenized.
-_TOOL_DEFINITION_KEYS = frozenset({"tools", "functions"})
 
 
 def _is_base64(value: Any) -> bool:
@@ -106,70 +103,91 @@ def _is_base64_data_url(value: Any) -> bool:
     return bool(sep) and header.endswith(";base64") and _is_base64(data)
 
 
-def _base64_media_keys(d: dict[str, Any], parent_key: str | None) -> frozenset[str]:
-    """Keys of ``d`` that hold encoded media in a known provider media field.
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
-    OpenAI Responses ``input_image``/``input_file``, Chat Completions
-    ``image_url.url`` and ``input_audio.data``, Anthropic base64 ``source``
-    and Gemini ``inlineData``.
+
+def _collect_media_blocks(blocks: Any, out: set[tuple[int, str]]) -> None:
+    for block in _dicts(blocks):
+        kind = block.get("type")
+        if kind == "input_image" and _is_base64_data_url(block.get("image_url")):
+            out.add((id(block), "image_url"))
+        elif kind == "input_file" and _is_base64_data_url(block.get("file_data")):
+            out.add((id(block), "file_data"))
+        elif kind == "image_url" and isinstance(block.get("image_url"), dict):
+            if _is_base64_data_url(block["image_url"].get("url")):
+                out.add((id(block["image_url"]), "url"))
+        elif kind == "input_audio" and isinstance(block.get("input_audio"), dict):
+            if _is_base64(block["input_audio"].get("data")):
+                out.add((id(block["input_audio"]), "data"))
+        elif kind in ("image", "document") and isinstance(block.get("source"), dict):
+            source = block["source"]
+            if source.get("type") == "base64" and _is_base64(source.get("data")):
+                out.add((id(source), "data"))
+        elif kind == "tool_result":
+            _collect_media_blocks(block.get("content"), out)
+
+
+def _media_fields(payload: dict[str, Any]) -> set[tuple[int, str]]:
+    """(container id, key) of encoded media in provider message content.
+
+    Only message content is media-bearing: Responses ``input`` items, Chat
+    Completions/Anthropic ``messages`` and Gemini ``contents[].parts`` (also
+    under a ``request`` wrapper). Schemas, tool inputs and other application
+    objects stay on the plain walker.
     """
-    kind = d.get("type")
-    if kind == "input_image" and _is_base64_data_url(d.get("image_url")):
-        return frozenset({"image_url"})
-    if kind == "input_file" and _is_base64_data_url(d.get("file_data")):
-        return frozenset({"file_data"})
-    if kind == "base64" and "media_type" in d and _is_base64(d.get("data")):
-        return frozenset({"data"})
-    if parent_key == "image_url" and _is_base64_data_url(d.get("url")):
-        return frozenset({"url"})
-    if parent_key in ("input_audio", "inlineData", "inline_data") and _is_base64(d.get("data")):
-        return frozenset({"data"})
-    return frozenset()
+    out: set[tuple[int, str]] = set()
+    roots = [payload]
+    if isinstance(payload.get("request"), dict):
+        roots.append(payload["request"])
+    for root in roots:
+        for message in _dicts(root.get("input")) + _dicts(root.get("messages")):
+            _collect_media_blocks(message.get("content"), out)
+            _collect_media_blocks(message.get("output"), out)
+        for content in _dicts(root.get("contents")):
+            for part in _dicts(content.get("parts")):
+                for key in ("inlineData", "inline_data"):
+                    inline = part.get(key)
+                    if isinstance(inline, dict) and _is_base64(inline.get("data")):
+                        out.add((id(inline), "data"))
+    return out
 
 
 def provider_payload_string_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     """Yield editable provider payload text while leaving protocol fields intact.
 
-    Encoded media in provider content is binary, not text: a detector match
-    inside base64 corrupts the image, so those fields are skipped.
+    Encoded media in provider message content is binary, not text: a detector
+    match inside base64 corrupts the image, so those fields are skipped.
     """
-    for key, val in list(d.items()):
-        yield from _content_string_slots(d, key, val, parent_key=None)
+    yield from _payload_dict_slots(d, _media_fields(d))
 
 
-def _content_string_slots(
-    owner: dict[str, Any],
-    key: str,
-    val: Any,
-    *,
-    parent_key: str | None,
+def _payload_dict_slots(
+    d: dict[str, Any],
+    media: set[tuple[int, str]],
 ) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
-    if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or key in _base64_media_keys(owner, parent_key):
-        return
-    if key in _TOOL_DEFINITION_KEYS and isinstance(val, (dict, list)):
-        # Root ``tools`` or provider-wrapped ``request.tools``/``config.tools``.
-        yield from dict_string_slots({key: val}, skip_keys=PROVIDER_PAYLOAD_PROTOCOL_KEYS)
-        return
-    if isinstance(val, str):
-        yield (lambda: owner[key], lambda v: owner.__setitem__(key, v))
-    elif isinstance(val, dict):
-        for child_key, child in list(val.items()):
-            yield from _content_string_slots(val, child_key, child, parent_key=key)
-    elif isinstance(val, list):
-        yield from _content_list_string_slots(val)
+    for key, val in list(d.items()):
+        if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or (id(d), key) in media:
+            continue
+        if isinstance(val, str):
+            yield (lambda k=key: d[k], lambda v, k=key: d.__setitem__(k, v))
+        elif isinstance(val, dict):
+            yield from _payload_dict_slots(val, media)
+        elif isinstance(val, list):
+            yield from _payload_list_slots(val, media)
 
 
-def _content_list_string_slots(
+def _payload_list_slots(
     lst: list[Any],
+    media: set[tuple[int, str]],
 ) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     for i, val in enumerate(lst):
         if isinstance(val, str):
             yield (lambda i=i: lst[i], lambda v, i=i: lst.__setitem__(i, v))
         elif isinstance(val, dict):
-            for child_key, child in list(val.items()):
-                yield from _content_string_slots(val, child_key, child, parent_key=None)
+            yield from _payload_dict_slots(val, media)
         elif isinstance(val, list):
-            yield from _content_list_string_slots(val)
+            yield from _payload_list_slots(val, media)
 
 
 def provider_payload_protocol_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
