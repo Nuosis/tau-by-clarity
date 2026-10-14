@@ -134,11 +134,7 @@ def provider_payload_string_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[
     inside base64 corrupts the image, so those fields are skipped.
     """
     for key, val in list(d.items()):
-        if key in _TOOL_DEFINITION_KEYS and isinstance(val, (dict, list)):
-            container = {key: val}
-            yield from dict_string_slots(container, skip_keys=PROVIDER_PAYLOAD_PROTOCOL_KEYS)
-        else:
-            yield from _content_string_slots(d, key, val, parent_key=None)
+        yield from _content_string_slots(d, key, val, parent_key=None)
 
 
 def _content_string_slots(
@@ -149,6 +145,10 @@ def _content_string_slots(
     parent_key: str | None,
 ) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or key in _base64_media_keys(owner, parent_key):
+        return
+    if key in _TOOL_DEFINITION_KEYS and isinstance(val, (dict, list)):
+        # Root ``tools`` or provider-wrapped ``request.tools``/``config.tools``.
+        yield from dict_string_slots({key: val}, skip_keys=PROVIDER_PAYLOAD_PROTOCOL_KEYS)
         return
     if isinstance(val, str):
         yield (lambda: owner[key], lambda v: owner.__setitem__(key, v))
