@@ -177,6 +177,7 @@ class Verified:
     # Every signed manifest entry, and the verified body for each content hash.
     entries: list[dict[str, Any]] = field(default_factory=list)
     bodies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    trusted_keys: list[str] = field(default_factory=list)
 
 
 def _select(entries: list[dict[str, Any]], bodies: dict[str, dict[str, Any]], agent: str, sealed_on: str) -> list[dict[str, Any]]:
@@ -222,6 +223,7 @@ def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
             trusted[k["credential_id"]] = k
             progressed = True
 
+    out.trusted_keys = list(trusted)
     record = bundle.get("manifest")
     if not record:
         return out
@@ -406,6 +408,8 @@ def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
             if candidate.has_manifest and all(p.get("kind") == "policy_seal_invalid" for p in candidate.problems):
                 cached = candidate
                 marks.append((candidate.seq, candidate.manifest_hash))
+                if candidate.problems:
+                    problems.extend({**p, "kind": "cache_policy_invalid"} for p in candidate.problems)
             else:
                 problems.append({"kind": "cache_invalid", "detail": "cached policies did not fully verify"})
         high_seq, high_hash = max(marks, key=lambda m: m[0])
@@ -414,8 +418,12 @@ def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
         _high_water[key] = (high_seq, high_hash)
 
         if fresh is None:
-            result = ((cached.policies, "registry unreachable; using the last verified policies") if cached is not None
-                      else ([], "registry unreachable and no verified copy is cached"))
+            if cached is None:
+                result = ([], "registry unreachable and no verified copy is cached")
+            elif cached.problems:
+                result = (cached.policies, "registry unreachable; using the last verified policies, some of which failed verification")
+            else:
+                result = (cached.policies, "registry unreachable; using the last verified policies")
         else:
             problems.extend(fresh.problems)
             rolled_back = fresh.has_manifest and (
@@ -442,6 +450,7 @@ def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
                     # so later refreshes and outages keep the recovered policies.
                     reconciled = dict(bundle)
                     reconciled["policies"] = [bodies[e["content_hash"]] for e in fresh.entries if e["content_hash"] in bodies]
+                    reconciled["seal_keys"] = [k for k in bundle.get("seal_keys") or [] if k.get("credential_id") in fresh.trusted_keys]
                     _write_json(cache_file, reconciled)
                     note = "registry copy of a sealed policy was altered; using the verified copy"
                     if missing:
