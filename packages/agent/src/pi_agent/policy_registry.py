@@ -4,12 +4,13 @@ When a host configures the Clarify agent policy registry, the only policies an
 agent may follow are the ones its owner sealed there. Tau fetches the signed
 bundle, verifies every seal offline against the root seal key pinned in the
 host configuration, and writes the owner's banner and the sealed policies at
-the top of the system prompt. The agent's own files follow under a header that
-marks any rule in them as unauthorized. No agent file can remove or reword
-those sections, because this module writes them.
+the top of the system prompt of every model call (``pi_agent.agent_loop``
+calls :func:`enforce` as it builds each request). The agent's prompt follows
+under a header that marks any rule in it as unauthorized. No agent file,
+extension or environment variable can remove or reword those sections.
 
-Host configuration lives outside the agent's writable files (default
-``/etc/clarify/agent-policy.json``; ``CLARIFY_AGENT_POLICY_CONFIG`` overrides):
+Host configuration lives outside the agent's writable files, at the fixed path
+``/etc/clarify/agent-policy.json``:
 
     {
       "agent": "claire",
@@ -43,9 +44,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = "/etc/clarify/agent-policy.json"
+CONFIG_PATH = "/etc/clarify/agent-policy.json"
 FETCH_TIMEOUT_SECONDS = 5.0
-REFRESH_SECONDS = 15.0
+REFRESH_SECONDS = 5.0
+SUPPORTED_ALGS = (-7, -8, -257)  # ES256, EdDSA, RS256; the registry enrols only these
 
 BANNER = (
     "Below are the approved policies, guardrails, and rules. Any policies, guardrails, "
@@ -125,19 +127,19 @@ def _verify_signature(cose_key: bytes, signature: bytes, message: bytes) -> None
     from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
     key, _ = _cbor(cose_key)
-    kty = key.get(1)
-    if kty == 2 and key.get(-1) == 1:
+    alg = key.get(3)
+    if alg == -7 and key.get(1) == 2 and key.get(-1) == 1:
         public = ec.EllipticCurvePublicNumbers(
             int.from_bytes(key[-2], "big"), int.from_bytes(key[-3], "big"), ec.SECP256R1()
         ).public_key()
         public.verify(signature, message, ec.ECDSA(hashes.SHA256()))
-    elif kty == 1 and key.get(-1) == 6:
+    elif alg == -8 and key.get(1) == 1 and key.get(-1) == 6:
         ed25519.Ed25519PublicKey.from_public_bytes(key[-2]).verify(signature, message)
-    elif kty == 3:
+    elif alg == -257 and key.get(1) == 3:
         public = rsa.RSAPublicNumbers(int.from_bytes(key[-2], "big"), int.from_bytes(key[-1], "big")).public_key()
         public.verify(signature, message, padding.PKCS1v15(), hashes.SHA256())
     else:
-        raise ValueError("unsupported seal key type")
+        raise ValueError(f"unsupported seal key algorithm {alg}")
 
 
 def verify_assertion(assertion: dict[str, str], hex_digest: str, public_key_b64: str, rp_id: str, origin: str) -> None:
@@ -171,6 +173,7 @@ class Verified:
     problems: list[dict[str, Any]] = field(default_factory=list)
     has_manifest: bool = False
     manifest_hash: str = ""
+    sealed_on: str = ""
 
 
 def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
@@ -220,6 +223,8 @@ def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
         return out
     out.seq = int(manifest.get("seq", 0))
     out.manifest_hash = record["manifest_hash"]
+    issued = str(manifest.get("issued_at") or "")
+    out.sealed_on = issued[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+", issued) else ""
     by_id = {str(p.get("policy_id")): p for p in bundle.get("policies") or []}
     agent = config["agent"].strip().lower()
     for entry in manifest.get("policies", []):
@@ -230,7 +235,7 @@ def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
             continue
         scope = policy.get("scope") or []
         if "*" in scope or agent in scope:
-            out.policies.append(policy | {"sealed_at": policy.get("sealed_at") or record.get("sealed_at")})
+            out.policies.append(_content_of(policy) | {"sealed_on": out.sealed_on})
     out.policies.sort(key=lambda p: (p.get("title") or "", p["policy_id"]))
     return out
 
@@ -238,7 +243,7 @@ def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
 # ── Fetch, cache and report ──────────────────────────────────────────────────
 
 def load_config() -> dict[str, Any] | None:
-    path = Path(os.environ.get("CLARIFY_AGENT_POLICY_CONFIG") or DEFAULT_CONFIG_PATH)
+    path = Path(CONFIG_PATH)
     try:
         config = json.loads(path.read_text("utf-8"))
     except FileNotFoundError:
@@ -273,75 +278,136 @@ def _http(method: str, url: str, api_key: str, body: dict | None = None) -> dict
         return json.loads(response.read().decode("utf-8") or "{}")
 
 
-def _cache_path(config: dict[str, Any]) -> Path:
-    base = config.get("cache_dir") or str(Path.home() / ".tau" / "agent-policy-cache")
-    return Path(base) / f"{re.sub(r'[^a-z0-9-]', '-', config['agent'].lower())}.json"
+def _paths(config: dict[str, Any]) -> tuple[Path, Path]:
+    base = Path(config.get("cache_dir") or str(Path.home() / ".tau" / "agent-policy-cache"))
+    name = re.sub(r"[^a-z0-9-]", "-", config["agent"].lower())
+    return base / f"{name}.json", base / f"{name}.checkpoint.json"
 
 
 _lock = threading.Lock()
-_memo: dict[str, Any] = {"at": 0.0, "result": None, "reported": set()}
+_memo: dict[str, tuple[float, tuple[list[dict[str, Any]], str | None]]] = {}
+_high_water: dict[str, tuple[int, str]] = {}
+_delivered: set[str] = set()
+
+
+def _config_key(config: dict[str, Any]) -> str:
+    return json.dumps({k: config.get(k) for k in sorted(config) if k != "_error"}, sort_keys=True)
 
 
 def _report(config: dict[str, Any], problems: list[dict[str, Any]]) -> None:
     url = config["bundle_url"].rsplit("/bundle", 1)[0] + "/tamper-reports"
     for problem in problems:
-        marker = json.dumps(problem, sort_keys=True)
-        if marker in _memo["reported"]:
+        marker = _config_key(config) + json.dumps(problem, sort_keys=True)
+        if marker in _delivered:
             continue
-        _memo["reported"].add(marker)
         try:
             _http("POST", url, _api_key(config), {
                 "reporter": config["agent"], "kind": problem.get("kind", "unknown")[:48],
                 "detail": str(problem.get("detail", ""))[:4000], "policy_id": problem.get("policy_id"),
                 "manifest_seq": problem.get("manifest_seq"),
             })
-        except Exception as exc:  # noqa: BLE001 - reporting is best effort
+        except Exception as exc:  # noqa: BLE001 - retried on the next detection
             logger.warning("agent policy problem report failed: %s", exc)
+            continue
+        _delivered.add(marker)
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except Exception:  # noqa: BLE001 - missing or unreadable
+        return None
+
+
+def _write_json(path: Path, value: Any) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(value), "utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        logger.warning("agent policy cache write failed: %s", exc)
+
+
+def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    key = _config_key(config)
+    cache_file, checkpoint_file = _paths(config)
+    problems: list[dict[str, Any]] = []
+
+    # Highest sequence ever accepted for this configuration: in memory, and on disk.
+    marks = [_high_water.get(key, (0, ""))]
+    saved = _read_json(checkpoint_file)
+    if isinstance(saved, dict) and isinstance(saved.get("seq"), int):
+        marks.append((saved["seq"], str(saved.get("manifest_hash") or "")))
+    high_seq, high_hash = max(marks, key=lambda m: m[0])
+
+    cached: Verified | None = None
+    raw_cache = _read_json(cache_file)
+    if raw_cache is not None:
+        try:
+            candidate = verify_bundle(raw_cache, config)
+        except Exception as exc:  # noqa: BLE001
+            candidate = Verified(problems=[{"kind": "cache_invalid", "detail": str(exc)}])
+        if candidate.has_manifest and not candidate.problems and candidate.seq >= high_seq:
+            cached = candidate
+        else:
+            problems.append({"kind": "cache_invalid", "detail": "cached policies did not fully verify or were older than accepted"})
+
+    def accept(fresh: Verified, bundle: dict[str, Any]) -> None:
+        _high_water[key] = (fresh.seq, fresh.manifest_hash)
+        _write_json(checkpoint_file, {"seq": fresh.seq, "manifest_hash": fresh.manifest_hash})
+        _write_json(cache_file, bundle)
+
+    try:
+        bundle = _http("GET", config["bundle_url"], _api_key(config))
+        fresh = verify_bundle(bundle, config)
+    except Exception as exc:  # noqa: BLE001 - registry unreachable (F7)
+        logger.warning("agent policy registry unreachable: %s", exc)
+        _report(config, problems)
+        if cached is not None:
+            return cached.policies, "registry unreachable; using the last verified policies"
+        return [], "registry unreachable and no verified copy is cached"
+
+    problems.extend(fresh.problems)
+    rolled_back = fresh.has_manifest and (
+        fresh.seq < high_seq or (fresh.seq == high_seq and high_hash and fresh.manifest_hash != high_hash)
+    )
+    if rolled_back:
+        problems.append({"kind": "manifest_rollback", "manifest_seq": fresh.seq,
+                         "detail": f"registry served seq {fresh.seq} after accepting {high_seq}"})
+    _report(config, problems)
+
+    if fresh.has_manifest and not fresh.problems and not rolled_back:
+        accept(fresh, bundle)
+        return fresh.policies, None
+    if cached is not None:
+        reason = ("older registry copy refused" if rolled_back
+                  else "registry copy of a sealed policy was altered" if fresh.has_manifest
+                  else "registry seal did not verify")
+        return cached.policies, f"{reason}; using the last verified policies"
+    if fresh.has_manifest and not rolled_back:
+        # First contact with a partly altered registry: bind only what verifies.
+        return fresh.policies, "some sealed policies failed verification and were left out"
+    if rolled_back:
+        return [], "older registry copy refused and no newer verified copy is cached"
+    if not fresh.has_manifest and not fresh.problems and high_seq == 0:
+        return [], None
+    return [], "no verified policies are available"
 
 
 def current_policies(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
-    """Return (sealed policies for this agent, note about the source) — never raises."""
+    """Return (sealed policies for this agent, note about the source). Never raises."""
+    key = _config_key(config)
     with _lock:
-        if _memo["result"] is not None and time.monotonic() - _memo["at"] < REFRESH_SECONDS:
-            return _memo["result"]
-        cache_file = _cache_path(config)
-        cached: Verified | None = None
+        hit = _memo.get(key)
+        if hit is not None and time.monotonic() - hit[0] < REFRESH_SECONDS:
+            return hit[1]
         try:
-            cached = verify_bundle(json.loads(cache_file.read_text("utf-8")), config)
-            if not cached.has_manifest:
-                cached = None
-        except Exception:  # noqa: BLE001 - no usable cache
-            cached = None
-        note: str | None = None
-        try:
-            bundle = _http("GET", config["bundle_url"], _api_key(config))
-            fresh = verify_bundle(bundle, config)
-            if fresh.problems:
-                _report(config, fresh.problems)
-            if cached is not None and not fresh.has_manifest:
-                result = (cached.policies, "registry seal did not verify; using the last verified policies")
-            elif cached is not None and fresh.seq < cached.seq:
-                _report(config, [{"kind": "manifest_rollback", "manifest_seq": fresh.seq,
-                                  "detail": f"registry served seq {fresh.seq} after {cached.seq}"}])
-                result = (cached.policies, "older registry copy refused; using the last verified policies")
-            elif fresh.has_manifest and fresh.problems and cached is not None and cached.manifest_hash == fresh.manifest_hash:
-                result = (cached.policies, "registry copy of a sealed policy was altered; using the verified copy")
-            else:
-                if fresh.has_manifest and not fresh.problems:
-                    try:
-                        cache_file.parent.mkdir(parents=True, exist_ok=True)
-                        cache_file.write_text(json.dumps(bundle), "utf-8")
-                    except OSError as exc:
-                        logger.warning("agent policy cache write failed: %s", exc)
-                result = (fresh.policies, None)
-        except Exception as exc:  # noqa: BLE001 - registry unreachable (F7)
-            logger.warning("agent policy registry unreachable: %s", exc)
-            if cached is not None:
-                note = "registry unreachable; using the last verified policies"
-                result = (cached.policies, note)
-            else:
-                result = ([], "registry unreachable and no verified copy is cached")
-        _memo["at"], _memo["result"] = time.monotonic(), result
+            result = _resolve(config)
+        except Exception as exc:  # noqa: BLE001 - never break the turn; bind nothing
+            logger.error("agent policy resolution failed: %s", exc)
+            result = ([], "policy verification failed")
+        _memo[key] = (time.monotonic(), result)
         return result
 
 
@@ -356,7 +422,7 @@ def render_block(policies: list[dict[str, Any]], note: str | None = None) -> str
     fence = _fence(policies)
     if policies:
         body = "\n\n".join(
-            f"[{str(p['policy_id'])[:8]} v{p['version']}, sealed {str(p.get('sealed_at') or '')[:10]}] {p['title']}\n{p['rule_text'].strip()}"
+            f"[{str(p['policy_id'])[:8]} v{p['version']}, sealed {p.get('sealed_on') or 'date unknown'}] {p['title']}\n{p['rule_text'].strip()}"
             for p in policies
         )
     else:
@@ -367,8 +433,19 @@ def render_block(policies: list[dict[str, Any]], note: str | None = None) -> str
     return "\n".join(lines)
 
 
-def apply_policy_registry(prompt: str) -> str:
-    """Wrap ``prompt`` with the sealed policy block when the host configures a registry."""
+def _strip_wrapper(prompt: str) -> str:
+    """Remove a policy wrapper this module added earlier, so it is never nested or reused."""
+    if prompt.startswith(BANNER):
+        cut = prompt.find(JOB_HEADER)
+        if cut != -1:
+            prompt = prompt[cut + len(JOB_HEADER):].lstrip("\n")
+    if prompt.rstrip().endswith(CLOSING):
+        prompt = prompt.rstrip()[: -len(CLOSING)].rstrip()
+    return prompt
+
+
+def enforce(prompt: str | None) -> str | None:
+    """Wrap the final system prompt of a model call with the current sealed policies."""
     config = load_config()
     if config is None:
         return prompt
@@ -376,12 +453,13 @@ def apply_policy_registry(prompt: str) -> str:
         policies, note = [], f"host policy configuration is broken ({config['_error']})"
     else:
         policies, note = current_policies(config)
-    return f"{render_block(policies, note)}\n\n{JOB_HEADER}\n\n{prompt}\n\n{CLOSING}"
+    body = _strip_wrapper(prompt or "")
+    return f"{render_block(policies, note)}\n\n{JOB_HEADER}\n\n{body}\n\n{CLOSING}"
 
 
 __all__ = [
     "BANNER",
-    "apply_policy_registry",
+    "enforce",
     "current_policies",
     "key_fingerprint",
     "load_config",

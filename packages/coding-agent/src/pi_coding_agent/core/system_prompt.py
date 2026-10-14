@@ -6,8 +6,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from pi_coding_agent.core.policy_registry import apply_policy_registry
-
 # ── Tool descriptions (mirrors toolDescriptions in TS) ────────────────────────
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "read":  "Read file contents",
@@ -91,7 +89,7 @@ def build_system_prompt(
 
         prompt += f"\nCurrent date and time: {date_time}"
         prompt += f"\nCurrent working directory: {resolved_cwd}"
-        return apply_policy_registry(_apply_session_vars(prompt, session_vars))
+        return _apply_session_vars(prompt, session_vars)
 
     # ── Default prompt ────────────────────────────────────────────────────────
     requested_tools = ["read", "bash", "edit", "write"] if selected_tools is None else selected_tools
@@ -209,7 +207,7 @@ def build_system_prompt(
     prompt += f"\nCurrent date and time: {date_time}"
     prompt += f"\nCurrent working directory: {resolved_cwd}"
 
-    return apply_policy_registry(_apply_session_vars(prompt, session_vars))
+    return _apply_session_vars(prompt, session_vars)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
