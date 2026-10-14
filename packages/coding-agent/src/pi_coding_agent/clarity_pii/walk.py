@@ -88,9 +88,51 @@ def list_string_slots(
             yield from list_string_slots(val, skip_keys=skip_keys)
 
 
+_MEDIA_TYPE_KEYS = ("media_type", "mime_type", "mimeType")
+
+
+def _is_base64_data_url(value: str) -> bool:
+    return value.startswith("data:") and ";base64," in value[:256]
+
+
+def _is_base64_media(d: dict[str, Any]) -> bool:
+    """Anthropic ``source`` / Gemini ``inlineData`` blocks carry raw base64."""
+    return isinstance(d.get("data"), str) and (
+        d.get("type") == "base64" or any(k in d for k in _MEDIA_TYPE_KEYS)
+    )
+
+
 def provider_payload_string_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
-    """Yield editable provider payload text while leaving protocol fields intact."""
-    yield from dict_string_slots(d, skip_keys=PROVIDER_PAYLOAD_PROTOCOL_KEYS)
+    """Yield editable provider payload text while leaving protocol fields intact.
+
+    Media is binary, not text: base64 data URLs and base64 media blocks are
+    skipped, because a detector match inside the encoding corrupts the image.
+    """
+    for key, val in list(d.items()):
+        if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS:
+            continue
+        if key == "data" and _is_base64_media(d):
+            continue
+        if isinstance(val, str):
+            if not _is_base64_data_url(val):
+                yield (lambda k=key: d[k], lambda v, k=key: d.__setitem__(k, v))
+        elif isinstance(val, dict):
+            yield from provider_payload_string_slots(val)
+        elif isinstance(val, list):
+            yield from _provider_payload_list_string_slots(val)
+
+
+def _provider_payload_list_string_slots(
+    lst: list[Any],
+) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
+    for i, val in enumerate(lst):
+        if isinstance(val, str):
+            if not _is_base64_data_url(val):
+                yield (lambda i=i: lst[i], lambda v, i=i: lst.__setitem__(i, v))
+        elif isinstance(val, dict):
+            yield from provider_payload_string_slots(val)
+        elif isinstance(val, list):
+            yield from _provider_payload_list_string_slots(val)
 
 
 def provider_payload_protocol_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
