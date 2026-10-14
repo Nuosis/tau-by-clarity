@@ -401,7 +401,9 @@ def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
                 candidate = verify_bundle(raw_cache, config)
             except Exception as exc:  # noqa: BLE001
                 candidate = Verified(problems=[{"kind": "cache_invalid", "detail": str(exc)}])
-            if candidate.has_manifest and not candidate.problems:
+            # A cache written after recovering bodies may lack bodies that never verified;
+            # its signed manifest still governs, so only missing bodies are tolerated.
+            if candidate.has_manifest and all(p.get("kind") == "policy_seal_invalid" for p in candidate.problems):
                 cached = candidate
                 marks.append((candidate.seq, candidate.manifest_hash))
             else:
@@ -436,6 +438,11 @@ def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
                     bodies.update(fresh.bodies)
                     chosen = _select(fresh.entries, bodies, config["agent"], fresh.sealed_on)
                     missing = sum(1 for e in fresh.entries if e["content_hash"] not in bodies)
+                    # Persist the newest signed manifest with every body that verified,
+                    # so later refreshes and outages keep the recovered policies.
+                    reconciled = dict(bundle)
+                    reconciled["policies"] = [bodies[e["content_hash"]] for e in fresh.entries if e["content_hash"] in bodies]
+                    _write_json(cache_file, reconciled)
                     note = "registry copy of a sealed policy was altered; using the verified copy"
                     if missing:
                         note = "some sealed policies failed verification and were left out"
