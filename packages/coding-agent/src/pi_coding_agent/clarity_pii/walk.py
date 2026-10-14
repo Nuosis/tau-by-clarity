@@ -88,36 +88,49 @@ def list_string_slots(
             yield from list_string_slots(val, skip_keys=skip_keys)
 
 
-_MEDIA_TYPE_KEYS = ("media_type", "mime_type", "mimeType")
+def _is_base64_data_url(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("data:") and ";base64," in value[:256]
 
 
-def _is_base64_data_url(value: str) -> bool:
-    return value.startswith("data:") and ";base64," in value[:256]
+def _base64_media_keys(d: dict[str, Any], parent_key: str | None) -> frozenset[str]:
+    """Keys of ``d`` that hold encoded media in a known provider media field.
+
+    OpenAI Responses ``input_image``/``input_file``, Chat Completions
+    ``image_url.url`` and ``input_audio.data``, Anthropic base64 ``source``
+    and Gemini ``inlineData``.
+    """
+    kind = d.get("type")
+    if kind == "input_image" and _is_base64_data_url(d.get("image_url")):
+        return frozenset({"image_url"})
+    if kind == "input_file" and _is_base64_data_url(d.get("file_data")):
+        return frozenset({"file_data"})
+    if kind == "base64" and "media_type" in d and isinstance(d.get("data"), str):
+        return frozenset({"data"})
+    if parent_key == "image_url" and _is_base64_data_url(d.get("url")):
+        return frozenset({"url"})
+    if parent_key in ("input_audio", "inlineData", "inline_data") and isinstance(d.get("data"), str):
+        return frozenset({"data"})
+    return frozenset()
 
 
-def _is_base64_media(d: dict[str, Any]) -> bool:
-    """Anthropic ``source`` / Gemini ``inlineData`` blocks carry raw base64."""
-    return isinstance(d.get("data"), str) and (
-        d.get("type") == "base64" or any(k in d for k in _MEDIA_TYPE_KEYS)
-    )
-
-
-def provider_payload_string_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
+def provider_payload_string_slots(
+    d: dict[str, Any],
+    *,
+    _parent_key: str | None = None,
+) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     """Yield editable provider payload text while leaving protocol fields intact.
 
-    Media is binary, not text: base64 data URLs and base64 media blocks are
-    skipped, because a detector match inside the encoding corrupts the image.
+    Encoded media in provider media fields is binary, not text: a detector
+    match inside base64 corrupts the image, so those fields are skipped.
     """
+    skip = _base64_media_keys(d, _parent_key)
     for key, val in list(d.items()):
-        if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS:
-            continue
-        if key == "data" and _is_base64_media(d):
+        if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or key in skip:
             continue
         if isinstance(val, str):
-            if not _is_base64_data_url(val):
-                yield (lambda k=key: d[k], lambda v, k=key: d.__setitem__(k, v))
+            yield (lambda k=key: d[k], lambda v, k=key: d.__setitem__(k, v))
         elif isinstance(val, dict):
-            yield from provider_payload_string_slots(val)
+            yield from provider_payload_string_slots(val, _parent_key=key)
         elif isinstance(val, list):
             yield from _provider_payload_list_string_slots(val)
 
@@ -127,8 +140,7 @@ def _provider_payload_list_string_slots(
 ) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     for i, val in enumerate(lst):
         if isinstance(val, str):
-            if not _is_base64_data_url(val):
-                yield (lambda i=i: lst[i], lambda v, i=i: lst.__setitem__(i, v))
+            yield (lambda i=i: lst[i], lambda v, i=i: lst.__setitem__(i, v))
         elif isinstance(val, dict):
             yield from provider_payload_string_slots(val)
         elif isinstance(val, list):
