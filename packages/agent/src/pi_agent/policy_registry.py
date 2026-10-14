@@ -174,6 +174,23 @@ class Verified:
     has_manifest: bool = False
     manifest_hash: str = ""
     sealed_on: str = ""
+    # Every signed manifest entry, and the verified body for each content hash.
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    bodies: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _select(entries: list[dict[str, Any]], bodies: dict[str, dict[str, Any]], agent: str, sealed_on: str) -> list[dict[str, Any]]:
+    """Policies in ``entries`` (one signed manifest) that cover ``agent`` and have a verified body."""
+    agent = agent.strip().lower()
+    chosen = []
+    for entry in entries:
+        body = bodies.get(entry["content_hash"])
+        if body is None:
+            continue
+        scope = body.get("scope") or []
+        if "*" in scope or agent in scope:
+            chosen.append(body | {"sealed_on": sealed_on})
+    return sorted(chosen, key=lambda p: (p.get("title") or "", p["policy_id"]))
 
 
 def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
@@ -226,17 +243,15 @@ def verify_bundle(bundle: dict[str, Any], config: dict[str, Any]) -> Verified:
     issued = str(manifest.get("issued_at") or "")
     out.sealed_on = issued[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+", issued) else ""
     by_id = {str(p.get("policy_id")): p for p in bundle.get("policies") or []}
-    agent = config["agent"].strip().lower()
-    for entry in manifest.get("policies", []):
+    out.entries = [dict(e) for e in manifest.get("policies", [])]
+    for entry in out.entries:
         policy = by_id.get(entry["policy_id"])
         if policy is None or int(policy.get("version", -1)) != int(entry["version"]) or _sha256_hex(_content_of(policy)) != entry["content_hash"]:
             out.problems.append({"kind": "policy_seal_invalid", "policy_id": entry["policy_id"], "manifest_seq": out.seq,
                                  "detail": "sealed text, scope or version does not match its seal"})
             continue
-        scope = policy.get("scope") or []
-        if "*" in scope or agent in scope:
-            out.policies.append(_content_of(policy) | {"sealed_on": out.sealed_on})
-    out.policies.sort(key=lambda p: (p.get("title") or "", p["policy_id"]))
+        out.bodies[entry["content_hash"]] = _content_of(policy)
+    out.policies = _select(out.entries, out.bodies, config["agent"], out.sealed_on)
     return out
 
 
@@ -322,77 +337,120 @@ def _read_json(path: Path) -> Any:
 def _write_json(path: Path, value: Any) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(value), "utf-8")
         tmp.replace(path)
     except OSError as exc:
         logger.warning("agent policy cache write failed: %s", exc)
 
 
+class _FileLock:
+    """Advisory lock shared by every Tau process using this cache directory."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.handle = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.handle = open(self.path, "a+")  # noqa: SIM115 - held for the block
+            fcntl.flock(self.handle, fcntl.LOCK_EX)
+        except Exception as exc:  # noqa: BLE001 - continue with the in-process lock only
+            logger.warning("agent policy cache lock unavailable: %s", exc)
+            self.handle = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.handle is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
+            finally:
+                self.handle.close()
+        return False
+
+
+def _floor(saved: Any) -> tuple[int, str]:
+    if isinstance(saved, dict) and isinstance(saved.get("seq"), int):
+        return saved["seq"], str(saved.get("manifest_hash") or "")
+    return 0, ""
+
+
 def _resolve(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
     key = _config_key(config)
     cache_file, checkpoint_file = _paths(config)
     problems: list[dict[str, Any]] = []
-
-    # Highest sequence ever accepted for this configuration: in memory, and on disk.
-    marks = [_high_water.get(key, (0, ""))]
-    saved = _read_json(checkpoint_file)
-    if isinstance(saved, dict) and isinstance(saved.get("seq"), int):
-        marks.append((saved["seq"], str(saved.get("manifest_hash") or "")))
-    high_seq, high_hash = max(marks, key=lambda m: m[0])
-
-    cached: Verified | None = None
-    raw_cache = _read_json(cache_file)
-    if raw_cache is not None:
-        try:
-            candidate = verify_bundle(raw_cache, config)
-        except Exception as exc:  # noqa: BLE001
-            candidate = Verified(problems=[{"kind": "cache_invalid", "detail": str(exc)}])
-        if candidate.has_manifest and not candidate.problems and candidate.seq >= high_seq:
-            cached = candidate
-        else:
-            problems.append({"kind": "cache_invalid", "detail": "cached policies did not fully verify or were older than accepted"})
-
-    def accept(fresh: Verified, bundle: dict[str, Any]) -> None:
-        _high_water[key] = (fresh.seq, fresh.manifest_hash)
-        _write_json(checkpoint_file, {"seq": fresh.seq, "manifest_hash": fresh.manifest_hash})
-        _write_json(cache_file, bundle)
-
     try:
         bundle = _http("GET", config["bundle_url"], _api_key(config))
-        fresh = verify_bundle(bundle, config)
+        fresh: Verified | None = verify_bundle(bundle, config)
     except Exception as exc:  # noqa: BLE001 - registry unreachable (F7)
         logger.warning("agent policy registry unreachable: %s", exc)
-        _report(config, problems)
-        if cached is not None:
-            return cached.policies, "registry unreachable; using the last verified policies"
-        return [], "registry unreachable and no verified copy is cached"
+        bundle, fresh = None, None
 
-    problems.extend(fresh.problems)
-    rolled_back = fresh.has_manifest and (
-        fresh.seq < high_seq or (fresh.seq == high_seq and high_hash and fresh.manifest_hash != high_hash)
-    )
-    if rolled_back:
-        problems.append({"kind": "manifest_rollback", "manifest_seq": fresh.seq,
-                         "detail": f"registry served seq {fresh.seq} after accepting {high_seq}"})
+    with _FileLock(checkpoint_file.with_suffix(".lock")):
+        # The rollback floor: the highest sequence accepted in memory, on disk, or in the verified cache.
+        marks = [_high_water.get(key, (0, "")), _floor(_read_json(checkpoint_file))]
+        cached: Verified | None = None
+        raw_cache = _read_json(cache_file)
+        if raw_cache is not None:
+            try:
+                candidate = verify_bundle(raw_cache, config)
+            except Exception as exc:  # noqa: BLE001
+                candidate = Verified(problems=[{"kind": "cache_invalid", "detail": str(exc)}])
+            if candidate.has_manifest and not candidate.problems:
+                cached = candidate
+                marks.append((candidate.seq, candidate.manifest_hash))
+            else:
+                problems.append({"kind": "cache_invalid", "detail": "cached policies did not fully verify"})
+        high_seq, high_hash = max(marks, key=lambda m: m[0])
+        if cached is not None and cached.seq < high_seq:
+            cached = None  # older than what this agent already accepted
+        _high_water[key] = (high_seq, high_hash)
+
+        if fresh is None:
+            result = ((cached.policies, "registry unreachable; using the last verified policies") if cached is not None
+                      else ([], "registry unreachable and no verified copy is cached"))
+        else:
+            problems.extend(fresh.problems)
+            rolled_back = fresh.has_manifest and (
+                fresh.seq < high_seq or (fresh.seq == high_seq and bool(high_hash) and fresh.manifest_hash != high_hash)
+            )
+            if rolled_back:
+                problems.append({"kind": "manifest_rollback", "manifest_seq": fresh.seq,
+                                 "detail": f"registry served seq {fresh.seq} after accepting {high_seq}"})
+            if fresh.has_manifest and not rolled_back:
+                if fresh.seq > high_seq or not high_hash:
+                    _high_water[key] = (fresh.seq, fresh.manifest_hash)
+                    _write_json(checkpoint_file, {"seq": fresh.seq, "manifest_hash": fresh.manifest_hash})
+                if not fresh.problems:
+                    _write_json(cache_file, bundle)
+                    result = (fresh.policies, None)
+                else:
+                    # The newest signed manifest decides what binds; a verified cached body
+                    # is used only for an entry whose exact content hash it carries.
+                    bodies = dict(cached.bodies) if cached is not None else {}
+                    bodies.update(fresh.bodies)
+                    chosen = _select(fresh.entries, bodies, config["agent"], fresh.sealed_on)
+                    missing = sum(1 for e in fresh.entries if e["content_hash"] not in bodies)
+                    note = "registry copy of a sealed policy was altered; using the verified copy"
+                    if missing:
+                        note = "some sealed policies failed verification and were left out"
+                    result = (chosen, note)
+            elif cached is not None:
+                reason = "older registry copy refused" if rolled_back else "registry seal did not verify"
+                result = (cached.policies, f"{reason}; using the last verified policies")
+            elif rolled_back:
+                result = ([], "older registry copy refused and no newer verified copy is cached")
+            elif not fresh.has_manifest and not fresh.problems and high_seq == 0:
+                result = ([], None)
+            else:
+                result = ([], "no verified policies are available")
     _report(config, problems)
-
-    if fresh.has_manifest and not fresh.problems and not rolled_back:
-        accept(fresh, bundle)
-        return fresh.policies, None
-    if cached is not None:
-        reason = ("older registry copy refused" if rolled_back
-                  else "registry copy of a sealed policy was altered" if fresh.has_manifest
-                  else "registry seal did not verify")
-        return cached.policies, f"{reason}; using the last verified policies"
-    if fresh.has_manifest and not rolled_back:
-        # First contact with a partly altered registry: bind only what verifies.
-        return fresh.policies, "some sealed policies failed verification and were left out"
-    if rolled_back:
-        return [], "older registry copy refused and no newer verified copy is cached"
-    if not fresh.has_manifest and not fresh.problems and high_seq == 0:
-        return [], None
-    return [], "no verified policies are available"
+    return result
 
 
 def current_policies(config: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:

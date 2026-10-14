@@ -463,8 +463,9 @@ async def _stream_assistant_attempt(
 
     # Build LLM context. The owner's sealed policies wrap the final prompt here,
     # after every hook or extension that may have replaced it.
+    system_prompt = await asyncio.to_thread(enforce_sealed_policies, context.system_prompt)
     llm_context = Context(
-        system_prompt=enforce_sealed_policies(context.system_prompt) or None,
+        system_prompt=system_prompt or None,
         messages=llm_messages,
         tools=[t for t in (context.tools or [])],
     )
