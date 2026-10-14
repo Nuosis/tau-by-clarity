@@ -227,12 +227,8 @@ completion-review loop.
 
 ### Inspect routing and review
 
-Use `/stats` to inspect token shares by provider/model, router tier,
-recorded reasoning effort, and purpose (worker, intention, reviewer). Percentages
-include uncached input, cached input, cache writes and output; call counts are
-secondary, and missing usage is disclosed. Recorded failed-call usage is included.
-These are token shares, not cost shares. Auxiliary calls without persisted usage
-cannot be included.
+Use `/stats` to inspect working-response shares by provider/model, router tier,
+and recorded reasoning effort. This chart excludes auxiliary reviewer calls.
 Session records separately retain routing decisions, Jev intention-alignment
 choices, established intentions, review verdicts, retrievals, and reviewer
 response usage through `tau.router_*`, `tau.intention_alignment.*`,

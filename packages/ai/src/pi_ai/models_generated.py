@@ -1197,6 +1197,18 @@ MODELS: dict[str, Model] = {
         context_window=200000,
         max_tokens=128000,
     ),
+    "anthropic/claude-opus-5-5": Model(
+        id='claude-opus-5-5',
+        name='Claude Opus 5.5',
+        api='anthropic-messages',
+        provider='anthropic',
+        base_url='https://api.anthropic.com',
+        reasoning=True,
+        input=["text", "image"],
+        cost=ModelCost(input=4.0, output=20.0, cache_read=0.2, cache_write=5.0),
+        context_window=1000000,
+        max_tokens=128000,
+    ),
     "anthropic/claude-sonnet-4-0": Model(
         id='claude-sonnet-4-0',
         name='Claude Sonnet 4 (latest)',

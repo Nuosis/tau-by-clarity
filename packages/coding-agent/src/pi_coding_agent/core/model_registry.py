@@ -788,6 +788,16 @@ class ModelRegistry:
         config = self._config_providers.get(provider) or self._registered_providers.get(provider)
         if config is None or not config.api:
             return None
+        # Transport configuration does not replace a known model's capabilities.
+        # Loaded models include explicit per-model overrides from models.json.
+        known = next((m for m in self._models if m.provider == provider and m.id == model_id), None)
+        known = known or get_model(provider, model_id)
+        if known is not None:
+            return known.model_copy(update={
+                "api": config.api,
+                "base_url": config.base_url or known.base_url,
+                "headers": {**(known.headers or {}), **(_resolve_headers(config.headers) or {})} or None,
+            })
         return Model(
             id=model_id,
             name=model_id,

@@ -153,7 +153,7 @@ async def test_repeat_review_keeps_current_request_source_evidence_without_rerea
 @pytest.mark.parametrize('queue', ['steer', 'follow_up'])
 async def test_jev_choice_keeps_or_replaces_active_intention_without_injecting_it(tmp_path, monkeypatch, queue):
     session, _ = make_session(tmp_path, monkeypatch, 'http://unused.invalid')
-    intentions, reviews, workers, intention_models = [], [], [], []
+    intentions, reviews, workers = [], [], []
     alignment_inputs = []
     async def alignment(active, latest_input, **kwargs):
         alignment_inputs.append((active.outcome, latest_input))
@@ -194,7 +194,6 @@ async def test_jev_choice_keeps_or_replaces_active_intention_without_injecting_i
     assert all('INTENT_ONLY_' not in str(m) for m in session.agent.state.messages)
     await session.prompt('Start an unrelated task: summarize the fixture.')
     assert alignment_inputs[-1] == ('INTENT_ONLY_0', 'Start an unrelated task: summarize the fixture.')
-    assert intention_models == ['ultra-light', 'ultra-light']
     assert session.session_intention.outcome == 'INTENT_ONLY_0'
     assert session.active_intention.outcome == 'INTENT_ONLY_1'
     await session.switch_session(session._session_manager.get_session_file())

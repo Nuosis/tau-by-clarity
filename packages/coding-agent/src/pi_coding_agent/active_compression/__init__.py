@@ -29,6 +29,7 @@ from .compressor import compress as _compress_text
 
 SETTING = "active_compression"
 DISABLE_ENV = "PI_ACTIVE_COMPRESSION_DISABLED"
+_MAX_DIRECT_TOOL_RESULT_CHARS = 32768
 
 __all__ = [
     "is_enabled",
@@ -177,7 +178,31 @@ def compress(text: str) -> str:
         force = False
         target_ratio = None
         config = CompressionConfig()
-    return _compress_text(text, _contextualized_store(), target_ratio=target_ratio, force=force, config=config)
+    store = _contextualized_store()
+    compressed = _compress_text(text, store, target_ratio=target_ratio, force=force, config=config)
+    if len(compressed) <= _MAX_DIRECT_TOOL_RESULT_CHARS:
+        return compressed
+
+    # Content-aware compression can retain almost an entire huge result (for
+    # example, a deeply nested World or SMS record). A per-tool repair cannot
+    # cover every such shape. At the common outbound tool boundary, keep the
+    # full result in CCR and send a retrievable marker instead.
+    try:
+        from pi_ai import get_current_compression_tool_call_id
+        from pi_ai.compression import get_current_compression_message_role
+        tool_call_id = get_current_compression_tool_call_id()
+        message_role = get_current_compression_message_role()
+    except Exception:
+        tool_call_id = None
+        message_role = None
+    if message_role != "toolResult" or not tool_call_id:
+        return compressed  # Other message roles must retain their full content.
+    marker = (
+        f"[CCR:{store.put(text, compression_strategy='oversized_tool_result')}] "
+        f"Oversized tool result ({len(text)} characters). "
+        "Retrieve the needed evidence with ccr_retrieve using a specific query."
+    )
+    return marker
 
 
 def retrieve(handle: str) -> str | None:

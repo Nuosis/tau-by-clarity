@@ -842,6 +842,7 @@ class AgentSession:
             if not starts_new_intention:
                 self._intention_requests = [r for r in self._intention_requests if r not in included]
                 return messages
+            from .turn_review import review_turn
             from pi_agent.types import AgentContext
             from .turn_review import review_turn
 
@@ -864,9 +865,7 @@ class AgentSession:
                 intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
                 cancel_event=signal, intention=None,
-                establish_intention=True, selection_level=intention_level,
-                session_id=self.session_id,
-                task_start=getattr(self, '_review_task_start', 0),
+                establish_intention=True,
             )
             if self.session_intention is None:
                 self.session_intention = intention
@@ -886,14 +885,12 @@ class AgentSession:
         self.active_intention = None
         self.session_intention = None
         self._intention_requests = []
-        self._review_task_start = 0
         for entry in self._session_manager.get_branch():
             if entry.data.get('customType') == 'tau.intention.completed':
                 intention = Intention.model_validate(entry.data['data']['decision'])
                 if self.session_intention is None:
                     self.session_intention = intention
                 self.active_intention = intention
-                self._review_task_start = int(entry.data['data'].get('task_start', 0) or 0)
 
     @property
     def intention_placeholder(self) -> str:
@@ -1091,8 +1088,6 @@ class AgentSession:
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
                 intention=self.active_intention,
-                session_id=self.session_id,
-                task_start=getattr(self, '_review_task_start', 0),
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
@@ -1268,6 +1263,11 @@ class AgentSession:
 
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent events — persist messages and notify listeners."""
+        if event.type == "run_state" and getattr(event, "state", "") == "output_limit_recovery":
+            # Accounting survives restart without admitting abandoned tool content.
+            self._session_manager.append_custom_entry(
+                "tau.output_limit_attempt", dict(getattr(event, "details", {}))
+            )
         # ── 2a: Persist messages on message_end (not agent_end) ──────────────
         if event.type == "message_end":
             msg = getattr(event, "message", None)
@@ -2657,6 +2657,16 @@ class AgentSession:
                     cost = getattr(usage, "cost", None)
                     if cost:
                         total_cost += getattr(cost, "total", 0) or 0.0
+
+        for entry in self._session_manager.get_entries():
+            if entry.type != "custom" or entry.data.get("customType") != "tau.output_limit_attempt":
+                continue
+            usage = entry.data.get("data", {}).get("usage", {})
+            total_input += usage.get("input", 0)
+            total_output += usage.get("output", 0)
+            total_cache_read += usage.get("cache_read", 0)
+            total_cache_write += usage.get("cache_write", 0)
+            total_cost += usage.get("cost", {}).get("total", 0) or 0.0
 
         return {
             "sessionId": self.session_id,
