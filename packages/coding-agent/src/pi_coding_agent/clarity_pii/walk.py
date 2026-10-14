@@ -7,6 +7,7 @@ prototype.
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any, Callable, Iterable
 
 
@@ -88,8 +89,21 @@ def list_string_slots(
             yield from list_string_slots(val, skip_keys=skip_keys)
 
 
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+# Tool definitions carry schemas, defaults and examples, never media; they keep
+# the plain walker so a media-shaped example is still tokenized.
+_TOOL_DEFINITION_KEYS = frozenset({"tools", "functions"})
+
+
+def _is_base64(value: Any) -> bool:
+    return isinstance(value, str) and _BASE64_RE.fullmatch(value) is not None
+
+
 def _is_base64_data_url(value: Any) -> bool:
-    return isinstance(value, str) and value.startswith("data:") and ";base64," in value[:256]
+    if not isinstance(value, str) or not value.startswith("data:"):
+        return False
+    header, sep, data = value.partition(",")
+    return bool(sep) and header.endswith(";base64") and _is_base64(data)
 
 
 def _base64_media_keys(d: dict[str, Any], parent_key: str | None) -> frozenset[str]:
@@ -104,47 +118,58 @@ def _base64_media_keys(d: dict[str, Any], parent_key: str | None) -> frozenset[s
         return frozenset({"image_url"})
     if kind == "input_file" and _is_base64_data_url(d.get("file_data")):
         return frozenset({"file_data"})
-    if kind == "base64" and "media_type" in d and isinstance(d.get("data"), str):
+    if kind == "base64" and "media_type" in d and _is_base64(d.get("data")):
         return frozenset({"data"})
     if parent_key == "image_url" and _is_base64_data_url(d.get("url")):
         return frozenset({"url"})
-    if parent_key in ("input_audio", "inlineData", "inline_data") and isinstance(d.get("data"), str):
+    if parent_key in ("input_audio", "inlineData", "inline_data") and _is_base64(d.get("data")):
         return frozenset({"data"})
     return frozenset()
 
 
-def provider_payload_string_slots(
-    d: dict[str, Any],
-    *,
-    _parent_key: str | None = None,
-) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
+def provider_payload_string_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     """Yield editable provider payload text while leaving protocol fields intact.
 
-    Encoded media in provider media fields is binary, not text: a detector
-    match inside base64 corrupts the image, so those fields are skipped.
+    Encoded media in provider content is binary, not text: a detector match
+    inside base64 corrupts the image, so those fields are skipped.
     """
-    skip = _base64_media_keys(d, _parent_key)
     for key, val in list(d.items()):
-        if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or key in skip:
-            continue
-        if isinstance(val, str):
-            yield (lambda k=key: d[k], lambda v, k=key: d.__setitem__(k, v))
-        elif isinstance(val, dict):
-            yield from provider_payload_string_slots(val, _parent_key=key)
-        elif isinstance(val, list):
-            yield from _provider_payload_list_string_slots(val)
+        if key in _TOOL_DEFINITION_KEYS and isinstance(val, (dict, list)):
+            container = {key: val}
+            yield from dict_string_slots(container, skip_keys=PROVIDER_PAYLOAD_PROTOCOL_KEYS)
+        else:
+            yield from _content_string_slots(d, key, val, parent_key=None)
 
 
-def _provider_payload_list_string_slots(
+def _content_string_slots(
+    owner: dict[str, Any],
+    key: str,
+    val: Any,
+    *,
+    parent_key: str | None,
+) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
+    if key in PROVIDER_PAYLOAD_PROTOCOL_KEYS or key in _base64_media_keys(owner, parent_key):
+        return
+    if isinstance(val, str):
+        yield (lambda: owner[key], lambda v: owner.__setitem__(key, v))
+    elif isinstance(val, dict):
+        for child_key, child in list(val.items()):
+            yield from _content_string_slots(val, child_key, child, parent_key=key)
+    elif isinstance(val, list):
+        yield from _content_list_string_slots(val)
+
+
+def _content_list_string_slots(
     lst: list[Any],
 ) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
     for i, val in enumerate(lst):
         if isinstance(val, str):
             yield (lambda i=i: lst[i], lambda v, i=i: lst.__setitem__(i, v))
         elif isinstance(val, dict):
-            yield from provider_payload_string_slots(val)
+            for child_key, child in list(val.items()):
+                yield from _content_string_slots(val, child_key, child, parent_key=None)
         elif isinstance(val, list):
-            yield from _provider_payload_list_string_slots(val)
+            yield from _content_list_string_slots(val)
 
 
 def provider_payload_protocol_slots(d: dict[str, Any]) -> Iterable[tuple[Callable[[], str], Callable[[str], None]]]:
