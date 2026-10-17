@@ -8,7 +8,8 @@ import aiohttp
 from .turn_review import Intention
 
 JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
-JEV_MODEL = "~typesafe/jev-latest"
+# Jev 1.13, per Marcus 2026-10-17: ~typesafe/jev-latest was never authorized.
+JEV_MODEL = "typesafe/jev-1.13"
 ALIGNMENT_QUESTION = {
     "type": "choice",
     "instructions": (

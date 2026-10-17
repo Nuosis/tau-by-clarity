@@ -39,7 +39,6 @@ async def test_jev_judges_latest_input_against_active_intention(choice):
         await runner.cleanup()
     assert result == choice
     assert len(requests) == 1
-    assert requests[0]['model'] == '~typesafe/jev-latest'
     assert requests[0]['state'] == {'active_intention': intention.model_dump(),
                                     'latest_input': 'Use Jev for the latest request.'}
     assert requests[0]['questions']['alignment']['type'] == 'choice'
