@@ -116,7 +116,9 @@ _RETRY_PATTERN = re.compile(
     r"overloaded|rate.?limit|too many requests|429|500|502|503|504|"
     r"service.?unavailable|server error|internal error|connection.?error|"
     r"connection.?refused|other side closed|fetch failed|upstream.?connect|"
-    r"reset before headers|terminated|retry delay|error code none",
+    r"reset before headers|terminated|retry delay|error code none|"
+    # The SDK rejects a malformed streamed tool call; nothing from that turn ran.
+    r"while parsing",
     re.IGNORECASE,
 )
 
@@ -282,6 +284,8 @@ class AgentSession:
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
+        self._retry_pending: bool = False                   # a retry is starting or its run is active
+        self._run_continues: bool = False                   # overflow recovery will continue this run
         self._retry_event: asyncio.Event | None = None      # set when retry resolves/fails
         self._retry_success: bool = False
         self._bash_cancel_event: asyncio.Event | None = None
@@ -1298,7 +1302,6 @@ class AgentSession:
                         self._emit({"type": "auto_retry_end", "success": True,
                                     "attempt": self._retry_attempt})
                         self._retry_attempt = 0
-                        self._resolve_retry(success=True)
 
         # ── agent_end: check retry and compaction ─────────────────────────────
         if event.type == "agent_end":
@@ -1325,14 +1328,22 @@ class AgentSession:
                 # The candidate did not pass review. Do not run successful-turn
                 # curation, compaction, or retry work after reporting the error.
                 self._last_assistant_msg = None
-            elif self._last_assistant_msg is not None:
+                self._finish_retry(success=False)
+            elif self._last_assistant_msg is None:
+                self._finish_retry(success=False)
+            else:
                 msg = self._last_assistant_msg
                 self._last_assistant_msg = None
                 # Schedule retry / compaction check asynchronously
+                # prompt() may return before that check runs; hold it for the retry.
+                self._retry_pending = self._retry_pending or (
+                    self._is_retryable_error(msg)
+                    and self._settings_manager.get_retry_settings().get("enabled", True))
+                retry_event = self._retry_event if self._retry_pending else None
                 try:
                     loop = asyncio.get_running_loop()
                     loop.call_soon(lambda: asyncio.ensure_future(
-                        self._post_turn_checks(msg)
+                        self._post_turn_checks(msg, retry_event)
                     ))
                 except RuntimeError:
                     pass  # no running loop in sync context
@@ -1341,7 +1352,7 @@ class AgentSession:
         for listener in list(self._listeners):
             listener(event)
 
-    async def _post_turn_checks(self, msg: AssistantMessage) -> None:
+    async def _post_turn_checks(self, msg: AssistantMessage, retry_event: asyncio.Event | None = None) -> None:
         """Check retry and compaction after a turn completes (mirrors TS _handleAgentEvent)."""
         # Reset overflow recovery on successful turns
         if getattr(msg, "stop_reason", "") not in ("error", "aborted"):
@@ -1351,11 +1362,25 @@ class AgentSession:
             did_retry = await self._handle_retryable_error(msg)
             if did_retry:
                 return
-        # Memory write path: curate this turn's new messages into the store (P5).
-        await self._curate_turn()
-        # Conversation log (programmatic) — also harness-driven, runs every turn.
-        await self._record_conversation_turns()
-        await self._check_compaction(msg)
+        try:
+            # Memory write path: curate this turn's new messages into the store (P5).
+            await self._curate_turn()
+            # Conversation log (programmatic) — also harness-driven, runs every turn.
+            await self._record_conversation_turns()
+            await self._check_compaction(msg)
+        finally:
+            # A continued run comes back here at its own agent_end.
+            if self._run_continues:
+                self._run_continues = False
+            elif retry_event is not None and retry_event is self._retry_event:
+                self._finish_retry(success=getattr(msg, "stop_reason", "") != "error")
+
+    def _finish_retry(self, success: bool) -> None:
+        """Release a prompt waiting on a retried run once that run has ended."""
+        if self._retry_pending or self._retry_attempt > 0:
+            self._retry_pending = False
+            self._retry_attempt = 0
+            self._resolve_retry(success=success)
 
     # ── Memory: live write path (curation) ───────────────────────────────────
 
@@ -1753,10 +1778,14 @@ class AgentSession:
                 pass
             raise
 
-        # Reset retry state
+        # Reset retry state, releasing a prompt still waiting on an earlier retry
+        if self._retry_event:
+            self._retry_event.set()
         self._retry_event = asyncio.Event()
         self._retry_success = False
         self._retry_attempt = 0
+        self._retry_pending = False
+        self._run_continues = False
 
         if preflight_result is not None:
             preflight_result(True)
@@ -2960,6 +2989,7 @@ class AgentSession:
                 # Schedule agent.continue() via call_soon to break out of event chain
                 try:
                     loop = asyncio.get_running_loop()
+                    self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
                         self._agent.continue_from_context()
                     ))
@@ -2968,6 +2998,7 @@ class AgentSession:
             elif self._agent.has_queued_messages():
                 try:
                     loop = asyncio.get_running_loop()
+                    self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
                         self._agent.continue_from_context()
                     ))
@@ -3086,7 +3117,7 @@ class AgentSession:
 
     async def _wait_for_retry(self) -> None:
         """Wait for any in-progress retry to complete (mirrors waitForRetry in TS)."""
-        if self._retry_attempt == 0:
+        if self._retry_attempt == 0 and not self._retry_pending:
             return
         if self._retry_event and not self._retry_event.is_set():
             await self._retry_event.wait()
