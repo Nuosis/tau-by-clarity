@@ -439,7 +439,7 @@ async def _stream_assistant_response(
     while True:
         message, model_limit = await _stream_assistant_attempt(
             context, config, cancel_event, ev_stream, stream_fn,
-            recovery_budget=recovery_budget,
+            recovery_budget=recovery_budget, emit_events=emit_events,
         )
         if message.stop_reason != "length":
             return message
@@ -475,6 +475,7 @@ async def _stream_assistant_attempt(
     stream_fn: StreamFn | None,
     *,
     recovery_budget: int | None = None,
+    emit_events: bool = True,
 ) -> tuple[AssistantMessage, int]:
     """
     Stream an assistant response from the LLM.

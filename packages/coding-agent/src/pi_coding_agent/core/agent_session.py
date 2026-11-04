@@ -281,6 +281,10 @@ class AgentSession:
 
         self._listeners: list[Callable[[AgentEvent], None]] = []
         self._agent.subscribe(self._on_agent_event)
+        from .churn_guard import ChurnGuard
+
+        self._churn_guard = ChurnGuard(lambda: self._session_manager, self._resolve_api_key,
+                                       self.abort, self._emit)
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -1293,6 +1297,9 @@ class AgentSession:
                         persisted_msg,
                         active_compression=active_compression_meta,
                     )
+                    if role == "assistant":
+                        # Every 12th turn (failed model calls included) is judged for churn.
+                        self._churn_guard.on_assistant_turn()
                 # Track last assistant message for retry/compaction
                 if role == "assistant":
                     self._last_assistant_msg = msg
@@ -1654,6 +1661,8 @@ class AgentSession:
             )
         except Exception:
             pass
+        # A session stopped for churn makes no model calls until explicitly resumed.
+        self._churn_guard.check_resumable()
         current_text: str | None = None
         current_images = images
 
@@ -1807,6 +1816,8 @@ class AgentSession:
         except Exception:
             pass
         await self._wait_for_retry()
+        # A short-lived process (one prompt per run) must not exit before its churn check lands.
+        await self._churn_guard.drain()
         try:
             from .cli_debug_log import log_event
 
