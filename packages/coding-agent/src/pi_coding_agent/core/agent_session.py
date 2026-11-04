@@ -1324,6 +1324,7 @@ class AgentSession:
                 if (getattr(terminal_msg, "role", "") == "assistant"
                         and getattr(terminal_msg, "error_message", None)):
                     self._session_manager.append_message(_message_to_dict(terminal_msg))
+                    self._churn_guard.on_assistant_turn()
                     distinct_terminal_error = True
                     break
             # Provider failures exit the loop before prepare_next_turn runs.
@@ -3002,7 +3003,7 @@ class AgentSession:
                     loop = asyncio.get_running_loop()
                     self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
-                        self._agent.continue_from_context()
+                        self._continue_unless_churn_stopped()
                     ))
                 except RuntimeError:
                     pass
@@ -3011,7 +3012,7 @@ class AgentSession:
                     loop = asyncio.get_running_loop()
                     self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
-                        self._agent.continue_from_context()
+                        self._continue_unless_churn_stopped()
                     ))
                 except RuntimeError:
                     pass
@@ -3049,6 +3050,13 @@ class AgentSession:
             return False
         err = getattr(msg, "error_message", "") or ""
         return bool(_RETRY_PATTERN.search(err))
+
+    async def _continue_unless_churn_stopped(self) -> None:
+        """Automatic retry/compaction continuations honor a churn stop like prompt() does."""
+        if self._churn_guard.is_stopped():
+            self._resolve_retry(success=False)
+            return
+        await self._agent.continue_from_context()
 
     async def _handle_retryable_error(self, msg: AssistantMessage) -> bool:
         """
@@ -3104,7 +3112,7 @@ class AgentSession:
         try:
             loop = asyncio.get_running_loop()
             loop.call_soon(lambda: asyncio.ensure_future(
-                self._agent.continue_from_context()
+                self._continue_unless_churn_stopped()
             ))
         except RuntimeError:
             pass

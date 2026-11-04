@@ -159,15 +159,19 @@ class ChurnGuard:
         raise ChurnStopped(f"Session stopped for churn (P={stop.get('p_churn')}); "
                            "set TAU_CHURN_RESUME=1 to resume it.")
 
+    def is_stopped(self) -> bool:
+        return stopped(self._sessions().get_entries()) is not None
+
     def on_assistant_turn(self) -> None:
-        all_turns = turns(self._sessions().get_entries())
+        sessions = self._sessions()  # the check stays bound to the session it judged
+        all_turns = turns(sessions.get_entries())
         if not all_turns or len(all_turns) % INTERVAL:
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        task = loop.create_task(self._check(all_turns[-INTERVAL:], len(all_turns)))
+        task = loop.create_task(self._check(sessions, all_turns[-INTERVAL:], len(all_turns)))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -176,22 +180,24 @@ class ChurnGuard:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    async def _check(self, window: list[str], turn: int) -> None:
+    async def _check(self, sessions, window: list[str], turn: int) -> None:
         try:
             probability = await judge(window, self._get_api_key)
         except Exception as exc:
             # A failed judgment is recorded and reported; it never counts as churn.
-            self._sessions().append_custom_entry(CHECK_ENTRY, {"turn": turn, "error": type(exc).__name__})
+            sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "error": type(exc).__name__})
             print(f"[tau] churn check failed at turn {turn}: {type(exc).__name__}", file=sys.stderr, flush=True)
             return
-        self._sessions().append_custom_entry(CHECK_ENTRY, {"turn": turn, "p_churn": probability})
+        sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "p_churn": probability})
         if probability <= THRESHOLD:
             return
-        details = {"session_id": self._sessions().get_session_id(),
-                   "session_file": str(self._sessions().get_session_file() or ""),
+        details = {"session_id": sessions.get_session_id(),
+                   "session_file": str(sessions.get_session_file() or ""),
                    "turn": turn, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
-        self._sessions().append_custom_entry(STOP_ENTRY, details)
+        sessions.append_custom_entry(STOP_ENTRY, details)
+        # Stop first; only the session that was judged is aborted.
+        if self._sessions() is sessions:
+            await self._stop()
         self._emit({"type": "churn_stopped", **details})
-        report(details)
-        await self._stop()
+        await asyncio.to_thread(report, details)
