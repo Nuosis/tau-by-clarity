@@ -181,8 +181,11 @@ def report(details: dict) -> None:
     command = os.environ.get("TAU_CHURN_ALERT_COMMAND")
     if command:
         try:
-            subprocess.run(command, shell=True, input=json.dumps(details), text=True, timeout=60,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # stderr is inherited so the alert command's own diagnostics reach the process log.
+            result = subprocess.run(command, shell=True, input=json.dumps(details), text=True, timeout=60,
+                                    stdout=subprocess.DEVNULL)
+            if result.returncode:
+                print(f"[tau] churn alert command exited {result.returncode}", file=sys.stderr, flush=True)
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"[tau] churn alert command failed: {type(exc).__name__}", file=sys.stderr, flush=True)
 

@@ -843,10 +843,16 @@ class AgentSession:
                 latest_request = next((r for r in reversed(included) if r.get('role') == 'user'), included[-1])
                 latest = latest_request.get('content', '')
                 latest_input = self._extract_user_message_text(latest) or json.dumps(latest, default=str)
-                choice = await judge_intention_alignment(
-                    self.active_intention, latest_input,
-                    get_api_key=self._resolve_api_key, record=self._record_router_event,
-                )
+                try:
+                    choice = await judge_intention_alignment(
+                        self.active_intention, latest_input,
+                        get_api_key=self._resolve_api_key, record=self._record_router_event,
+                        route=self._jev_route,
+                    )
+                except Exception:
+                    # Recorded as tau.intention_alignment.failed; an unreachable Jev must not
+                    # fail the prompt, so the input continues the active intention.
+                    choice = 'continues_active_intention'
                 starts_new_intention = choice == 'starts_new_intention'
             if not starts_new_intention:
                 self._intention_requests = [r for r in self._intention_requests if r not in included]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import aiohttp
 
@@ -36,11 +37,21 @@ async def judge_intention_alignment(
     get_api_key,
     record,
     endpoint: str = JEV_ENDPOINT,
+    route=None,
 ) -> str:
     """Return Jev's typed choice; record the decision without duplicating user text."""
-    key = await get_api_key("openrouter")
-    if not key:
-        raise RuntimeError("OpenRouter API key is required for Jev intention alignment")
+    # Same Jev route as the churn guard: TAU_JEV_ENDPOINT (a credentialed proxy), else the
+    # configured OpenRouter provider route and its key.
+    route_headers: dict = {}
+    if route is not None:
+        endpoint, route_headers = route()
+    endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
+    headers = {**(route_headers or {}), "Content-Type": "application/json"}
+    if not os.environ.get("TAU_JEV_ENDPOINT") and not any(k.lower() == "authorization" for k in headers):
+        key = await get_api_key("openrouter")
+        if not key:
+            raise RuntimeError("OpenRouter API key is required for Jev intention alignment")
+        headers["Authorization"] = f"Bearer {key}"
     payload = {
         "model": JEV_MODEL,
         "state": {
@@ -57,10 +68,7 @@ async def judge_intention_alignment(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=None, connect=15, sock_read=None)
         ) as client:
-            async with client.post(endpoint, json=payload, headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            }) as response:
+            async with client.post(endpoint, json=payload, headers=headers) as response:
                 response.raise_for_status()
                 result = await response.json()
         answer = result["answers"]["alignment"]
