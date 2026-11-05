@@ -2881,6 +2881,8 @@ class AgentSession:
 
     async def compact(self, custom_instructions: str | None = None) -> str:
         """Manually compact the context. Returns the summary."""
+        # Compaction calls a model; a session stopped for churn stays stopped until resumed.
+        self._churn_guard.check_resumable()
         messages = self._agent.state.messages
         model = self._agent.state.model
         if not model:
@@ -2971,6 +2973,8 @@ class AgentSession:
         messages into the store FIRST, so atomic facts survive the lossy summary and
         recall (§9) can re-inject them. The native summarization still shrinks the
         transcript; the store makes it lossless."""
+        if self._churn_guard.is_stopped():
+            return  # no summary model call after a churn stop
         if self._memory is not None:
             await self._curate_turn()
         self._compaction_running = True
