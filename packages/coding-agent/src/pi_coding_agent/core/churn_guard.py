@@ -143,8 +143,9 @@ async def judge(window: list[str], get_api_key: Callable, route: Callable | None
     endpoint, route_headers = route() if route else (JEV_ENDPOINT, {})
     endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
     headers = {**(route_headers or {}), "Content-Type": "application/json"}
-    if not os.environ.get("TAU_JEV_ENDPOINT"):
-        # A configured endpoint (for example a vault proxy) supplies its own credential.
+    has_auth = any(k.lower() == "authorization" for k in headers)
+    if not os.environ.get("TAU_JEV_ENDPOINT") and not has_auth:
+        # A configured endpoint or a route with its own Authorization header supplies the credential.
         key = await get_api_key("openrouter")
         if not key:
             raise RuntimeError("OpenRouter API key is required for churn detection")
@@ -177,12 +178,13 @@ class ChurnGuard:
     """Counts assistant turns in the journal and judges every INTERVAL-th one."""
 
     def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, stop: Callable, emit: Callable,
-                 route: Callable | None = None):
+                 route: Callable | None = None, running: Callable[[], bool] | None = None):
         self._sessions = sessions  # current session manager (sessions can be switched)
         self._get_api_key = get_api_key
         self._stop = stop
         self._emit = emit
         self._route = route
+        self._running = running or (lambda: False)
         self._tasks: set[asyncio.Task] = set()
 
     def check_resumable(self) -> None:
@@ -210,7 +212,8 @@ class ChurnGuard:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        task = loop.create_task(self._check(sessions, window, total))
+        leaf = sessions.get_leaf_entry()
+        task = loop.create_task(self._check(sessions, window, total, getattr(leaf, "id", None)))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -219,7 +222,7 @@ class ChurnGuard:
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    async def _check(self, sessions, window: list[str], turn: int) -> None:
+    async def _check(self, sessions, window: list[str], turn: int, judged_leaf: str | None = None) -> None:
         try:
             probability = await judge(window, self._get_api_key, self._route)
         except Exception as exc:
@@ -235,12 +238,24 @@ class ChurnGuard:
                    "turn": turn, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
         active = self._sessions()
-        # The same logical session may have been reopened under a new manager while Jev answered.
-        same = active is sessions or (active.get_session_id() == sessions.get_session_id()
-                                      and active.get_session_file() == sessions.get_session_file())
-        (active if same else sessions).append_custom_entry(STOP_ENTRY, details)
-        # Listeners hear the stop before the abort cancels them; only the judged session is aborted.
-        self._emit({"type": "churn_stopped", **details})
-        if same:
+        # The same logical session may have been reopened under a new manager while Jev answered,
+        # or the user may have moved to another branch; only the judged branch is stopped.
+        same_session = active is sessions or (active.get_session_id() == sessions.get_session_id()
+                                              and active.get_session_file() == sessions.get_session_file())
+        on_branch = same_session and (judged_leaf is None or any(
+            e.get("id") == judged_leaf for e in active_branch(active)))
+        details["stopped_active_run"] = on_branch
+        if on_branch:
+            active.append_custom_entry(STOP_ENTRY, details)
+            # Listeners hear the stop, and the run's end, before the abort cancels them: a
+            # cancelled run sends no agent_end of its own and waiters (RPC clients) need one.
+            self._emit({"type": "churn_stopped", **details})
+            if self._running():
+                self._emit({"type": "agent_end", "messages": [], "reason": "churn_stopped"})
             await self._stop()
+        else:
+            # The judged branch is no longer active; record the verdict and alert without
+            # stopping unrelated work.
+            sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "p_churn": probability,
+                                                       "branch_changed": True, "judged_leaf": judged_leaf})
         await asyncio.to_thread(report, details)

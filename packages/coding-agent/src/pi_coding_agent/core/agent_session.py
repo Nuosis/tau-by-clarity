@@ -280,11 +280,13 @@ class AgentSession:
             pass
 
         self._listeners: list[Callable[[AgentEvent], None]] = []
+        self._agent_end_delivered = True  # no run in progress
         self._agent.subscribe(self._on_agent_event)
         from .churn_guard import ChurnGuard
 
         self._churn_guard = ChurnGuard(lambda: self._session_manager, self._resolve_api_key,
-                                       self.abort, self._emit, self._jev_route)
+                                       self.abort, self._emit, self._jev_route,
+                                       lambda: not self._agent_end_delivered)
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -1358,6 +1360,10 @@ class AgentSession:
                     pass  # no running loop in sync context
 
         # Notify external listeners
+        if event.type == "agent_start":
+            self._agent_end_delivered = False
+        elif event.type == "agent_end":
+            self._agent_end_delivered = True
         for listener in list(self._listeners):
             listener(event)
 
