@@ -69,6 +69,30 @@ def _raw(entries) -> list[dict]:
     return [getattr(e, "data", e) for e in entries]
 
 
+def active_branch(sessions) -> list[dict]:
+    """Entries on the path from the root to the current leaf (abandoned branches excluded)."""
+    path, current = [], sessions.get_leaf_entry()
+    while current is not None:
+        path.append(getattr(current, "data", current))
+        parent = getattr(current, "parent_id", None)
+        current = sessions.get_entry(parent) if parent else None
+    path.reverse()
+    return path
+
+
+def _is_assistant(entry: dict) -> bool:
+    return entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant"
+
+
+def tail(entries: list[dict], count: int) -> tuple[int, list[str]]:
+    """Total assistant turns and the last `count` rendered; only the tail is rendered."""
+    positions = [i for i, e in enumerate(entries) if _is_assistant(e)]
+    if len(positions) <= count:
+        return len(positions), turns(entries)[-count:]
+    start = positions[-count - 1] + 1
+    return len(positions), turns(entries[start:])[-count:]
+
+
 def turns(entries) -> list[str]:
     """Render the journal's assistant steps, each with the inputs that preceded it."""
     rendered, pending = [], []
@@ -103,11 +127,13 @@ def stopped(entries) -> dict | None:
     return stop
 
 
-async def judge(window: list[str], get_api_key: Callable) -> float:
+async def judge(window: list[str], get_api_key: Callable, route: Callable | None = None) -> float:
     """Jev's probability that these turns are churn."""
     document = "\n\n".join(f"--- Turn {i + 1} of {len(window)} ---\n{t}" for i, t in enumerate(window))
-    endpoint = os.environ.get("TAU_JEV_ENDPOINT") or JEV_ENDPOINT
-    headers = {"Content-Type": "application/json"}
+    # The established OpenRouter route (proxy baseUrl, headers) unless TAU_JEV_ENDPOINT overrides it.
+    endpoint, route_headers = route() if route else (JEV_ENDPOINT, {})
+    endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
+    headers = {**(route_headers or {}), "Content-Type": "application/json"}
     if not os.environ.get("TAU_JEV_ENDPOINT"):
         # A configured endpoint (for example a vault proxy) supplies its own credential.
         key = await get_api_key("openrouter")
@@ -141,16 +167,18 @@ def report(details: dict) -> None:
 class ChurnGuard:
     """Counts assistant turns in the journal and judges every INTERVAL-th one."""
 
-    def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, stop: Callable, emit: Callable):
+    def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, stop: Callable, emit: Callable,
+                 route: Callable | None = None):
         self._sessions = sessions  # current session manager (sessions can be switched)
         self._get_api_key = get_api_key
         self._stop = stop
         self._emit = emit
+        self._route = route
         self._tasks: set[asyncio.Task] = set()
 
     def check_resumable(self) -> None:
         """Refuse to start model work in a session stopped for churn."""
-        stop = stopped(self._sessions().get_entries())
+        stop = stopped(active_branch(self._sessions()))
         if stop is None:
             return
         if os.environ.get("TAU_CHURN_RESUME") == "1":
@@ -160,18 +188,20 @@ class ChurnGuard:
                            "set TAU_CHURN_RESUME=1 to resume it.")
 
     def is_stopped(self) -> bool:
-        return stopped(self._sessions().get_entries()) is not None
+        return stopped(active_branch(self._sessions())) is not None
 
     def on_assistant_turn(self) -> None:
         sessions = self._sessions()  # the check stays bound to the session it judged
-        all_turns = turns(sessions.get_entries())
-        if not all_turns or len(all_turns) % INTERVAL:
+        entries = active_branch(sessions)
+        total = sum(1 for e in entries if _is_assistant(e))
+        if not total or total % INTERVAL:
             return
+        total, window = tail(entries, INTERVAL)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        task = loop.create_task(self._check(sessions, all_turns[-INTERVAL:], len(all_turns)))
+        task = loop.create_task(self._check(sessions, window, total))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -182,7 +212,7 @@ class ChurnGuard:
 
     async def _check(self, sessions, window: list[str], turn: int) -> None:
         try:
-            probability = await judge(window, self._get_api_key)
+            probability = await judge(window, self._get_api_key, self._route)
         except Exception as exc:
             # A failed judgment is recorded and reported; it never counts as churn.
             sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "error": type(exc).__name__})

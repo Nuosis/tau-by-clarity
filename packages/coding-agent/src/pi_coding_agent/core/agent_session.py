@@ -284,7 +284,7 @@ class AgentSession:
         from .churn_guard import ChurnGuard
 
         self._churn_guard = ChurnGuard(lambda: self._session_manager, self._resolve_api_key,
-                                       self.abort, self._emit)
+                                       self.abort, self._emit, self._jev_route)
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -3057,6 +3057,16 @@ class AgentSession:
             return False
         err = getattr(msg, "error_message", "") or ""
         return bool(_RETRY_PATTERN.search(err))
+
+    def _jev_route(self) -> tuple[str, dict[str, str]]:
+        """Jev decisions endpoint and headers on the configured OpenRouter provider route."""
+        import re as _re
+
+        model = next((m for m in self._model_registry.get_all() if m.provider == "openrouter"), None)
+        base = (getattr(model, "base_url", None) or "https://openrouter.ai/api/v1").rstrip("/")
+        endpoint = _re.sub(r"/v1$", "", base) + "/alpha/decisions"
+        headers = self._model_registry.resolve_headers(model) if model is not None else None
+        return endpoint, dict(headers or {})
 
     async def _continue_unless_churn_stopped(self) -> None:
         """Automatic retry/compaction continuations honor a churn stop like prompt() does."""

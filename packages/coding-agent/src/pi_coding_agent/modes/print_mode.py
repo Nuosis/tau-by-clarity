@@ -282,6 +282,8 @@ def _event_to_dict(event: AgentEvent) -> dict[str, Any]:
     (partial) message, and message_update additionally carries the streaming
     delta (assistantMessageEvent) so headless consumers see live progress.
     """
+    if isinstance(event, dict):
+        return dict(event)  # session-level events (for example churn_stopped) are already plain dicts
     base: dict[str, Any] = {"type": event.type}
 
     if event.type == "message_end":
