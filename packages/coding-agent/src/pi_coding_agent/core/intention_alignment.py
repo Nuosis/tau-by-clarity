@@ -42,10 +42,10 @@ async def judge_intention_alignment(
     """Return Jev's typed choice; record the decision without duplicating user text."""
     # Same Jev route as the churn guard: TAU_JEV_ENDPOINT (a credentialed proxy), else the
     # configured OpenRouter provider route and its key.
-    route_headers: dict = {}
-    if route is not None:
-        endpoint, route_headers = route()
-    endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
+    # An override endpoint carries its own credential; route headers stay with their own route.
+    override = os.environ.get("TAU_JEV_ENDPOINT")
+    route_endpoint, route_headers = route() if (route is not None and not override) else (endpoint, {})
+    endpoint = override or route_endpoint
     headers = {**(route_headers or {}), "Content-Type": "application/json"}
     if not os.environ.get("TAU_JEV_ENDPOINT") and not any(k.lower() == "authorization" for k in headers):
         key = await get_api_key("openrouter")

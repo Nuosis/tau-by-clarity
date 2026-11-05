@@ -849,9 +849,11 @@ class AgentSession:
                         get_api_key=self._resolve_api_key, record=self._record_router_event,
                         route=self._jev_route,
                     )
-                except Exception:
-                    # Recorded as tau.intention_alignment.failed; an unreachable Jev must not
-                    # fail the prompt, so the input continues the active intention.
+                except Exception as exc:
+                    # An unavailable Jev must not fail the prompt: the input continues the active
+                    # intention, and the failure is recorded (setup failures included).
+                    self._record_router_event("tau.intention_alignment.unavailable", metadata={
+                        "error": type(exc).__name__, "message": str(exc)[:300]})
                     choice = 'continues_active_intention'
                 starts_new_intention = choice == 'starts_new_intention'
             if not starts_new_intention:

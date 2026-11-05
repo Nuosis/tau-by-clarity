@@ -154,8 +154,10 @@ async def judge(window: list[str], get_api_key: Callable, route: Callable | None
     """Jev's probability that these turns are churn."""
     document = "\n\n".join(f"--- Turn {i + 1} of {len(window)} ---\n{t}" for i, t in enumerate(window))
     # The established OpenRouter route (proxy baseUrl, headers) unless TAU_JEV_ENDPOINT overrides it.
-    endpoint, route_headers = route() if route else (JEV_ENDPOINT, {})
-    endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
+    # An override endpoint carries its own credential; route headers stay with their own route.
+    override = os.environ.get("TAU_JEV_ENDPOINT")
+    route_endpoint, route_headers = route() if (route is not None and not override) else (JEV_ENDPOINT, {})
+    endpoint = override or route_endpoint
     headers = {**(route_headers or {}), "Content-Type": "application/json"}
     if not os.environ.get("TAU_JEV_ENDPOINT") and not any(k.lower() == "authorization" for k in headers):
         # A configured endpoint or a route with its own Authorization header supplies the credential.
