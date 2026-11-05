@@ -29,6 +29,8 @@ JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 STOP_ENTRY = "tau.churn_stop"
 RESUME_ENTRY = "tau.churn_resume"
 CHECK_ENTRY = "tau.churn_check"
+# Output-limit recovery retries a generation without an assistant message; each attempt is a turn.
+OUTPUT_LIMIT_ENTRY = "tau.output_limit_attempt"
 QUESTION = {
     "type": "noul",
     "instructions": "These are the most recent consecutive turns of an AI agent or automated process, "
@@ -81,6 +83,8 @@ def active_branch(sessions) -> list[dict]:
 
 
 def _is_assistant(entry: dict) -> bool:
+    if entry.get("type") == "custom":
+        return entry.get("customType") == OUTPUT_LIMIT_ENTRY
     return entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant"
 
 
@@ -97,6 +101,11 @@ def turns(entries) -> list[str]:
     """Render the journal's assistant steps, each with the inputs that preceded it."""
     rendered, pending = [], []
     for entry in _raw(entries):
+        if entry.get("type") == "custom" and entry.get("customType") == OUTPUT_LIMIT_ENTRY:
+            detail = _clip(json.dumps(entry.get("data") or {}), 300)
+            rendered.append("\n".join(pending[-2:] + [f"ASSISTANT: [OUTPUT LIMIT REACHED; GENERATION RETRIED: {detail}]"]))
+            pending = []
+            continue
         if entry.get("type") != "message":
             continue
         message = entry.get("message") or {}
@@ -230,8 +239,8 @@ class ChurnGuard:
         same = active is sessions or (active.get_session_id() == sessions.get_session_id()
                                       and active.get_session_file() == sessions.get_session_file())
         (active if same else sessions).append_custom_entry(STOP_ENTRY, details)
-        # Stop first; only the session that was judged is aborted.
+        # Listeners hear the stop before the abort cancels them; only the judged session is aborted.
+        self._emit({"type": "churn_stopped", **details})
         if same:
             await self._stop()
-        self._emit({"type": "churn_stopped", **details})
         await asyncio.to_thread(report, details)

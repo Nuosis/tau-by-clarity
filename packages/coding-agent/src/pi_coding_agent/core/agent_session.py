@@ -1276,6 +1276,7 @@ class AgentSession:
             self._session_manager.append_custom_entry(
                 "tau.output_limit_attempt", dict(getattr(event, "details", {}))
             )
+            self._churn_guard.on_assistant_turn()
         # ── 2a: Persist messages on message_end (not agent_end) ──────────────
         if event.type == "message_end":
             msg = getattr(event, "message", None)
