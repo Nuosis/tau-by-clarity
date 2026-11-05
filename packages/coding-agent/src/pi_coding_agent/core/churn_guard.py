@@ -195,9 +195,13 @@ class ChurnGuard:
                    "session_file": str(sessions.get_session_file() or ""),
                    "turn": turn, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
-        sessions.append_custom_entry(STOP_ENTRY, details)
+        active = self._sessions()
+        # The same logical session may have been reopened under a new manager while Jev answered.
+        same = active is sessions or (active.get_session_id() == sessions.get_session_id()
+                                      and active.get_session_file() == sessions.get_session_file())
+        (active if same else sessions).append_custom_entry(STOP_ENTRY, details)
         # Stop first; only the session that was judged is aborted.
-        if self._sessions() is sessions:
+        if same:
             await self._stop()
         self._emit({"type": "churn_stopped", **details})
         await asyncio.to_thread(report, details)

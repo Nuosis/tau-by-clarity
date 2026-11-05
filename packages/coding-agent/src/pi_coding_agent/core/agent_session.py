@@ -1362,6 +1362,13 @@ class AgentSession:
 
     async def _post_turn_checks(self, msg: AssistantMessage, retry_event: asyncio.Event | None = None) -> None:
         """Check retry and compaction after a turn completes (mirrors TS _handleAgentEvent)."""
+        # A churn verdict for this turn lands before any retry, curation or compaction spends.
+        await self._churn_guard.drain()
+        if self._churn_guard.is_stopped():
+            self._run_continues = False
+            if retry_event is not None and retry_event is self._retry_event:
+                self._finish_retry(success=False)
+            return
         # Reset overflow recovery on successful turns
         if getattr(msg, "stop_reason", "") not in ("error", "aborted"):
             self._overflow_recovery_attempted = False

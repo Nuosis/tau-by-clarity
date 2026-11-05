@@ -591,7 +591,7 @@ async def _stream_assistant_attempt(
                 context.messages.append(final_message)
             if emit_events and not added_partial:
                 ev_stream.push(AgentEventMessageStart(message=final_message))
-            if final_message.stop_reason != "length":
+            if emit_events and final_message.stop_reason != "length":
                 ev_stream.push(AgentEventMessageEnd(message=final_message))
             return final_message, selected_model.max_tokens
 
