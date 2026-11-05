@@ -280,13 +280,11 @@ class AgentSession:
             pass
 
         self._listeners: list[Callable[[AgentEvent], None]] = []
-        self._agent_end_delivered = True  # no run in progress
         self._agent.subscribe(self._on_agent_event)
         from .churn_guard import ChurnGuard
 
         self._churn_guard = ChurnGuard(lambda: self._session_manager, self._resolve_api_key,
-                                       self.abort, self._emit, self._jev_route,
-                                       lambda: not self._agent_end_delivered)
+                                       self._emit, self._jev_route)
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -979,6 +977,8 @@ class AgentSession:
     async def _before_model_invocation(
         self, invocation: ModelInvocation,
     ) -> ModelInvocationSelection | None:
+        # Every 12th turn is judged here, before the next call is made; churn raises ChurnStopped.
+        await self._churn_guard.before_model_call()
         invocation = invocation.model_copy(update={"session_id": self.session_id})
         selection = (self._router.select() if self._router is not None else
                      await self._extension_runner.emit_before_model_invocation(invocation))
@@ -1278,7 +1278,6 @@ class AgentSession:
             self._session_manager.append_custom_entry(
                 "tau.output_limit_attempt", dict(getattr(event, "details", {}))
             )
-            self._churn_guard.on_assistant_turn()
         # ── 2a: Persist messages on message_end (not agent_end) ──────────────
         if event.type == "message_end":
             msg = getattr(event, "message", None)
@@ -1300,9 +1299,6 @@ class AgentSession:
                         persisted_msg,
                         active_compression=active_compression_meta,
                     )
-                    if role == "assistant":
-                        # Every 12th turn (failed model calls included) is judged for churn.
-                        self._churn_guard.on_assistant_turn()
                 # Track last assistant message for retry/compaction
                 if role == "assistant":
                     self._last_assistant_msg = msg
@@ -1327,7 +1323,6 @@ class AgentSession:
                 if (getattr(terminal_msg, "role", "") == "assistant"
                         and getattr(terminal_msg, "error_message", None)):
                     self._session_manager.append_message(_message_to_dict(terminal_msg))
-                    self._churn_guard.on_assistant_turn()
                     distinct_terminal_error = True
                     break
             # Provider failures exit the loop before prepare_next_turn runs.
@@ -1360,18 +1355,13 @@ class AgentSession:
                     pass  # no running loop in sync context
 
         # Notify external listeners
-        if event.type == "agent_start":
-            self._agent_end_delivered = False
-        elif event.type == "agent_end":
-            self._agent_end_delivered = True
         for listener in list(self._listeners):
             listener(event)
 
     async def _post_turn_checks(self, msg: AssistantMessage, retry_event: asyncio.Event | None = None) -> None:
         """Check retry and compaction after a turn completes (mirrors TS _handleAgentEvent)."""
-        # A churn verdict for this turn lands before any retry, curation or compaction spends.
-        await self._churn_guard.drain()
         if self._churn_guard.is_stopped():
+            # No retry, curation or compaction model calls after a churn stop.
             self._run_continues = False
             if retry_event is not None and retry_event is self._retry_event:
                 self._finish_retry(success=False)
@@ -1831,8 +1821,6 @@ class AgentSession:
         except Exception:
             pass
         await self._wait_for_retry()
-        # A short-lived process (one prompt per run) must not exit before its churn check lands.
-        await self._churn_guard.drain()
         try:
             from .cli_debug_log import log_event
 
@@ -3017,7 +3005,7 @@ class AgentSession:
                     loop = asyncio.get_running_loop()
                     self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
-                        self._continue_unless_churn_stopped()
+                        self._agent.continue_from_context()
                     ))
                 except RuntimeError:
                     pass
@@ -3026,7 +3014,7 @@ class AgentSession:
                     loop = asyncio.get_running_loop()
                     self._run_continues = True
                     loop.call_soon(lambda: asyncio.ensure_future(
-                        self._continue_unless_churn_stopped()
+                        self._agent.continue_from_context()
                     ))
                 except RuntimeError:
                     pass
@@ -3074,13 +3062,6 @@ class AgentSession:
         endpoint = _re.sub(r"/v1$", "", base) + "/alpha/decisions"
         headers = self._model_registry.resolve_headers(model) if model is not None else None
         return endpoint, dict(headers or {})
-
-    async def _continue_unless_churn_stopped(self) -> None:
-        """Automatic retry/compaction continuations honor a churn stop like prompt() does."""
-        if self._churn_guard.is_stopped():
-            self._resolve_retry(success=False)
-            return
-        await self._agent.continue_from_context()
 
     async def _handle_retryable_error(self, msg: AssistantMessage) -> bool:
         """
@@ -3136,7 +3117,7 @@ class AgentSession:
         try:
             loop = asyncio.get_running_loop()
             loop.call_soon(lambda: asyncio.ensure_future(
-                self._continue_unless_churn_stopped()
+                self._agent.continue_from_context()
             ))
         except RuntimeError:
             pass

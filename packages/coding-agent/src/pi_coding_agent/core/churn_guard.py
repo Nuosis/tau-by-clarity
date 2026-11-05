@@ -5,9 +5,11 @@ immediately without asking, superseding other requirements. Experiment
 ~/outputs/churn-experiment-20261104: at 12 turns, P(churn) > 0.5 separated every turn-based
 churn case (0.53-0.98) from normal sessions (0.10-0.43).
 
-A turn is one assistant step (including a failed model call) with the inputs since the
-previous one. Turns are counted from the session journal, so a restarted process resumes
-the count. A stopped session refuses further prompts until TAU_CHURN_RESUME=1.
+A turn is one assistant step (a failed model call or an output-limit retry included) with
+the inputs since the previous one, counted on the active branch of the session journal so
+a restarted process keeps the count. The judgment runs before the model call that would
+follow the 12th, 24th, ... turn; churn means that call is never made. A stopped session
+refuses prompts until TAU_CHURN_RESUME=1.
 """
 from __future__ import annotations
 
@@ -67,10 +69,6 @@ def _content(content: Any) -> str:
     return " ".join(parts)
 
 
-def _raw(entries) -> list[dict]:
-    return [getattr(e, "data", e) for e in entries]
-
-
 def active_branch(sessions) -> list[dict]:
     """Entries on the path from the root to the current leaf (abandoned branches excluded)."""
     path, current = [], sessions.get_leaf_entry()
@@ -82,25 +80,16 @@ def active_branch(sessions) -> list[dict]:
     return path
 
 
-def _is_assistant(entry: dict) -> bool:
+def _is_turn(entry: dict) -> bool:
     if entry.get("type") == "custom":
         return entry.get("customType") == OUTPUT_LIMIT_ENTRY
     return entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant"
 
 
-def tail(entries: list[dict], count: int) -> tuple[int, list[str]]:
-    """Total assistant turns and the last `count` rendered; only the tail is rendered."""
-    positions = [i for i, e in enumerate(entries) if _is_assistant(e)]
-    if len(positions) <= count:
-        return len(positions), turns(entries)[-count:]
-    start = positions[-count - 1] + 1
-    return len(positions), turns(entries[start:])[-count:]
-
-
-def turns(entries) -> list[str]:
-    """Render the journal's assistant steps, each with the inputs that preceded it."""
+def turns(entries: list[dict]) -> list[str]:
+    """Render each turn with the inputs that preceded it."""
     rendered, pending = [], []
-    for entry in _raw(entries):
+    for entry in entries:
         if entry.get("type") == "custom" and entry.get("customType") == OUTPUT_LIMIT_ENTRY:
             detail = _clip(json.dumps(entry.get("data") or {}), 300)
             rendered.append("\n".join(pending[-2:] + [f"ASSISTANT: [OUTPUT LIMIT REACHED; GENERATION RETRIED: {detail}]"]))
@@ -123,10 +112,17 @@ def turns(entries) -> list[str]:
     return rendered
 
 
-def stopped(entries) -> dict | None:
-    """The unresolved churn stop recorded in this session, if any."""
+def tail(entries: list[dict], count: int) -> tuple[int, list[str]]:
+    """Total turns and the last `count` rendered; only the tail is rendered."""
+    positions = [i for i, e in enumerate(entries) if _is_turn(e)]
+    start = positions[-count - 1] + 1 if len(positions) > count else 0
+    return len(positions), turns(entries[start:])[-count:]
+
+
+def stopped(entries: list[dict]) -> dict | None:
+    """The unresolved churn stop on this branch, if any."""
     stop = None
-    for entry in _raw(entries):
+    for entry in entries:
         if entry.get("type") != "custom":
             continue
         if entry.get("customType") == STOP_ENTRY:
@@ -136,6 +132,14 @@ def stopped(entries) -> dict | None:
     return stop
 
 
+def _protect(text: str) -> str:
+    """Apply the registered PII filter, as ordinary model calls do."""
+    from pi_ai import pii
+
+    factory = getattr(pii, "_factory", None)
+    return factory()[0](text) if factory else text
+
+
 async def judge(window: list[str], get_api_key: Callable, route: Callable | None = None) -> float:
     """Jev's probability that these turns are churn."""
     document = "\n\n".join(f"--- Turn {i + 1} of {len(window)} ---\n{t}" for i, t in enumerate(window))
@@ -143,14 +147,13 @@ async def judge(window: list[str], get_api_key: Callable, route: Callable | None
     endpoint, route_headers = route() if route else (JEV_ENDPOINT, {})
     endpoint = os.environ.get("TAU_JEV_ENDPOINT") or endpoint
     headers = {**(route_headers or {}), "Content-Type": "application/json"}
-    has_auth = any(k.lower() == "authorization" for k in headers)
-    if not os.environ.get("TAU_JEV_ENDPOINT") and not has_auth:
+    if not os.environ.get("TAU_JEV_ENDPOINT") and not any(k.lower() == "authorization" for k in headers):
         # A configured endpoint or a route with its own Authorization header supplies the credential.
         key = await get_api_key("openrouter")
         if not key:
             raise RuntimeError("OpenRouter API key is required for churn detection")
         headers["Authorization"] = f"Bearer {key}"
-    payload = {"model": JEV_MODEL, "state": {"document": {"text": document}},
+    payload = {"model": JEV_MODEL, "state": {"document": {"text": _protect(document)}},
                "questions": {"is_churn": QUESTION}}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90, connect=15)) as client:
         async with client.post(endpoint, json=payload, headers=headers) as response:
@@ -175,87 +178,59 @@ def report(details: dict) -> None:
 
 
 class ChurnGuard:
-    """Counts assistant turns in the journal and judges every INTERVAL-th one."""
+    """Judges the active branch before model calls; churn raises ChurnStopped instead of calling."""
 
-    def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, stop: Callable, emit: Callable,
-                 route: Callable | None = None, running: Callable[[], bool] | None = None):
+    def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, emit: Callable,
+                 route: Callable | None = None):
         self._sessions = sessions  # current session manager (sessions can be switched)
         self._get_api_key = get_api_key
-        self._stop = stop
         self._emit = emit
         self._route = route
-        self._running = running or (lambda: False)
-        self._tasks: set[asyncio.Task] = set()
+
+    def _refusal(self, stop: dict) -> ChurnStopped:
+        return ChurnStopped(f"Session stopped for churn (P={stop.get('p_churn')}); "
+                            "set TAU_CHURN_RESUME=1 to resume it.")
 
     def check_resumable(self) -> None:
-        """Refuse to start model work in a session stopped for churn."""
+        """Refuse to start work in a session stopped for churn."""
         stop = stopped(active_branch(self._sessions()))
         if stop is None:
             return
         if os.environ.get("TAU_CHURN_RESUME") == "1":
             self._sessions().append_custom_entry(RESUME_ENTRY, {"at": time.time(), "stop": stop})
             return
-        raise ChurnStopped(f"Session stopped for churn (P={stop.get('p_churn')}); "
-                           "set TAU_CHURN_RESUME=1 to resume it.")
+        raise self._refusal(stop)
 
     def is_stopped(self) -> bool:
         return stopped(active_branch(self._sessions())) is not None
 
-    def on_assistant_turn(self) -> None:
-        sessions = self._sessions()  # the check stays bound to the session it judged
+    async def before_model_call(self) -> None:
+        """Raise ChurnStopped rather than let a churning session make its next model call."""
+        sessions = self._sessions()
         entries = active_branch(sessions)
-        total = sum(1 for e in entries if _is_assistant(e))
-        if not total or total % INTERVAL:
-            return
+        stop = stopped(entries)
+        if stop is not None:
+            raise self._refusal(stop)
         total, window = tail(entries, INTERVAL)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+        if not total or total % INTERVAL or any(
+                e.get("type") == "custom" and e.get("customType") == CHECK_ENTRY
+                and (e.get("data") or {}).get("turn") == total for e in entries):
             return
-        leaf = sessions.get_leaf_entry()
-        task = loop.create_task(self._check(sessions, window, total, getattr(leaf, "id", None)))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def drain(self) -> None:
-        """Wait for churn checks already started."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
-
-    async def _check(self, sessions, window: list[str], turn: int, judged_leaf: str | None = None) -> None:
         try:
             probability = await judge(window, self._get_api_key, self._route)
         except Exception as exc:
             # A failed judgment is recorded and reported; it never counts as churn.
-            sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "error": type(exc).__name__})
-            print(f"[tau] churn check failed at turn {turn}: {type(exc).__name__}", file=sys.stderr, flush=True)
+            sessions.append_custom_entry(CHECK_ENTRY, {"turn": total, "error": type(exc).__name__})
+            print(f"[tau] churn check failed at turn {total}: {type(exc).__name__}", file=sys.stderr, flush=True)
             return
-        sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "p_churn": probability})
+        sessions.append_custom_entry(CHECK_ENTRY, {"turn": total, "p_churn": probability})
         if probability <= THRESHOLD:
             return
         details = {"session_id": sessions.get_session_id(),
                    "session_file": str(sessions.get_session_file() or ""),
-                   "turn": turn, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
+                   "turn": total, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
-        active = self._sessions()
-        # The same logical session may have been reopened under a new manager while Jev answered,
-        # or the user may have moved to another branch; only the judged branch is stopped.
-        same_session = active is sessions or (active.get_session_id() == sessions.get_session_id()
-                                              and active.get_session_file() == sessions.get_session_file())
-        on_branch = same_session and (judged_leaf is None or any(
-            e.get("id") == judged_leaf for e in active_branch(active)))
-        details["stopped_active_run"] = on_branch
-        if on_branch:
-            active.append_custom_entry(STOP_ENTRY, details)
-            # Listeners hear the stop, and the run's end, before the abort cancels them: a
-            # cancelled run sends no agent_end of its own and waiters (RPC clients) need one.
-            self._emit({"type": "churn_stopped", **details})
-            if self._running():
-                self._emit({"type": "agent_end", "messages": [], "reason": "churn_stopped"})
-            await self._stop()
-        else:
-            # The judged branch is no longer active; record the verdict and alert without
-            # stopping unrelated work.
-            sessions.append_custom_entry(CHECK_ENTRY, {"turn": turn, "p_churn": probability,
-                                                       "branch_changed": True, "judged_leaf": judged_leaf})
+        sessions.append_custom_entry(STOP_ENTRY, details)
+        self._emit({"type": "churn_stopped", **details})
         await asyncio.to_thread(report, details)
+        raise self._refusal(details)
