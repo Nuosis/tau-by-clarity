@@ -838,6 +838,7 @@ class AgentSession:
         self._review_context_messages = list(messages)
         if self._router is not None and included:
             starts_new_intention = self.active_intention is None
+            alignment_unavailable = False
             if self.active_intention is not None:
                 from .intention_alignment import judge_intention_alignment
                 latest_request = next((r for r in reversed(included) if r.get('role') == 'user'), included[-1])
@@ -856,6 +857,7 @@ class AgentSession:
                     self._record_router_event("tau.intention_alignment.unavailable", metadata={
                         "error": type(exc).__name__, "message": str(exc)[:300]})
                     choice = 'starts_new_intention'
+                    alignment_unavailable = True
                 starts_new_intention = choice == 'starts_new_intention'
             if not starts_new_intention:
                 self._intention_requests = [r for r in self._intention_requests if r not in included]
@@ -883,7 +885,9 @@ class AgentSession:
                 intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
                 before_model_invocation=self._churn_check,
-                cancel_event=signal, intention=None,
+                # Without an alignment verdict the planner revises the active intention (its
+                # outcome and unfinished obligations stay in view) instead of starting blind.
+                cancel_event=signal, intention=self.active_intention if alignment_unavailable else None,
                 establish_intention=True,
             )
             if self.session_intention is None:
