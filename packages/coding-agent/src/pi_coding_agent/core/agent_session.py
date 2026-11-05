@@ -850,11 +850,12 @@ class AgentSession:
                         route=self._jev_route,
                     )
                 except Exception as exc:
-                    # An unavailable Jev must not fail the prompt: the input continues the active
-                    # intention, and the failure is recorded (setup failures included).
+                    # An unavailable Jev must not fail the prompt. Re-establish the intention through
+                    # the planning path so a replaced request never keeps the old completion target;
+                    # the failure is recorded (setup failures included).
                     self._record_router_event("tau.intention_alignment.unavailable", metadata={
                         "error": type(exc).__name__, "message": str(exc)[:300]})
-                    choice = 'continues_active_intention'
+                    choice = 'starts_new_intention'
                 starts_new_intention = choice == 'starts_new_intention'
             if not starts_new_intention:
                 self._intention_requests = [r for r in self._intention_requests if r not in included]
