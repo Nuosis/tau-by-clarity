@@ -207,11 +207,12 @@ class ChurnGuard:
     """Judges the active branch before model calls; churn raises ChurnStopped instead of calling."""
 
     def __init__(self, sessions: Callable[[], Any], get_api_key: Callable, emit: Callable,
-                 route: Callable | None = None):
+                 route: Callable | None = None, on_stop: Callable[[], None] | None = None):
         self._sessions = sessions  # current session manager (sessions can be switched)
         self._get_api_key = get_api_key
         self._emit = emit
         self._route = route
+        self._on_stop = on_stop or (lambda: None)
 
     def _refusal(self, stop: dict) -> ChurnStopped:
         return ChurnStopped(f"Session stopped for churn (P={stop.get('p_churn')}); "
@@ -259,6 +260,7 @@ class ChurnGuard:
                    "turn": total, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
         sessions.append_custom_entry(STOP_ENTRY, details)
+        self._on_stop()
         self._emit({"type": "churn_stopped", **details})
         await asyncio.to_thread(report, details)
         raise self._refusal(details)

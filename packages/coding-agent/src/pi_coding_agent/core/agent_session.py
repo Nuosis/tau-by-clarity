@@ -283,8 +283,9 @@ class AgentSession:
         self._agent.subscribe(self._on_agent_event)
         from .churn_guard import ChurnGuard
 
+        self._post_turn_tasks: set[asyncio.Future] = set()
         self._churn_guard = ChurnGuard(lambda: self._session_manager, self._resolve_api_key,
-                                       self._emit, self._jev_route)
+                                       self._emit, self._jev_route, self._cancel_post_turn_work)
 
         # ── Auto-retry state ──────────────────────────────────────────────────
         self._retry_attempt: int = 0
@@ -1349,9 +1350,9 @@ class AgentSession:
                 retry_event = self._retry_event if self._retry_pending else None
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.call_soon(lambda: asyncio.ensure_future(
+                    loop.call_soon(lambda: self._track_post_turn(asyncio.ensure_future(
                         self._post_turn_checks(msg, retry_event)
-                    ))
+                    )))
                 except RuntimeError:
                     pass  # no running loop in sync context
 
@@ -3061,14 +3062,34 @@ class AgentSession:
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Request was aborted")
 
+    def _track_post_turn(self, task: asyncio.Future) -> None:
+        self._post_turn_tasks.add(task)
+        task.add_done_callback(self._post_turn_tasks.discard)
+
+    def _cancel_post_turn_work(self) -> None:
+        """A churn stop cancels background curation and compaction that could still call models."""
+        for task in list(self._post_turn_tasks):
+            if task is not asyncio.current_task():
+                task.cancel()
+
     def _jev_route(self) -> tuple[str, dict[str, str]]:
         """Jev decisions endpoint and headers on the configured OpenRouter provider route."""
         import re as _re
 
-        model = next((m for m in self._model_registry.get_all() if m.provider == "openrouter"), None)
-        base = (getattr(model, "base_url", None) or "https://openrouter.ai/api/v1").rstrip("/")
-        endpoint = _re.sub(r"/v1$", "", base) + "/alpha/decisions"
-        headers = self._model_registry.resolve_headers(model) if model is not None else None
+        from .model_registry import _resolve_headers
+
+        default = "https://openrouter.ai/api/v1"
+        registered = getattr(self._model_registry, "_registered_providers", {}).get("openrouter")
+        models = [m for m in self._model_registry.get_all() if m.provider == "openrouter"]
+        # A registered provider wins; otherwise a model routed off the public endpoint (a proxy).
+        model = next((m for m in models if (getattr(m, "base_url", None) or default).rstrip("/") != default),
+                     models[0] if models else None)
+        if registered is not None and registered.base_url:
+            base, headers = registered.base_url, _resolve_headers(registered.headers)
+        else:
+            base = getattr(model, "base_url", None) or default
+            headers = self._model_registry.resolve_headers(model) if model is not None else None
+        endpoint = _re.sub(r"/v1$", "", base.rstrip("/")) + "/alpha/decisions"
         return endpoint, dict(headers or {})
 
     async def _handle_retryable_error(self, msg: AssistantMessage) -> bool:
