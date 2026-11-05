@@ -58,7 +58,7 @@ and accuracy, not writing style. You review rather than execute the user's task.
 
 async def review_turn(selection, context, *, stream_fn, get_api_key, record, cancel_event=None,
                       intention=None, establish_intention=False, selection_level='max',
-                      session_id=None, task_start=0):
+                      session_id=None, task_start=0, before_model_invocation=None):
     from ..active_compression.extension import _retrieve_tool_response
 
     record_event = record
@@ -157,7 +157,8 @@ async def review_turn(selection, context, *, stream_fn, get_api_key, record, can
                                  session_id=(f'{session_id}:{"intention" if establish_intention else "completion-review"}'
                                              if session_id else None),
                                  tool_execution='sequential', should_stop_after_turn=stop_after_review_error,
-                                 on_payload=enforce_completion_contract))
+                                 on_payload=enforce_completion_contract,
+                                 before_model_invocation=before_model_invocation))
     reviewer.set_model(selection.model)
     reviewer.set_thinking_level(selection.reasoning or 'off')
     if establish_intention:

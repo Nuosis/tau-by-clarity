@@ -33,6 +33,9 @@ RESUME_ENTRY = "tau.churn_resume"
 CHECK_ENTRY = "tau.churn_check"
 # Output-limit recovery retries a generation without an assistant message; each attempt is a turn.
 OUTPUT_LIMIT_ENTRY = "tau.output_limit_attempt"
+# Nested reviewer agents (intention, completion review) record each model call as an entry.
+NESTED_CALL_ENTRIES = {"tau.intention.invocation": "INTENTION REVIEWER",
+                       "tau.turn_review.invocation": "COMPLETION REVIEWER"}
 QUESTION = {
     "type": "noul",
     "instructions": "These are the most recent consecutive turns of an AI agent or automated process, "
@@ -82,7 +85,7 @@ def active_branch(sessions) -> list[dict]:
 
 def _is_turn(entry: dict) -> bool:
     if entry.get("type") == "custom":
-        return entry.get("customType") == OUTPUT_LIMIT_ENTRY
+        return entry.get("customType") == OUTPUT_LIMIT_ENTRY or entry.get("customType") in NESTED_CALL_ENTRIES
     return entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "assistant"
 
 
@@ -94,6 +97,13 @@ def turns(entries: list[dict]) -> list[str]:
             detail = _clip(json.dumps(entry.get("data") or {}), 300)
             rendered.append("\n".join(pending[-2:] + [f"ASSISTANT: [OUTPUT LIMIT REACHED; GENERATION RETRIED: {detail}]"]))
             pending = []
+            continue
+        if entry.get("type") == "custom" and entry.get("customType") in NESTED_CALL_ENTRIES:
+            message = (entry.get("data") or {}).get("message") or {}
+            out = _clip(_content(message.get("content")), 500)
+            if (message.get("stopReason") or message.get("stop_reason")) == "error":
+                out += f" [MODEL CALL FAILED: {_clip(message.get('errorMessage') or message.get('error_message') or '', 300)}]"
+            rendered.append(f"{NESTED_CALL_ENTRIES[entry['customType']]}: {out}")
             continue
         if entry.get("type") != "message":
             continue
@@ -177,6 +187,22 @@ def report(details: dict) -> None:
             print(f"[tau] churn alert command failed: {type(exc).__name__}", file=sys.stderr, flush=True)
 
 
+async def _cancellable(coroutine, cancel_event: asyncio.Event | None):
+    """Await `coroutine`, cancelling it (and raising CancelledError) when the run is aborted."""
+    task = asyncio.ensure_future(coroutine)
+    if cancel_event is None:
+        return await task
+    waiter = asyncio.ensure_future(cancel_event.wait())
+    try:
+        await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+    if not task.done():
+        task.cancel()
+        raise asyncio.CancelledError("Churn judgment cancelled by abort")
+    return task.result()
+
+
 class ChurnGuard:
     """Judges the active branch before model calls; churn raises ChurnStopped instead of calling."""
 
@@ -204,7 +230,7 @@ class ChurnGuard:
     def is_stopped(self) -> bool:
         return stopped(active_branch(self._sessions())) is not None
 
-    async def before_model_call(self) -> None:
+    async def before_model_call(self, cancel_event: asyncio.Event | None = None) -> None:
         """Raise ChurnStopped rather than let a churning session make its next model call."""
         sessions = self._sessions()
         entries = active_branch(sessions)
@@ -217,7 +243,9 @@ class ChurnGuard:
                 and (e.get("data") or {}).get("turn") == total for e in entries):
             return
         try:
-            probability = await judge(window, self._get_api_key, self._route)
+            probability = await _cancellable(judge(window, self._get_api_key, self._route), cancel_event)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             # A failed judgment is recorded and reported; it never counts as churn.
             sessions.append_custom_entry(CHECK_ENTRY, {"turn": total, "error": type(exc).__name__})

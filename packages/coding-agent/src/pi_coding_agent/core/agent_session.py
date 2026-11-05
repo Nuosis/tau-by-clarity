@@ -872,6 +872,7 @@ class AgentSession:
             intention = await review_turn(
                 intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
+                before_model_invocation=self._churn_check,
                 cancel_event=signal, intention=None,
                 establish_intention=True,
             )
@@ -978,7 +979,7 @@ class AgentSession:
         self, invocation: ModelInvocation,
     ) -> ModelInvocationSelection | None:
         # Every 12th turn is judged here, before the next call is made; churn raises ChurnStopped.
-        await self._churn_guard.before_model_call()
+        await self._churn_check(invocation)
         invocation = invocation.model_copy(update={"session_id": self.session_id})
         selection = (self._router.select() if self._router is not None else
                      await self._extension_runner.emit_before_model_invocation(invocation))
@@ -1097,7 +1098,7 @@ class AgentSession:
                 self._router.selections['max'], review_context,
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
-                intention=self.active_intention,
+                intention=self.active_intention, before_model_invocation=self._churn_check,
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
@@ -3052,6 +3053,13 @@ class AgentSession:
             return False
         err = getattr(msg, "error_message", "") or ""
         return bool(_RETRY_PATTERN.search(err))
+
+    async def _churn_check(self, invocation: ModelInvocation | None = None) -> None:
+        """Churn judgment before any model call (main and nested reviewer agents)."""
+        cancel_event = self._agent._cancel_event
+        await self._churn_guard.before_model_call(cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Request was aborted")
 
     def _jev_route(self) -> tuple[str, dict[str, str]]:
         """Jev decisions endpoint and headers on the configured OpenRouter provider route."""
