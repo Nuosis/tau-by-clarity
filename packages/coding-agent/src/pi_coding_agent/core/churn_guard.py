@@ -9,7 +9,8 @@ A turn is one assistant step (a failed model call or an output-limit retry inclu
 the inputs since the previous one, counted on the active branch of the session journal so
 a restarted process keeps the count. The judgment runs before the model call that would
 follow the 12th, 24th, ... turn; churn means that call is never made. A stopped session
-refuses prompts until TAU_CHURN_RESUME=1.
+refuses prompts until TAU_CHURN_RESUME=1; resuming restarts the cadence and the judged
+window at the resume entry, so the first check after it sees only the 12 turns that followed.
 """
 from __future__ import annotations
 
@@ -51,6 +52,33 @@ QUESTION = {
 
 class ChurnStopped(RuntimeError):
     """The session was stopped for churn; resuming needs TAU_CHURN_RESUME=1."""
+
+
+# USER-AUTHORIZED — Marcus, November 4, 2026 (stop-the-bleeding standing order): when tokens are
+# wasted by churn, any agent may place holds and stop work without asking. Scope: a churn stop
+# writes TAU_CHURN_HOLD_FILE and every session of the agent refuses work while it exists.
+def agent_hold() -> str | None:
+    """TAU_CHURN_HOLD_FILE, when it exists: an agent-wide hold every session in the process honors.
+
+    Existence is the hold (its content may be unreadable); deleting the file releases it.
+    """
+    path = os.environ.get("TAU_CHURN_HOLD_FILE")
+    return path if path and os.path.exists(path) else None
+
+
+def write_agent_hold(details: dict) -> None:
+    """Persist the agent-wide hold atomically, independent of any alert command."""
+    path = os.environ.get("TAU_CHURN_HOLD_FILE")
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        temporary = f"{path}.{os.getpid()}.tmp"
+        with open(temporary, "w") as handle:
+            json.dump({**details, "resume": "fix the cause, then delete this file"}, handle)
+        os.replace(temporary, path)
+    except OSError as exc:
+        print(f"[tau] churn hold file not written: {type(exc).__name__}", file=sys.stderr, flush=True)
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -127,6 +155,15 @@ def tail(entries: list[dict], count: int) -> tuple[int, list[str]]:
     positions = [i for i, e in enumerate(entries) if _is_turn(e)]
     start = positions[-count - 1] + 1 if len(positions) > count else 0
     return len(positions), turns(entries[start:])[-count:]
+
+
+def since_resume(entries: list[dict]) -> list[dict]:
+    """Entries after the last churn resume on this branch (all of them when never resumed)."""
+    for i in range(len(entries) - 1, -1, -1):
+        entry = entries[i]
+        if entry.get("type") == "custom" and entry.get("customType") == RESUME_ENTRY:
+            return entries[i + 1:]
+    return entries
 
 
 def stopped(entries: list[dict]) -> dict | None:
@@ -224,7 +261,10 @@ class ChurnGuard:
                             "set TAU_CHURN_RESUME=1 to resume it.")
 
     def check_resumable(self) -> None:
-        """Refuse to start work in a session stopped for churn."""
+        """Refuse to start work in a session stopped for churn, or while the agent is held."""
+        hold = agent_hold()
+        if hold:
+            raise ChurnStopped(f"Agent held for churn ({hold}); delete that file to release it.")
         stop = stopped(active_branch(self._sessions()))
         if stop is None:
             return
@@ -238,13 +278,18 @@ class ChurnGuard:
 
     async def before_model_call(self, cancel_event: asyncio.Event | None = None) -> None:
         """Raise ChurnStopped rather than let a churning session make its next model call."""
+        hold = agent_hold()
+        if hold:
+            raise ChurnStopped(f"Agent held for churn ({hold}); delete that file to release it.")
         sessions = self._sessions()
         entries = active_branch(sessions)
         stop = stopped(entries)
         if stop is not None:
             raise self._refusal(stop)
-        total, window = tail(entries, INTERVAL)
-        if not total or total % INTERVAL or any(
+        # Lifetime turn number identifies the check; cadence and window restart at a resume.
+        total = sum(1 for e in entries if _is_turn(e))
+        counted, window = tail(since_resume(entries), INTERVAL)
+        if not counted or counted % INTERVAL or any(
                 e.get("type") == "custom" and e.get("customType") == CHECK_ENTRY
                 and (e.get("data") or {}).get("turn") == total for e in entries):
             return
@@ -265,6 +310,7 @@ class ChurnGuard:
                    "turn": total, "p_churn": probability, "threshold": THRESHOLD, "at": time.time(),
                    "last_turn": window[-1][-600:], "resume": "set TAU_CHURN_RESUME=1 and prompt the session"}
         sessions.append_custom_entry(STOP_ENTRY, details)
+        write_agent_hold(details)
         self._on_stop()
         self._emit({"type": "churn_stopped", **details})
         await asyncio.to_thread(report, details)
