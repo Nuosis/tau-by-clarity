@@ -2897,6 +2897,10 @@ def _bound_outbound_tool_results(context: Any, fn: CompressFn) -> Any:
         call_id = message.get("tool_call_id") if isinstance(message, dict) else getattr(message, "tool_call_id", None)
         if not call_id:
             continue
+        # Excluded tools stay verbatim at any size, as in normal compression:
+        # their callers may not offer ccr_retrieve to recover a marker.
+        if _is_excluded_tool_result_name(tool_name) or tool_name in EXCLUDED_TOOL_NAMES:
+            continue
         role_token = _current_message_role.set("toolResult")
         name_token = _current_tool_name.set(tool_name)
         call_token = _current_tool_call_id.set(call_id)

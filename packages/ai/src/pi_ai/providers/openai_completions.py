@@ -202,8 +202,6 @@ async def stream_simple(
 
     params = await apply_on_payload(params, model, opts.get("on_payload"))
 
-    params = await apply_on_payload(params, model, opts.on_payload)
-
     partial = _make_empty_assistant(model)
     content_blocks: list[Any] = []
     text_index = -1
