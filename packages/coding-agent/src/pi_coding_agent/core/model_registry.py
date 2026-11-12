@@ -853,7 +853,11 @@ class ModelRegistry:
             name=model_id,
             api=config.api,
             provider=provider,
-            base_url=config.base_url,
+            # An environment-only endpoint stands in when the provider names none
+            # and its transport can use it; otherwise the shared guard decides.
+            base_url=config.base_url or (
+                None if config.api in _BASE_URL_IGNORED_APIS or provider in _BASE_URL_IGNORED_PROVIDERS
+                else _env_base_url(provider)),
             headers=config.headers,
             reasoning=(
                 config.api in {"openai-responses", "anthropic-messages"}
