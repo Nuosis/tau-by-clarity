@@ -8,6 +8,7 @@ applying provider-level and per-model overrides.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -71,6 +72,47 @@ def _validate_models_config(config: Any) -> str | None:
                 return f'Provider {provider_name}, model {model_def["id"]}: invalid maxTokens'
 
     return None
+
+
+def _env_base_url(provider: str) -> str | None:
+    """TAU_PROVIDER_BASE_URL_<PROVIDER>: another address for every model of a provider.
+
+    The provider name is upper-cased with non-alphanumerics as underscores. It
+    applies to built-in, models.json, registered, synthetic and OAuth-backed
+    models alike, so a credential proxy (for example a vault sidecar) can serve a
+    packaged agent without editing it.
+    """
+    name = "TAU_PROVIDER_BASE_URL_" + re.sub(r"[^A-Za-z0-9]", "_", str(provider)).upper()
+    return os.environ.get(name) or None
+
+
+# Transports that build their client without the model's base URL; an override
+# could not reroute their requests, so it is not applied to them.
+_BASE_URL_IGNORED_APIS = frozenset({"google-generative-ai", "google-vertex", "bedrock-converse-stream"})
+_warned_ignored_overrides: set[str] = set()
+
+
+def _with_env_base_url(m: Model | None) -> Model | None:
+    if m is None:
+        return None
+    override = _env_base_url(m.provider)
+    if not override or getattr(m, "base_url", None) == override:
+        return m
+    if getattr(m, "api", None) in _BASE_URL_IGNORED_APIS:
+        if m.provider not in _warned_ignored_overrides:
+            _warned_ignored_overrides.add(m.provider)
+            logging.getLogger(__name__).warning(
+                "TAU_PROVIDER_BASE_URL override for %s ignored: its %s transport does not use a base URL",
+                m.provider, m.api)
+        return m
+    try:
+        return Model(**{**m.__dict__, "base_url": override})
+    except Exception:
+        return m
+
+
+def _apply_env_base_url_overrides(models: list[Model]) -> list[Model]:
+    return [_with_env_base_url(m) for m in models]
 
 
 def _resolve_config_value(value: str) -> str | None:
@@ -254,8 +296,7 @@ class ModelRegistry:
             combined = self._apply_provider_config_to_models(combined, prov_name, prov_config)
 
         combined = self._apply_oauth_transport_overrides(combined)
-
-        self._models = combined + self._extra_models
+        self._models = _apply_env_base_url_overrides(combined + self._extra_models)
 
     def _load_built_in_models(
         self,
@@ -667,7 +708,7 @@ class ModelRegistry:
 
         # Re-merge with new provider
         new_models = self._apply_provider_config_to_models(self._models, name, prov)
-        self._models = new_models
+        self._models = _apply_env_base_url_overrides(new_models)
 
     def unregister_provider(self, name: str) -> None:
         """Remove a runtime-registered provider and rebuild available models."""
@@ -683,10 +724,13 @@ class ModelRegistry:
     def register_model(self, model: Model) -> None:
         """Register an individual extra model."""
         self._extra_models.append(model)
-        self._models.append(model)
+        self._models.append(_with_env_base_url(model))
 
     def get_model(self, provider: str, model_id: str) -> Model:
         """Get a model by provider and ID."""
+        return _with_env_base_url(self._get_model(provider, model_id))
+
+    def _get_model(self, provider: str, model_id: str) -> Model:
         oauth_model = self._oauth_backed_model(provider, model_id)
         if oauth_model is not None:
             return oauth_model
@@ -709,6 +753,9 @@ class ModelRegistry:
 
     def find(self, provider: str, model_id: str) -> Model | None:
         """Find a model or return None."""
+        return _with_env_base_url(self._find(provider, model_id))
+
+    def _find(self, provider: str, model_id: str) -> Model | None:
         oauth_model = self._oauth_backed_model(provider, model_id)
         if oauth_model is not None:
             return oauth_model
@@ -778,7 +825,7 @@ class ModelRegistry:
         for m in self._models:
             if m.provider != provider or m.id != model_id:
                 continue
-            if config.base_url and getattr(m, "base_url", None) == config.base_url:
+            if config.base_url and getattr(m, "base_url", None) in (config.base_url, _env_base_url(provider)):
                 return m
             if config.api and getattr(m, "api", None) == config.api and getattr(m, "base_url", None):
                 return m
@@ -803,7 +850,7 @@ class ModelRegistry:
             name=model_id,
             api=config.api,
             provider=provider,
-            base_url=config.base_url,
+            base_url=_env_base_url(provider) or config.base_url,
             headers=config.headers,
             reasoning=(
                 config.api in {"openai-responses", "anthropic-messages"}
