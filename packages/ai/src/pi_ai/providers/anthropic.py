@@ -223,6 +223,26 @@ def _get_cache_control(base_url: str | None, cache_retention: str | None = None)
     return result
 
 
+def _single_user_agent(headers: dict[str, str]) -> dict[str, str]:
+    """Collapse user-agent spellings into one ``User-Agent`` key.
+
+    The SDK adds its own ``User-Agent``; a lowercase key from Tau, the model
+    catalog or the caller would otherwise go out as a second header, which
+    strict HTTP servers such as aiohttp 3.14 reject. Later entries win, so the
+    usual precedence (default, model, options) holds.
+    """
+    value = None
+    merged: dict[str, str] = {}
+    for key, item in headers.items():
+        if key.lower() == "user-agent":
+            value = item
+        else:
+            merged[key] = item
+    if value is not None:
+        merged["User-Agent"] = value
+    return merged
+
+
 def _build_client(
     model: Model,
     api_key: str,
@@ -256,6 +276,7 @@ def _build_client(
             **model_headers,
             **(options_headers or {}),
         }
+        default_headers = _single_user_agent(default_headers)
         client = _anthropic.AsyncAnthropic(
             api_key=None,
             auth_token=api_key,
@@ -270,6 +291,7 @@ def _build_client(
             **model_headers,
             **(options_headers or {}),
         }
+        default_headers = _single_user_agent(default_headers)
         if base_url and "api.anthropic.com" not in base_url:
             default_headers.setdefault("X-Api-Key", api_key)
         client = _anthropic.AsyncAnthropic(
