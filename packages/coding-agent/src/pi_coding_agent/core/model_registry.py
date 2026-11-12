@@ -86,9 +86,12 @@ def _env_base_url(provider: str) -> str | None:
     return os.environ.get(name) or None
 
 
-# Transports that build their client without the model's base URL; an override
-# could not reroute their requests, so it is not applied to them.
-_BASE_URL_IGNORED_APIS = frozenset({"google-generative-ai", "google-vertex", "bedrock-converse-stream"})
+# Transports an override cannot fully reroute, so it is not applied to them:
+# Google, Vertex and Bedrock build clients without the model's base URL; Azure
+# prefers its own endpoint settings; Copilot picks its headers from the host.
+_BASE_URL_IGNORED_APIS = frozenset({"google-generative-ai", "google-vertex", "bedrock-converse-stream",
+                                    "azure-openai-responses"})
+_BASE_URL_IGNORED_PROVIDERS = frozenset({"github-copilot"})
 _warned_ignored_overrides: set[str] = set()
 
 
@@ -98,7 +101,7 @@ def _with_env_base_url(m: Model | None) -> Model | None:
     override = _env_base_url(m.provider)
     if not override or getattr(m, "base_url", None) == override:
         return m
-    if getattr(m, "api", None) in _BASE_URL_IGNORED_APIS:
+    if getattr(m, "api", None) in _BASE_URL_IGNORED_APIS or m.provider in _BASE_URL_IGNORED_PROVIDERS:
         if m.provider not in _warned_ignored_overrides:
             _warned_ignored_overrides.add(m.provider)
             logging.getLogger(__name__).warning(
@@ -850,7 +853,7 @@ class ModelRegistry:
             name=model_id,
             api=config.api,
             provider=provider,
-            base_url=_env_base_url(provider) or config.base_url,
+            base_url=config.base_url,
             headers=config.headers,
             reasoning=(
                 config.api in {"openai-responses", "anthropic-messages"}
