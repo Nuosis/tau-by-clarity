@@ -18,6 +18,7 @@ from pi_ai.models import supports_xhigh
 from pi_ai.providers.openai_responses_shared import (
     convert_responses_messages,
     convert_responses_tools,
+    build_responses_tool_name_map,
     process_responses_stream,
 )
 from pi_ai.providers.payload_utils import apply_on_payload
@@ -73,8 +74,13 @@ def stream_openai_codex_responses(
         try:
             api_key = opts.get("api_key") or get_env_api_key(model.provider) or ""
             base_url = getattr(model, "base_url", None) or _DEFAULT_CODEX_BASE_URL
-            messages = convert_responses_messages(model, context, _CODEX_TOOL_CALL_PROVIDERS, include_system_prompt=False)
-            request_body = _build_request_body(model, context, opts, messages)
+            # ChatGPT rejects tool names outside ^[a-zA-Z0-9_-]+$ (e.g. "db.dump"); map them as the
+            # OpenAI Responses route does and map provider names back on the way in.
+            tool_name_map = build_responses_tool_name_map(list(getattr(context, "tools", None) or []))
+            provider_tool_name_map = {v: k for k, v in tool_name_map.items()}
+            messages = convert_responses_messages(model, context, _CODEX_TOOL_CALL_PROVIDERS,
+                                                  include_system_prompt=False, tool_name_map=tool_name_map)
+            request_body = _build_request_body(model, context, opts, messages, tool_name_map)
 
             request_body = await apply_on_payload(request_body, model, opts.get("on_payload"))
 
@@ -110,7 +116,8 @@ def stream_openai_codex_responses(
                             await result
 
                     sse_events = _parse_sse_stream(response)
-                    await process_responses_stream(sse_events, output, ev_stream, model)
+                    await process_responses_stream(sse_events, output, ev_stream, model,
+                                                   tool_name_map=provider_tool_name_map)
 
             _raise_for_stream_failure(output)
 
@@ -171,6 +178,7 @@ def _build_request_body(
     context: "Context",
     opts: dict[str, Any],
     messages: list[dict[str, Any]],
+    tool_name_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model.id,
@@ -185,7 +193,7 @@ def _build_request_body(
 
     tools = getattr(context, "tools", None)
     if tools:
-        body["tools"] = convert_responses_tools(tools)
+        body["tools"] = convert_responses_tools(tools, tool_name_map=tool_name_map)
         body["tool_choice"] = "auto"
         body["parallel_tool_calls"] = True
 

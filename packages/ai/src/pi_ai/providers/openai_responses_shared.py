@@ -91,7 +91,15 @@ def build_responses_tool_name_map(tools: "list[Tool]") -> dict[str, str]:
     """Map internal tool names to collision-resistant provider-safe names."""
     mapping: dict[str, str] = {}
     used_provider_names: set[str] = set()
+    # Names the provider already accepts keep themselves; only the others get aliases,
+    # which must not take a valid tool's name.
     for tool in tools:
+        if provider_safe_tool_name(tool.name) == tool.name and tool.name not in used_provider_names:
+            mapping[tool.name] = tool.name
+            used_provider_names.add(tool.name)
+    for tool in tools:
+        if tool.name in mapping:
+            continue
         candidate = provider_safe_tool_name(tool.name)
         collision_index = 1
         while candidate in used_provider_names:
