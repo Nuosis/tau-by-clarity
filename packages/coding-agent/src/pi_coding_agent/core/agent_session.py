@@ -1426,15 +1426,23 @@ class AgentSession:
             return ""
         ctx = Context(system_prompt=system,
                       messages=[UserMessage(content=user, timestamp=0)])
-        result = await complete_simple(model, ctx)
+        from pi_ai.types import SimpleStreamOptions
+        # The session's own credential (subscription/factory auth has no environment key).
+        api_key = await self._resolve_api_key(model.provider)
+        options = SimpleStreamOptions(api_key=api_key, session_id=f"{self.session_id}:memory"
+                                      if self.session_id else None)
+        result = await complete_simple(model, ctx, options)
         parts = []
         for block in getattr(result, "content", []) or []:
             if getattr(block, "type", "") == "text":
                 parts.append(getattr(block, "text", ""))
         return "\n".join(p for p in parts if p)
 
-    async def _curate_turn(self) -> None:
-        """Extract atomic memories from messages added since the last curation."""
+    async def _curate_turn(self) -> bool:
+        """Extract atomic memories from messages added since the last curation.
+
+        Returns False when curation failed; the cursor then stays put so the same
+        evidence is curated on the next pass (compaction must not drop it)."""
         if self._memory is None:
             try:
                 from .cli_debug_log import log_event
@@ -1447,11 +1455,11 @@ class AgentSession:
                 )
             except Exception:
                 pass
-            return
+            return True
         from .memory.curator import Evidence
         msgs = self._agent.state.messages
         start = self._memory_cursor
-        self._memory_cursor = len(msgs)
+        end = len(msgs)
         kinds = {"user": "user_turn", "toolResult": "tool_result",
                  "assistant": "assistant_output"}
         evidence: list[Evidence] = []
@@ -1470,7 +1478,7 @@ class AgentSession:
                 session_id=self.session_id,
                 db_path=getattr(getattr(self._memory, "store", None), "db_path", None),
                 cursor_start=start,
-                cursor_end=self._memory_cursor,
+                cursor_end=end,
                 message_count=len(msgs),
                 evidence_count=len(evidence),
                 evidence_kinds=[e.kind for e in evidence],
@@ -1490,9 +1498,11 @@ class AgentSession:
                 )
             except Exception:
                 pass
-            return
+            self._memory_cursor = end
+            return True
         try:
             committed_ids = await self._memory.arecord_turn(evidence)
+            self._memory_cursor = end
             try:
                 from .cli_debug_log import log_event
 
@@ -1519,7 +1529,8 @@ class AgentSession:
                 )
             except Exception:
                 pass
-            pass  # curation must never break the turn
+            return False  # curation must never break the turn; the evidence stays pending
+        return True
 
     # ── Memory: tool-log + conversation write paths ──────────────────────────
     #
@@ -1588,7 +1599,7 @@ class AgentSession:
             except Exception:
                 pass
 
-    async def _record_conversation_turns(self) -> None:
+    async def _record_conversation_turns(self) -> bool:
         """Append every new user_turn / assistant_output to conversation_memory.
 
         Thread-id is the agent session_id so each session gets its own
@@ -1597,14 +1608,15 @@ class AgentSession:
         every turn completes (mirrors Oracle's programmatic write path).
         """
         if self._memory_store is None:
-            return
+            return True
         try:
             from .memory.models import ConversationTurn
         except Exception:
-            return
+            return False
         msgs = self._agent.state.messages
         start = self._memory_conv_cursor
         self._memory_conv_cursor = len(msgs)
+        failed_at: int | None = None
         thread_id = self.session_id or ""
         written = 0
         for i, m in enumerate(msgs[start:], start=start):
@@ -1627,6 +1639,10 @@ class AgentSession:
                                   session_id=self.session_id, msg_index=i)
                 except Exception:
                     pass
+                # Resume from the failed row next time; later rows are written then.
+                failed_at = i
+                self._memory_conv_cursor = i
+                break
         if written:
             try:
                 from .cli_debug_log import log_event
@@ -1638,6 +1654,7 @@ class AgentSession:
                 )
             except Exception:
                 pass
+        return failed_at is None
 
     def _emit(self, event: dict | Any) -> None:
         """Emit a synthetic session event to all listeners."""
@@ -3030,6 +3047,12 @@ class AgentSession:
                 return entry.id
         return None
 
+    def _reset_memory_cursors(self) -> None:
+        """After compaction everything in the new list has been curated and recorded."""
+        count = len(self._agent.state.messages)
+        self._memory_cursor = count
+        self._memory_conv_cursor = count
+
     async def _maybe_compact_midrun(self, messages: list[AgentMessage], signal: asyncio.Event | None = None) -> None:
         """Threshold compaction inside a run, before the next model call.
 
@@ -3039,12 +3062,13 @@ class AgentSession:
         replaced in place so the next request uses the compacted context.
 
         Only when the first kept message is already saved (a resumed session rebuilds the
-        same context), memory is off (the end-of-run path curates memory first), and the run
-        is not cancelled or churn-held (the summary is a model call like any other).
+        same context) and the run is not cancelled or churn-held (the summary is a model call
+        like any other). With memory attached, pending evidence is curated and recorded first
+        and the memory cursors move to the compacted list.
         """
         if getattr(self, "_compaction_running", False) or _active_compression_on():
             return
-        if self._memory is not None or self._churn_guard.is_stopped():
+        if self._churn_guard.is_stopped():
             return
         if signal is not None and signal.is_set():
             return
@@ -3078,6 +3102,16 @@ class AgentSession:
             await self._churn_check()
         except Exception:  # noqa: BLE001 - a held or cancelled run makes no summary call
             return
+        if self._memory is not None or self._memory_store is not None:
+            try:
+                # Memory reads agent state by position; take everything not yet curated
+                # before the older messages leave the list.
+                curated = await self._curate_turn()
+                recorded = await self._record_conversation_turns()
+            except Exception:  # noqa: BLE001 - never drop uncurated evidence
+                return
+            if not (curated and recorded):
+                return  # memory still holds pending evidence; keep the full context
         self._compaction_running = True
         self._emit({"type": "auto_compaction_start", "reason": "threshold"})
         result = None
@@ -3097,6 +3131,7 @@ class AgentSession:
                 self._session_manager.append_compaction(summary, first_kept_id, tokens_before)
                 messages[:] = new_messages
                 self._agent.replace_messages(new_messages)
+                self._reset_memory_cursors()
                 self._midrun_stale_usage = last_assistant
                 result = {"summary": summary, "tokensBefore": tokens_before}
         except Exception as exc:  # noqa: BLE001 - a failed compaction keeps the full context
@@ -3117,8 +3152,17 @@ class AgentSession:
         transcript; the store makes it lossless."""
         if self._churn_guard.is_stopped():
             return  # no summary model call after a churn stop
-        if self._memory is not None:
-            await self._curate_turn()
+        if self._memory is not None or self._memory_store is not None:
+            curated = await self._curate_turn()
+            # Retries any conversation rows a failed write left pending (True when none).
+            recorded = await self._record_conversation_turns()
+            if not (curated and recorded) and reason != "overflow":
+                # Keep the full context while memory still holds uncurated evidence; an
+                # overflow must still shrink the context for the run to continue.
+                self._emit({"type": "auto_compaction_end", "result": None, "aborted": False,
+                            "willRetry": False,
+                            "errorMessage": "Auto-compaction deferred: memory not saved yet"})
+                return
         self._compaction_running = True
         self._emit({"type": "auto_compaction_start", "reason": reason})
         try:
@@ -3140,6 +3184,7 @@ class AgentSession:
             )
 
             self._agent.replace_messages(new_messages)
+            self._reset_memory_cursors()
 
             result = {"summary": summary, "tokensBefore": self._estimate_context_tokens()}
             if summary:
