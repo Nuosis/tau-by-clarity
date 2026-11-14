@@ -36,6 +36,7 @@ from .auth_storage import AuthStorage
 from .clarity_instrumentation import emit as _instr_emit
 from .clarity_instrumentation import flush as _instr_flush
 from .compaction import compact_context, should_compact
+from .compaction.compaction import estimate_context_tokens
 
 
 @dataclasses.dataclass
@@ -820,6 +821,7 @@ class AgentSession:
         Will be connected to ExtensionRunner.emit_context when extension support is added.
         Mirrors the transform_context callback in TypeScript SDK.
         """
+        await self._maybe_compact_midrun(messages, signal)
         pending = getattr(self, '_intention_requests', [])
         included = [request for request in pending
                     if any((m if isinstance(m, dict) else _message_to_dict(m)) == request for m in messages)]
@@ -2994,6 +2996,118 @@ class AgentSession:
         ):
             await self._run_auto_compaction("threshold", will_retry=False)
 
+    def _journal_entry_id_for(self, message: Any, later: list[Any] | None = None) -> str | None:
+        """The saved session entry id of a loop message, or None when it is not saved.
+
+        Identical custom messages are told apart by order: ``later`` (the messages after this
+        one in the loop) says how many matching copies come after it, and that many saved
+        matches are skipped from the end."""
+        d = message if isinstance(message, dict) else _message_to_dict(message)
+        role, timestamp = d.get("role"), d.get("timestamp")
+        if role == "custom":
+            custom_type = d.get("custom_type", d.get("customType"))
+
+            def same(other: Any) -> bool:
+                o = other if isinstance(other, dict) else _message_to_dict(other)
+                return (o.get("role") == "custom" and o.get("custom_type", o.get("customType")) == custom_type
+                        and o.get("content") == d.get("content"))
+
+            skip = sum(1 for m in (later or []) if same(m))
+            for entry in reversed(self._session_manager.get_branch()):
+                if (entry.type == "custom_message" and entry.data.get("customType") == custom_type
+                        and entry.data.get("content") == d.get("content")):
+                    if skip == 0:
+                        return entry.id
+                    skip -= 1
+            return None
+        call_id = d.get("tool_call_id", d.get("toolCallId"))
+        for entry in reversed(self._session_manager.get_branch()):
+            if entry.type != "message":
+                continue
+            saved = entry.data.get("message") or {}
+            if (saved.get("role") == role and saved.get("timestamp") == timestamp
+                    and saved.get("tool_call_id", saved.get("toolCallId")) == call_id):
+                return entry.id
+        return None
+
+    async def _maybe_compact_midrun(self, messages: list[AgentMessage], signal: asyncio.Event | None = None) -> None:
+        """Threshold compaction inside a run, before the next model call.
+
+        Marcus, 2026-11-14: compact long contexts much sooner. _check_compaction only runs
+        when a whole run ends, so a long tool loop (one D5 order) never compacted until it
+        overflowed the model's window. The loop passes its own message list here; it is
+        replaced in place so the next request uses the compacted context.
+
+        Only when the first kept message is already saved (a resumed session rebuilds the
+        same context), memory is off (the end-of-run path curates memory first), and the run
+        is not cancelled or churn-held (the summary is a model call like any other).
+        """
+        if getattr(self, "_compaction_running", False) or _active_compression_on():
+            return
+        if self._memory is not None or self._churn_guard.is_stopped():
+            return
+        if signal is not None and signal.is_set():
+            return
+        settings = self._settings_manager.get_compaction_settings()
+        if not settings.get("enabled", True):
+            return
+        model = self._agent.state.model
+        context_window = getattr(model, "context_window", 0) if model else 0
+        if context_window <= 0:
+            return
+        # After a compaction the newest assistant usage still describes the old context;
+        # wait for a fresh model reply before judging the size again.
+        last_assistant = next((m for m in reversed(messages)
+                               if (m.get("role") if isinstance(m, dict) else getattr(m, "role", "")) == "assistant"), None)
+        if last_assistant is not None and last_assistant is getattr(self, "_midrun_stale_usage", None):
+            return
+        reserve = settings.get("reserveTokens", 16384)
+        if not should_compact(messages, context_window, (context_window - reserve) / context_window):
+            return
+        from .compaction.compaction import compaction_cut_index, estimate_tokens
+        current = list(messages)
+        cut_idx = compaction_cut_index(current, settings)
+        if cut_idx <= 0:
+            return
+        if sum(estimate_tokens(m) for m in current[:cut_idx]) <= reserve:
+            return  # the older span is no larger than a summary; nothing to gain from a model call
+        first_kept_id = self._journal_entry_id_for(current[cut_idx], current[cut_idx + 1:])
+        if first_kept_id is None:
+            return  # not saved yet; checked again before the next call, before any summary spend
+        try:
+            await self._churn_check()
+        except Exception:  # noqa: BLE001 - a held or cancelled run makes no summary call
+            return
+        self._compaction_running = True
+        self._emit({"type": "auto_compaction_start", "reason": "threshold"})
+        result = None
+        error = None
+        try:
+            from pi_ai import stream_simple
+            api_key = await self._resolve_api_key(model.provider)
+            new_messages, summary = await compact_context(
+                current, self._agent.state.system_prompt, stream_simple, model,
+                settings=settings, api_key=api_key, signal=signal)
+            reduced = (sum(estimate_tokens(m) for m in new_messages)
+                       < sum(estimate_tokens(m) for m in current))
+            if signal is not None and signal.is_set():
+                error = "Mid-run compaction cancelled"
+            elif summary and reduced:
+                tokens_before = estimate_context_tokens(current)["tokens"]
+                self._session_manager.append_compaction(summary, first_kept_id, tokens_before)
+                messages[:] = new_messages
+                self._agent.replace_messages(new_messages)
+                self._midrun_stale_usage = last_assistant
+                result = {"summary": summary, "tokensBefore": tokens_before}
+        except Exception as exc:  # noqa: BLE001 - a failed compaction keeps the full context
+            error = f"Auto-compaction failed: {exc}"
+        finally:
+            self._compaction_running = False
+            end = {"type": "auto_compaction_end", "result": result, "aborted": False, "willRetry": False}
+            if error:
+                end["errorMessage"] = error
+            self._emit(end)
+
     async def _run_auto_compaction(self, reason: str, will_retry: bool) -> None:
         """Run auto-compaction with events (mirrors _runAutoCompaction in TS).
 
@@ -3016,18 +3130,23 @@ class AgentSession:
 
             from pi_ai import stream_simple
             messages = self._agent.state.messages
+            api_key = await self._resolve_api_key(model.provider)
             new_messages, summary = await compact_context(
                 messages,
                 self._agent.state.system_prompt,
                 stream_simple,
                 model,
+                api_key=api_key,
             )
 
             self._agent.replace_messages(new_messages)
 
             result = {"summary": summary, "tokensBefore": self._estimate_context_tokens()}
             if summary:
-                first_kept_id = str(len(messages)) if messages else "0"
+                # The saved entry id of the first kept message, so a resumed session keeps it.
+                kept_id = (self._journal_entry_id_for(new_messages[1], new_messages[2:])
+                           if len(new_messages) > 1 else None)
+                first_kept_id = kept_id or (str(len(messages)) if messages else "0")
                 self._session_manager.append_compaction(summary, first_kept_id)
 
             self._emit({"type": "auto_compaction_end", "result": result,

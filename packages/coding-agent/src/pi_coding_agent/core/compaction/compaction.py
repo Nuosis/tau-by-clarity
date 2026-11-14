@@ -169,6 +169,10 @@ def estimate_tokens(message: dict[str, Any] | Any) -> int:
                         chars += len(getattr(block, "text", ""))
                     elif btype == "thinking":
                         chars += len(getattr(block, "thinking", ""))
+                    elif btype in ("toolCall", "tool_call"):  # tool call objects, as held in agent state
+                        import json
+                        args = getattr(block, "arguments", None) or getattr(block, "input", None) or {}
+                        chars += len(getattr(block, "name", "") or "") + len(json.dumps(args, default=str))
     elif role == "toolResult":
         if isinstance(content, str):
             chars = len(content)
@@ -178,6 +182,11 @@ def estimate_tokens(message: dict[str, Any] | Any) -> int:
                     if block.get("type") == "text":
                         chars += len(block.get("text", ""))
                     elif block.get("type") == "image":
+                        chars += 4800
+                elif hasattr(block, "type"):  # content objects, as held in agent state
+                    if block.type == "text":
+                        chars += len(getattr(block, "text", ""))
+                    elif block.type == "image":
                         chars += 4800
 
     return max(1, (chars + 3) // 4)
@@ -399,11 +408,12 @@ async def generate_summary(
 
     # Only pass reasoning="high" for reasoning models; non-reasoning models reject it
     reasoning_kwarg: dict[str, Any] = {"reasoning": "high"} if getattr(model, "reasoning", False) else {}
-    opts = SimpleStreamOptions(max_tokens=max_tokens, **reasoning_kwarg)
+    extra: dict[str, Any] = {}
     if signal is not None:
-        opts = SimpleStreamOptions(max_tokens=max_tokens, signal=signal, **reasoning_kwarg)
+        extra["signal"] = signal
     if api_key:
-        opts = SimpleStreamOptions(max_tokens=max_tokens, api_key=api_key, **reasoning_kwarg)
+        extra["api_key"] = api_key
+    opts = SimpleStreamOptions(max_tokens=max_tokens, **reasoning_kwarg, **extra)
 
     try:
         ctx = Context(
@@ -451,6 +461,19 @@ def _serialize_conversation(messages: list[Any]) -> str:
 
 # ─── Main compaction (compact_context) — legacy + new API ────────────────────
 
+def compaction_cut_index(messages: list[Any], settings: dict[str, Any] | None = None) -> int:
+    """Index of the first message compact_context keeps (0 when nothing would be summarized)."""
+    s = settings or DEFAULT_COMPACTION_SETTINGS
+    if len(messages) < 4:
+        return 0
+    # Cut-point detection reads plain dicts; agent state holds message objects.
+    entries = [{"type": "message", "id": str(i),
+                "message": m if isinstance(m, dict) else (m.model_dump() if hasattr(m, "model_dump") else vars(m))}
+               for i, m in enumerate(messages)]
+    cut = find_cut_point(entries, 0, len(entries), s.get("keepRecentTokens", 20000))
+    return cut["firstKeptEntryIndex"]
+
+
 async def compact_context(
     messages: list[Message],
     system_prompt: str,
@@ -458,6 +481,8 @@ async def compact_context(
     model: Any,
     settings: dict[str, Any] | None = None,
     previous_summary: str | None = None,
+    api_key: str | None = None,
+    signal: Any = None,
 ) -> tuple[list[Message], str]:
     """
     Compact the context by summarizing old messages.
@@ -473,9 +498,7 @@ async def compact_context(
         return messages, ""
 
     # Build simple entry list for cut point detection
-    entries = [{"type": "message", "message": m, "id": str(i)} for i, m in enumerate(messages)]
-    cut = find_cut_point(entries, 0, len(entries), keep_recent_tokens)
-    cut_idx = cut["firstKeptEntryIndex"]
+    cut_idx = compaction_cut_index(messages, s)
 
     to_summarize = messages[:cut_idx]
     to_keep = messages[cut_idx:]
@@ -488,7 +511,12 @@ async def compact_context(
         model=model,
         reserve_tokens=reserve_tokens,
         previous_summary=previous_summary,
+        api_key=api_key,
+        signal=signal,
     )
+    if not summary or summary.startswith("[Summary generation failed"):
+        # Never replace history with a failed summary; callers keep the full context.
+        raise RuntimeError("Summarization failed; context left unchanged")
 
     compact_msg = UserMessage(
         role="user",

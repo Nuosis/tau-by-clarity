@@ -434,7 +434,9 @@ async def _stream_assistant_response(
     emit_events: bool = True,
 ) -> AssistantMessage:
     """Recover a truncated generation without replaying completed tool work."""
-    prefix_length = len(context.messages)
+    # The last completed message marks the prefix. Its index can change before the
+    # request (a context transform may compact the list in place), its identity does not.
+    prefix_anchor = context.messages[-1] if context.messages else None
     recovery_budget: int | None = None
     while True:
         message, model_limit = await _stream_assistant_attempt(
@@ -448,7 +450,9 @@ async def _stream_assistant_response(
         # Reissue only that generation against the same completed prefix. This
         # also avoids sending a partial tool call or an assistant prefill back
         # to providers which reject them.
-        del context.messages[prefix_length:]
+        anchor_index = next((i for i in range(len(context.messages) - 1, -1, -1)
+                             if context.messages[i] is prefix_anchor), -1)
+        del context.messages[anchor_index + 1:]
         used_budget = max(message.usage.output, recovery_budget or config.max_tokens or 0, 1)
         recovery_budget = min(model_limit, max(used_budget * 2, min(model_limit, 32000)))
         _emit_run_state(
