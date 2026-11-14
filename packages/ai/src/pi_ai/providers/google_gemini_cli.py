@@ -295,7 +295,10 @@ def stream_google_gemini_cli(
                                 output["usage"]["input"] = usage_meta.get("promptTokenCount", 0) or 0
                                 output["usage"]["output"] = (usage_meta.get("candidatesTokenCount", 0) or 0) + (usage_meta.get("thoughtsTokenCount", 0) or 0)
                                 output["usage"]["cache_read"] = usage_meta.get("cachedContentTokenCount", 0) or 0
-                                output["usage"]["total_tokens"] = usage_meta.get("totalTokenCount", 0) or 0
+                                # promptTokenCount already includes cached content; when the total is
+                                # missing, input + output is the full context (cache_read is a subset).
+                                output["usage"]["total_tokens"] = (usage_meta.get("totalTokenCount", 0) or 0) or (
+                                    output["usage"]["input"] + output["usage"]["output"])
                                 calculate_cost(model, output["usage"])
 
                         if current_block:

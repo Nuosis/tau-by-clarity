@@ -178,7 +178,10 @@ def stream_google_vertex(
                     output["usage"]["input"] = meta.get("prompt_token_count", 0) or 0
                     output["usage"]["output"] = (meta.get("candidates_token_count", 0) or 0) + (meta.get("thoughts_token_count", 0) or 0)
                     output["usage"]["cache_read"] = meta.get("cached_content_token_count", 0) or 0
-                    output["usage"]["total_tokens"] = meta.get("total_token_count", 0) or 0
+                    # prompt_token_count already includes cached content; when Google omits the
+                    # total, input + output is the full context (cache_read must not be added).
+                    output["usage"]["total_tokens"] = (meta.get("total_token_count", 0) or 0) or (
+                        output["usage"]["input"] + output["usage"]["output"])
                     calculate_cost(model, output["usage"])
 
             if current_block:

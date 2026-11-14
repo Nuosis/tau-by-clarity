@@ -185,13 +185,16 @@ def estimate_tokens(message: dict[str, Any] | Any) -> int:
 
 def calculate_context_tokens(usage: dict[str, Any]) -> int:
     """Calculate total context tokens from usage dict."""
-    if usage.get("totalTokens"):
-        return usage["totalTokens"]
+    # Usage objects use snake_case (total_tokens, cache_read); journals may use camelCase.
+    # Since prompt caching works, "input" is only the uncached part, so cache reads must count.
+    total = usage.get("totalTokens") or usage.get("total_tokens")
+    if total:
+        return total
     return (
-        usage.get("input", 0)
-        + usage.get("output", 0)
-        + usage.get("cacheRead", 0)
-        + usage.get("cacheWrite", 0)
+        (usage.get("input") or 0)
+        + (usage.get("output") or 0)
+        + (usage.get("cacheRead") or usage.get("cache_read") or 0)
+        + (usage.get("cacheWrite") or usage.get("cache_write") or 0)
     )
 
 
