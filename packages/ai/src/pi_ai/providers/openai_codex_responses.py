@@ -85,6 +85,11 @@ def stream_openai_codex_responses(
                 **(getattr(model, "headers", None) or {}),
                 **(opts.get("headers") or {}),
             }
+            # The ChatGPT Codex backend keeps a session's prompt cache only when the request
+            # carries the session_id header (prompt_cache_key in the body alone got 0 cached
+            # tokens on identical repeated requests; with the header, 99%). 2026-11-14.
+            if opts.get("session_id") and not any(k.lower() == "session_id" for k in headers):
+                headers["session_id"] = str(opts["session_id"])
 
             ev_stream.push({"type": "start", "partial": output})
 
