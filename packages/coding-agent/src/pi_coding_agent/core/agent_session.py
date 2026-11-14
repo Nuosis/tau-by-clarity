@@ -247,6 +247,9 @@ class AgentSession:
             afterToolCall=self._after_tool_call,
         )
         self._agent = Agent(opts)
+        # Provider requests take the session id from the Agent (prompt_cache_key and the
+        # Codex session_id header). Without it no request carried a cache identity. 2026-11-14.
+        self._agent.session_id = self.session_id
         self._agent.set_model(resolved_model)
         self._agent.set_system_prompt(self._effective_system_prompt())
         self._agent.set_tools(active_tools)
@@ -884,7 +887,7 @@ class AgentSession:
             intention = await review_turn(
                 intention_selection, context, stream_fn=self._provider_stream,
                 get_api_key=self._resolve_api_key, record=self._record_router_event,
-                before_model_invocation=self._churn_check,
+                before_model_invocation=self._churn_check, session_id=self.session_id,
                 # Without an alignment verdict the planner revises the active intention (its
                 # outcome and unfinished obligations stay in view) instead of starting blind.
                 cancel_event=signal, intention=self.active_intention if alignment_unavailable else None,
@@ -1113,6 +1116,7 @@ class AgentSession:
                 stream_fn=self._provider_stream, get_api_key=self._resolve_api_key,
                 record=self._record_router_event, cancel_event=self._agent._cancel_event,
                 intention=self.active_intention, before_model_invocation=self._churn_check,
+                session_id=self.session_id,
             )
             # User steering arriving during review takes precedence over its verdict.
             if self._agent.has_queued_messages():
@@ -1906,6 +1910,17 @@ class AgentSession:
             self._session_manager.append_message(_message_to_dict(bash_msg))
 
     # ── Session switching / tree navigation ────────────────────────────────────
+
+    @property
+    def session_id(self) -> str | None:
+        return self.__dict__.get("_session_id_value")
+
+    @session_id.setter
+    def session_id(self, value: str | None) -> None:
+        self.__dict__["_session_id_value"] = value
+        agent = self.__dict__.get("_agent")
+        if agent is not None:
+            agent.session_id = value
 
     async def switch_session(self, session_path: str) -> bool:
         """

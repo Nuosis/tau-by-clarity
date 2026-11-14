@@ -88,8 +88,9 @@ def stream_openai_codex_responses(
             # The ChatGPT Codex backend keeps a session's prompt cache only when the request
             # carries the session_id header (prompt_cache_key in the body alone got 0 cached
             # tokens on identical repeated requests; with the header, 99%). 2026-11-14.
-            if opts.get("session_id") and not any(k.lower() == "session_id" for k in headers):
-                headers["session_id"] = str(opts["session_id"])
+            cache_id = _cache_identity(opts.get("session_id"))
+            if cache_id and not any(k.lower() == "session_id" for k in headers):
+                headers["session_id"] = cache_id
 
             ev_stream.push({"type": "start", "partial": output})
 
@@ -153,6 +154,18 @@ def stream_simple_openai_codex_responses(
     return stream_openai_codex_responses(model, context, {**base_dict, "reasoning_effort": reasoning_effort})
 
 
+def _cache_identity(session_id: Any) -> str | None:
+    """The session's cache identity for the session_id header and prompt_cache_key.
+    IDs that are not printable ASCII (HTTP headers reject them) map to a stable hash."""
+    if not session_id:
+        return None
+    value = str(session_id)
+    if value.isascii() and value.isprintable():
+        return value
+    import hashlib
+    return "tau-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+
 def _build_request_body(
     model: "Model",
     context: "Context",
@@ -166,8 +179,9 @@ def _build_request_body(
         "stream": True,
         "store": False,
     }
-    if opts.get("session_id"):
-        body["prompt_cache_key"] = opts["session_id"]
+    cache_id = _cache_identity(opts.get("session_id"))
+    if cache_id:
+        body["prompt_cache_key"] = cache_id
 
     tools = getattr(context, "tools", None)
     if tools:
