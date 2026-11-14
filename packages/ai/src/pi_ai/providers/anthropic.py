@@ -63,7 +63,7 @@ _BETA_OAUTH = "oauth-2025-04-20"
 _BETA_CLAUDE_CODE = "claude-code-20250219"
 
 # Claude Code version for OAuth stealth mode
-_CLAUDE_CODE_VERSION = "2.1.62"
+_CLAUDE_CODE_VERSION = "2.1.322"
 
 # Claude Code canonical tool name lookup (case-insensitive → canonical)
 _CLAUDE_CODE_TOOLS = [
