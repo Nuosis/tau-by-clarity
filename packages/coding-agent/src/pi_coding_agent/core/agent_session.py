@@ -251,6 +251,14 @@ class AgentSession:
         # Provider requests take the session id from the Agent (prompt_cache_key and the
         # Codex session_id header). Without it no request carried a cache identity. 2026-11-14.
         self._agent.session_id = self.session_id
+        _orig_dequeue_steering = self._agent._dequeue_steering_messages
+        _orig_dequeue_follow_up = self._agent._dequeue_follow_up_messages
+        self._agent._dequeue_steering_messages = (
+            lambda: self._attach_memory_recall(_orig_dequeue_steering())
+        )
+        self._agent._dequeue_follow_up_messages = (
+            lambda: self._attach_memory_recall(_orig_dequeue_follow_up())
+        )
         self._agent.set_model(resolved_model)
         self._agent.set_system_prompt(self._effective_system_prompt())
         self._agent.set_tools(active_tools)
@@ -809,6 +817,43 @@ class AgentSession:
             # Default to OpenAI gpt-5.5 in every other case.
             return get_model("openai", "gpt-5.5")
 
+    def _attach_memory_recall(self, msgs: list[AgentMessage]) -> list[AgentMessage]:
+        """Attach a persisted non-displayed recall block after new user message(s).
+
+        Called when prompts enter the loop (direct prompt, steering, or follow-up)
+        so recall stays pinned in history (append-only prefix for prompt caching)
+        and participates in token estimation and compaction.
+        """
+        if not msgs or getattr(self, "_memory_store", None) is None or getattr(self, "_turn_end_finalizing", False):
+            return msgs
+        try:
+            from .memory.recall import build_recall_block, latest_user_query
+            query = latest_user_query(msgs)
+            if not query:
+                return msgs
+            block = build_recall_block(
+                self._memory_store, query, getattr(self, "_memory_scope", None)
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                from .cli_debug_log import log_exception
+                log_exception("memory_recall_attach_failed", exc)
+            except Exception:  # noqa: BLE001
+                pass
+            return msgs
+        if not block:
+            return msgs
+        return [
+            *msgs,
+            {
+                "role": "custom",
+                "customType": "memory_recall",
+                "content": block,
+                "display": False,
+                "timestamp": int(time.time() * 1000),
+            },
+        ]
+
     async def _transform_context(
         self, 
         messages: list[AgentMessage], 
@@ -829,17 +874,6 @@ class AgentSession:
         messages = self._session_manager.apply_persisted_active_compression(messages)
         if self._extension_runner.has_handlers("context"):
             messages = await self._extension_runner.emit_context(messages)
-        # P1: memory recall — inject a tail recall block when a store is attached.
-        store = getattr(self, "_memory_store", None)
-        if store is not None:
-            from .memory.recall import build_recall_block, latest_user_query
-            from .messages import CustomMessage
-            query = latest_user_query(messages)
-            block = build_recall_block(store, query, getattr(self, "_memory_scope", None))
-            if block:
-                messages = list(messages) + [
-                    CustomMessage(custom_type="memory_recall", content=block, display=False)
-                ]
         self._review_context_messages = list(messages)
         if self._router is not None and included:
             starts_new_intention = self.active_intention is None
@@ -1303,7 +1337,7 @@ class AgentSession:
         if event.type == "message_end":
             msg = getattr(event, "message", None)
             if msg is not None:
-                role = getattr(msg, "role", "")
+                role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
                 if role in ("user", "assistant", "toolResult"):
                     persisted_msg = _message_to_dict(msg)
                     active_compression_meta = None
@@ -1320,6 +1354,22 @@ class AgentSession:
                         persisted_msg,
                         active_compression=active_compression_meta,
                     )
+                elif role == "custom":
+                    custom_type = (
+                        msg.get("customType", msg.get("custom_type", ""))
+                        if isinstance(msg, dict)
+                        else getattr(msg, "custom_type", "")
+                    )
+                    if custom_type == "memory_recall":
+                        self._session_manager.append_custom_message_entry(
+                            "memory_recall",
+                            msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", ""),
+                            display=bool(
+                                msg.get("display", False)
+                                if isinstance(msg, dict)
+                                else getattr(msg, "display", False)
+                            ),
+                        )
                 # Track last assistant message for retry/compaction
                 if role == "assistant":
                     self._last_assistant_msg = msg
@@ -1851,6 +1901,7 @@ class AgentSession:
             self._router.reset()
             for msg in msgs:
                 self._track_intention_request(msg)
+        msgs = self._attach_memory_recall(msgs)
         await self._agent.prompt(msgs)
         try:
             from .cli_debug_log import log_event

@@ -47,7 +47,9 @@ class StreamFn(Protocol):
 # CustomAgentMessages is a protocol that can be extended via Union
 # Applications can extend this by creating a Union with their custom message types
 # For example: AgentMessage = Union[Message, BashExecutionMessage, CustomMessage]
-CustomAgentMessages = Union[tuple]  # Empty union placeholder
+# Custom message dicts (e.g. role="custom", compactionSummary, branchSummary) pass
+# through AgentContext/AgentState so session persistence and compaction can see them.
+CustomAgentMessages = dict[str, Any]
 
 # AgentMessage is the union of LLM messages plus any custom message types
 # Custom message types can be added by extending this union in application code

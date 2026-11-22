@@ -41,9 +41,10 @@ def build_recall_block(store: MemoryStore, query: str, scope: Scope | None = Non
 def latest_user_query(messages: list[Any]) -> str:
     """Extract the most recent user message's text from an AgentMessage list."""
     for m in reversed(messages):
-        if getattr(m, "role", None) != "user":
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role != "user":
             continue
-        content = getattr(m, "content", None)
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
         if isinstance(content, str):
             return content
         if isinstance(content, list):
