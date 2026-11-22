@@ -6,6 +6,7 @@ Each line is a JSON-encoded entry. The first line is the session header.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pi_coding_agent.config import CONFIG_DIR_NAME
@@ -104,6 +105,13 @@ class SessionInfo:
 # ─────────────────────────────────────────────────────────────────────────────
 # Standalone utility functions (exported for tests)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _session_id_for_path(path: str) -> str:
+    """Derive a stable UUIDv5 from a filesystem path without failing on lone surrogates."""
+    raw = b"tau-session:" + os.path.realpath(path).encode("utf-8", errors="surrogatepass")
+    digest = hashlib.sha1(uuid.NAMESPACE_URL.bytes + raw).digest()
+    return str(uuid.UUID(bytes=digest[:16], version=5))
+
 
 def generate_id(existing_ids: set[str]) -> str:
     """Generate a unique 8-hex-char ID, checking for collisions."""
@@ -341,6 +349,7 @@ class SessionManager:
         self._leaf_id: str | None = None
         self._by_id: dict[str, dict[str, Any]] = {}
         self._dirty = False
+        self._fallback_session_id = str(uuid.uuid4())
 
         if self._session_file_path and os.path.exists(self._session_file_path):
             self._load_file()
@@ -459,9 +468,19 @@ class SessionManager:
 
     @classmethod
     def open(cls, path: str) -> "SessionManager":
-        """Open an existing session file."""
+        """Open an existing session file, or prepare a new headered session at path."""
         resolved = os.path.abspath(path)
+        existed = os.path.exists(resolved)
         mgr = cls(session_file=resolved)
+        if not existed and mgr._header is None:
+            from datetime import datetime, timezone
+            mgr._header = {
+                "type": "session",
+                "id": _session_id_for_path(resolved),
+                "version": CURRENT_SESSION_VERSION,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cwd": mgr._cwd,
+            }
         return mgr
 
     @classmethod
@@ -656,7 +675,12 @@ class SessionManager:
 
     def get_session_id(self) -> str:
         """Get the current session ID."""
-        return self._header.get("id", "") if self._header else ""
+        header_id = self._header.get("id", "") if self._header else ""
+        if header_id:
+            return str(header_id)
+        if self._session_file_path:
+            return _session_id_for_path(self._session_file_path)
+        return self._fallback_session_id
 
     def get_session_file(self) -> str | None:
         """Get the session file path."""
